@@ -546,6 +546,264 @@
           "version": "13.1.0-25668120414"
         }
       }
+    },
+    "panel-5": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "WITH samples AS (\n  SELECT\n    time_stamp AS ts,\n    label,\n    if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n    max(total_count) AS runners,\n    multiIf(label = 'linux.dgx.b200', 24, label = 'linux.dgx.b200.8', 3, 0) AS expected\n  FROM misc.runner_fleet_count\n  WHERE $__timeFilter(time_stamp)\n    AND org = 'pytorch'\n    AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n    AND ('$view' IN ('aggregated','all') OR label = '$view')\n  GROUP BY ts, label, series, expected\n),\nper_sample AS (\n  SELECT ts, series, sum(runners) AS runners, sum(expected) AS expected\n  FROM samples\n  GROUP BY ts, series\n)\nSELECT * FROM (\n  SELECT toStartOfDay(ts) AS time, series, max(runners) AS runners\n  FROM per_sample\n  GROUP BY time, series\n  UNION ALL\n  SELECT toStartOfDay(ts) AS time, concat(series, ' expected') AS series, max(expected) AS runners\n  FROM per_sample\n  GROUP BY time, series\n)\nORDER BY time, series"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Registered self-hosted runners carrying each B200 label, from misc.runner_fleet_count (sampled every 30 min). Daily peak. The dashed line is the expected count from multi-tenant/inventory/manual_inventory: 24 for linux.dgx.b200 (3 hosts x num_users=8) and 3 for linux.dgx.b200.8 (3 hosts x num_users=1).",
+        "id": 5,
+        "links": [],
+        "title": "Total runners [view]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic-by-name",
+                  "seriesBy": "max"
+                },
+                "min": 0,
+                "unit": "short",
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "bars",
+                  "fillOpacity": 70,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "auto",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "linux.dgx.b200 expected",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineStyle",
+                      "value": {
+                        "fill": "dash",
+                        "dash": [
+                          10,
+                          10
+                        ]
+                      }
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "#EAB839",
+                        "mode": "fixed"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "linux.dgx.b200.8 expected",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineStyle",
+                      "value": {
+                        "fill": "dash",
+                        "dash": [
+                          10,
+                          10
+                        ]
+                      }
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "#EAB839",
+                        "mode": "fixed"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "b200 (aggregated) expected",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineStyle",
+                      "value": {
+                        "fill": "dash",
+                        "dash": [
+                          10,
+                          10
+                        ]
+                      }
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "#EAB839",
+                        "mode": "fixed"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
     }
   },
   "layout": {
@@ -557,7 +815,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-1"
+              "name": "panel-5"
             },
             "height": 8,
             "width": 24,
@@ -570,7 +828,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-2"
+              "name": "panel-1"
             },
             "height": 8,
             "width": 24,
@@ -583,7 +841,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-3"
+              "name": "panel-2"
             },
             "height": 8,
             "width": 24,
@@ -596,12 +854,25 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-4"
+              "name": "panel-3"
             },
             "height": 8,
             "width": 24,
             "x": 0,
             "y": 24
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-4"
+            },
+            "height": 8,
+            "width": 24,
+            "x": 0,
+            "y": 32
           }
         }
       ]
