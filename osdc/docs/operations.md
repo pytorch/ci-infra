@@ -156,6 +156,60 @@ just resume-runners meta-staging-aws-uw1     # restore maxRunners from def files
 
 `recycle-nodes` deletes all Karpenter `NodeClaims`, forcing Karpenter to reprovision on demand. Use after AMI/userData changes when you do not need to preserve in-flight jobs. Staging runs this automatically at the end of `just deploy` (driven by `recycle_karpenter_nodes: true` in `clusters.yaml`).
 
+### Recovering from stale ARC scale sets
+
+Certain `arc-runners` config changes (e.g. changing `github_config_url` from
+repo-scoped to org-scoped, or changing `runner_group`) cause the ARC controller to
+register new GitHub-side scale sets while old `AutoscalingListener` objects remain
+in the cluster pointing at the now-invalid scale set IDs. Symptoms: listener pods
+crash-loop with `RunnerScaleSetNotFoundException` (404 from GitHub API), or two
+listener pods exist for the same runner set with different spec hashes.
+
+**Step 1 — Check for duplicate or erroring listeners:**
+
+```bash
+kubectl get autoscalinglisteners -n arc-systems
+kubectl get pods -n arc-systems | grep -v Running
+```
+
+If you see two listeners for the same runner set (different hash suffixes), or pods
+cycling through `Error` / `ContainerCreating`, proceed with the cleanup.
+
+**Step 2 — Delete all `AutoscalingRunnerSet` objects to force re-registration:**
+
+```bash
+kubectl delete autoscalingrunnersets --all -n arc-runners
+```
+
+This removes the in-cluster ARS objects. The ARC Helm releases are untouched — the
+controller recreates ARS objects (and fresh GitHub scale set IDs) on the next deploy.
+
+**Step 3 — Force-redeploy arc-runners:**
+
+```bash
+HELM_FORCE_UPGRADE=1 just deploy-module <cluster> arc-runners
+```
+
+`HELM_FORCE_UPGRADE=1` bypasses the skip-if-no-diff logic so the upgrade runs even
+when the rendered templates haven't changed.
+
+**Step 4 — Clean up any remaining stale listeners:**
+
+After the redeploy, new listeners get a fresh spec hash. Old listeners (prior hash)
+may linger briefly. Delete them explicitly:
+
+```bash
+OLD_HASH=<old-hash>   # e.g. 58d9767d — visible in the listener name
+kubectl delete autoscalinglistener -n arc-systems \
+  $(kubectl get autoscalinglisteners -n arc-systems --no-headers | grep "$OLD_HASH" | awk '{print $1}')
+```
+
+All listener pods should reach `Running` within ~30 seconds.
+
+> **Note:** For `runner_group`-only changes (no URL change), you typically do **not**
+> need to delete the ARS objects — a `HELM_FORCE_UPGRADE=1` redeploy is sufficient.
+> Only stale listeners need manual cleanup in that case.
+
 ### Read-only debugging
 
 ```bash
