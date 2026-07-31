@@ -55,7 +55,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "WITH samples AS (\n  SELECT\n    time_stamp AS ts,\n    multiIf(\n      label IN ('macos-m1-14','macos-m1-stable'), 'macos-m1 (sonoma 14)',\n      label IN ('macos-m2-15','macos-m2-stable'), 'macos-m2 (sequoia 15)',\n      'macos-m2 (tahoe 26)') AS fleet,\n    max(total_count) AS runners\n  FROM misc.runner_fleet_count\n  WHERE $__timeFilter(time_stamp)\n    AND org = 'pytorch'\n    AND label IN ('macos-m1-14','macos-m1-stable','macos-m2-15','macos-m2-26','macos-m2-stable')\n    AND ('$view' IN ('aggregated','all') OR label = '$view')\n  GROUP BY ts, fleet\n),\nper_sample AS (\n  SELECT\n    ts,\n    if('$view' = 'aggregated', 'macos (aggregated)', fleet) AS series,\n    sum(runners) AS runners,\n    sum(multiIf(\n      fleet = 'macos-m1 (sonoma 14)', 111,\n      fleet = 'macos-m2 (sequoia 15)', 36,\n      8)) AS expected\n  FROM samples\n  GROUP BY ts, series\n)\nSELECT * FROM (\n  SELECT toStartOfDay(ts) AS time, series, max(runners) AS runners\n  FROM per_sample\n  GROUP BY time, series\n  UNION ALL\n  SELECT toStartOfDay(ts) AS time, concat(series, ' expected') AS series, max(expected) AS runners\n  FROM per_sample\n  GROUP BY time, series\n)\nORDER BY time, series"
+                      "rawSql": "WITH samples AS (\n  SELECT\n    time_stamp AS ts,\n    multiIf(\n      label IN ('macos-m1-14','macos-m1-stable'), 'macos-m1 (sonoma 14)',\n      label IN ('macos-m2-15','macos-m2-stable'), 'macos-m2 (sequoia 15)',\n      'macos-m2 (tahoe 26)') AS fleet,\n    max(total_count) AS runners\n  FROM misc.runner_fleet_count\n  WHERE $__timeFilter(time_stamp)\n    AND org = 'pytorch'\n    AND label IN ('macos-m1-14','macos-m1-stable','macos-m2-15','macos-m2-26','macos-m2-stable')\n    AND ('$view' IN ('aggregated','all') OR label = '$view')\n  GROUP BY ts, fleet\n),\nper_sample AS (\n  SELECT\n    ts,\n    if('$view' = 'aggregated', 'macos (aggregated)', fleet) AS series,\n    sum(runners) AS runners,\n    sum(multiIf(\n      fleet = 'macos-m1 (sonoma 14)', 111,\n      fleet = 'macos-m2 (sequoia 15)', 36,\n      8)) AS expected\n  FROM samples\n  GROUP BY ts, series\n)\nSELECT * FROM (\n  SELECT $__timeInterval(ts) AS time, series, max(runners) AS runners\n  FROM per_sample\n  GROUP BY time, series\n  UNION ALL\n  SELECT $__timeInterval(ts) AS time, concat(series, ' expected') AS series, max(expected) AS runners\n  FROM per_sample\n  GROUP BY time, series\n)\nORDER BY time, series"
                     },
                     "version": "v0"
                   },
@@ -67,7 +67,7 @@
             "transformations": []
           }
         },
-        "description": "Registered self-hosted macOS runners from misc.runner_fleet_count (sampled every 30 min), daily peak. macos-m1-stable and macos-m2-stable are aliases assigned to the SAME hosts as macos-m1-14 / macos-m2-15 (see macos-runners/playbooks/install-runner.yml), so they are merged per fleet rather than summed. Dashed lines are the expected counts from pytorch-gha-infra Terraform: 111 m1/sonoma (us-east-1 6x16 + us-east-2 3x5), 36 m2/sequoia (m2pro 4x7 + m2 4x2), 8 m2/tahoe (4x2).",
+        "description": "Registered self-hosted macOS runners from misc.runner_fleet_count, sampled every 30 min; bucketed at the panel interval so zooming in reaches full sample resolution. macos-m1-stable / macos-m2-stable are aliases on the SAME hosts as macos-m1-14 / macos-m2-15 (macos-runners/playbooks/install-runner.yml), so they are merged per fleet rather than summed. Dashed lines are expected counts from pytorch-gha-infra Terraform: 111 m1/sonoma (us-east-1 6x16 + us-east-2 3x5), 36 m2/sequoia (m2pro 4x7 + m2 4x2), 8 m2/tahoe (4x2).",
         "id": 1,
         "links": [],
         "title": "Total runners [view]",
@@ -91,8 +91,8 @@
                   "axisPlacement": "auto",
                   "barAlignment": 0,
                   "barWidthFactor": 0.6,
-                  "drawStyle": "bars",
-                  "fillOpacity": 70,
+                  "drawStyle": "line",
+                  "fillOpacity": 0,
                   "gradientMode": "none",
                   "hideFrom": {
                     "legend": false,
@@ -104,14 +104,14 @@
                   "lineStyle": {
                     "fill": "solid"
                   },
-                  "lineWidth": 1,
+                  "lineWidth": 2,
                   "pointSize": 5,
                   "scaleDistribution": {
                     "type": "linear"
                   },
-                  "showPoints": "auto",
+                  "showPoints": "never",
                   "showValues": false,
-                  "spanNulls": false,
+                  "spanNulls": true,
                   "stacking": {
                     "group": "A",
                     "mode": "none"
