@@ -579,7 +579,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfInterval(ts, INTERVAL 30 MINUTE) AS time,\n  series,\n  max(registered) AS registered\nFROM (\n  SELECT ts, series, sum(registered) AS registered\n  FROM (\n    SELECT\n      time_stamp AS ts,\n      label,\n      if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n      max(total_count) AS registered\n    FROM misc.runner_fleet_count\n    WHERE $__timeFilter(time_stamp)\n      AND org = 'pytorch'\n      AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n      AND ('$view' IN ('aggregated','all') OR label = '$view')\n    GROUP BY ts, label, series\n  )\n  GROUP BY ts, series\n)\nGROUP BY time, series\nORDER BY time, series"
+                      "rawSql": "SELECT\n  toStartOfDay(ts) AS time,\n  series,\n  max(runners) AS runners\nFROM (\n  SELECT ts, series, sum(runners) AS runners\n  FROM (\n    SELECT\n      time_stamp AS ts,\n      label,\n      if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n      max(total_count) AS runners\n    FROM misc.runner_fleet_count\n    WHERE $__timeFilter(time_stamp)\n      AND org = 'pytorch'\n      AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n      AND ('$view' IN ('aggregated','all') OR label = '$view')\n    GROUP BY ts, label, series\n  )\n  GROUP BY ts, series\n)\nGROUP BY time, series\nORDER BY time, series"
                     },
                     "version": "v0"
                   },
@@ -591,10 +591,10 @@
             "transformations": []
           }
         },
-        "description": "Self-hosted runners registered with the pytorch org carrying each B200 label, sampled every 30 min by test-infra's runner-fleet-metrics workflow. Fleet capacity, not utilisation.",
+        "description": "Registered self-hosted runners carrying each B200 label, from misc.runner_fleet_count (sampled every 30 min). Daily peak.",
         "id": 5,
         "links": [],
-        "title": "Registered runners [view]",
+        "title": "Total runners [view]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -615,8 +615,8 @@
                   "axisPlacement": "auto",
                   "barAlignment": 0,
                   "barWidthFactor": 0.6,
-                  "drawStyle": "line",
-                  "fillOpacity": 10,
+                  "drawStyle": "bars",
+                  "fillOpacity": 70,
                   "gradientMode": "none",
                   "hideFrom": {
                     "legend": false,
@@ -633,7 +633,7 @@
                   "scaleDistribution": {
                     "type": "linear"
                   },
-                  "showPoints": "never",
+                  "showPoints": "auto",
                   "showValues": false,
                   "spanNulls": false,
                   "stacking": {
@@ -653,269 +653,6 @@
                     }
                   ]
                 }
-              },
-              "overrides": []
-            },
-            "options": {
-              "annotations": {
-                "clustering": -1,
-                "multiLane": false
-              },
-              "legend": {
-                "calcs": [],
-                "displayMode": "list",
-                "placement": "bottom",
-                "showLegend": true
-              },
-              "tooltip": {
-                "hideZeros": false,
-                "mode": "multi",
-                "sort": "none"
-              }
-            }
-          },
-          "version": "13.1.0-25668120414"
-        }
-      }
-    },
-    "panel-6": {
-      "kind": "Panel",
-      "spec": {
-        "data": {
-          "kind": "QueryGroup",
-          "spec": {
-            "queries": [
-              {
-                "kind": "PanelQuery",
-                "spec": {
-                  "hidden": false,
-                  "query": {
-                    "datasource": {
-                      "name": "ceczcsck1b20wb"
-                    },
-                    "group": "grafana-clickhouse-datasource",
-                    "kind": "DataQuery",
-                    "spec": {
-                      "editorType": "sql",
-                      "format": 0,
-                      "meta": {
-                        "builderOptions": {
-                          "columns": [],
-                          "database": "",
-                          "limit": 1000,
-                          "mode": "list",
-                          "queryType": "table",
-                          "table": ""
-                        }
-                      },
-                      "pluginVersion": "4.17.0",
-                      "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfInterval(ts, INTERVAL 30 MINUTE) AS time,\n  series,\n  max(offline) AS offline\nFROM (\n  SELECT ts, series, sum(offline) AS offline\n  FROM (\n    SELECT\n      time_stamp AS ts,\n      label,\n      if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n      max(total_count) - max(online_count) AS offline\n    FROM misc.runner_fleet_count\n    WHERE $__timeFilter(time_stamp)\n      AND org = 'pytorch'\n      AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n      AND ('$view' IN ('aggregated','all') OR label = '$view')\n    GROUP BY ts, label, series\n  )\n  GROUP BY ts, series\n)\nGROUP BY time, series\nORDER BY time, series"
-                    },
-                    "version": "v0"
-                  },
-                  "refId": "A"
-                }
-              }
-            ],
-            "queryOptions": {},
-            "transformations": []
-          }
-        },
-        "description": "Registered B200 runners not reporting status=online (total_count - online_count). Sustained non-zero means a DGX host or its ghad-manager sessions have dropped out.",
-        "id": 6,
-        "links": [],
-        "title": "Runners offline [view]",
-        "vizConfig": {
-          "group": "timeseries",
-          "kind": "VizConfig",
-          "spec": {
-            "fieldConfig": {
-              "defaults": {
-                "color": {
-                  "mode": "palette-classic-by-name",
-                  "seriesBy": "max"
-                },
-                "min": 0,
-                "unit": "short",
-                "custom": {
-                  "axisBorderShow": false,
-                  "axisCenteredZero": false,
-                  "axisColorMode": "text",
-                  "axisLabel": "",
-                  "axisPlacement": "auto",
-                  "barAlignment": 0,
-                  "barWidthFactor": 0.6,
-                  "drawStyle": "line",
-                  "fillOpacity": 10,
-                  "gradientMode": "none",
-                  "hideFrom": {
-                    "legend": false,
-                    "tooltip": false,
-                    "viz": false
-                  },
-                  "insertNulls": false,
-                  "lineInterpolation": "linear",
-                  "lineStyle": {
-                    "fill": "solid"
-                  },
-                  "lineWidth": 1,
-                  "pointSize": 5,
-                  "scaleDistribution": {
-                    "type": "linear"
-                  },
-                  "showPoints": "never",
-                  "showValues": false,
-                  "spanNulls": false,
-                  "stacking": {
-                    "group": "A",
-                    "mode": "none"
-                  },
-                  "thresholdsStyle": {
-                    "mode": "off"
-                  }
-                },
-                "thresholds": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    }
-                  ]
-                }
-              },
-              "overrides": []
-            },
-            "options": {
-              "annotations": {
-                "clustering": -1,
-                "multiLane": false
-              },
-              "legend": {
-                "calcs": [],
-                "displayMode": "list",
-                "placement": "bottom",
-                "showLegend": true
-              },
-              "tooltip": {
-                "hideZeros": false,
-                "mode": "multi",
-                "sort": "none"
-              }
-            }
-          },
-          "version": "13.1.0-25668120414"
-        }
-      }
-    },
-    "panel-7": {
-      "kind": "Panel",
-      "spec": {
-        "data": {
-          "kind": "QueryGroup",
-          "spec": {
-            "queries": [
-              {
-                "kind": "PanelQuery",
-                "spec": {
-                  "hidden": false,
-                  "query": {
-                    "datasource": {
-                      "name": "ceczcsck1b20wb"
-                    },
-                    "group": "grafana-clickhouse-datasource",
-                    "kind": "DataQuery",
-                    "spec": {
-                      "editorType": "sql",
-                      "format": 0,
-                      "meta": {
-                        "builderOptions": {
-                          "columns": [],
-                          "database": "",
-                          "limit": 1000,
-                          "mode": "list",
-                          "queryType": "table",
-                          "table": ""
-                        }
-                      },
-                      "pluginVersion": "4.17.0",
-                      "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfInterval(ts, INTERVAL 30 MINUTE) AS time,\n  series,\n  round(100 * sum(busy) / nullIf(sum(online), 0), 1) AS busy_pct\nFROM (\n  SELECT ts, series, sum(busy) AS busy, sum(online) AS online\n  FROM (\n    SELECT\n      time_stamp AS ts,\n      label,\n      if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n      max(busy_count) AS busy, max(online_count) AS online\n    FROM misc.runner_fleet_count\n    WHERE $__timeFilter(time_stamp)\n      AND org = 'pytorch'\n      AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n      AND ('$view' IN ('aggregated','all') OR label = '$view')\n    GROUP BY ts, label, series\n  )\n  GROUP BY ts, series\n)\nGROUP BY time, series\nORDER BY time, series"
-                    },
-                    "version": "v0"
-                  },
-                  "refId": "A"
-                }
-              }
-            ],
-            "queryOptions": {},
-            "transformations": []
-          }
-        },
-        "description": "Share of online B200 runners executing a job (busy_count / online_count), sample-weighted per bucket. Read alongside 'Queue time' — high utilisation with rising queue time means the fleet is capacity-bound.",
-        "id": 7,
-        "links": [],
-        "title": "Runner utilization [view]",
-        "vizConfig": {
-          "group": "timeseries",
-          "kind": "VizConfig",
-          "spec": {
-            "fieldConfig": {
-              "defaults": {
-                "color": {
-                  "mode": "palette-classic-by-name",
-                  "seriesBy": "max"
-                },
-                "min": 0,
-                "unit": "percent",
-                "custom": {
-                  "axisBorderShow": false,
-                  "axisCenteredZero": false,
-                  "axisColorMode": "text",
-                  "axisLabel": "",
-                  "axisPlacement": "auto",
-                  "barAlignment": 0,
-                  "barWidthFactor": 0.6,
-                  "drawStyle": "line",
-                  "fillOpacity": 10,
-                  "gradientMode": "none",
-                  "hideFrom": {
-                    "legend": false,
-                    "tooltip": false,
-                    "viz": false
-                  },
-                  "insertNulls": false,
-                  "lineInterpolation": "linear",
-                  "lineStyle": {
-                    "fill": "solid"
-                  },
-                  "lineWidth": 1,
-                  "pointSize": 5,
-                  "scaleDistribution": {
-                    "type": "linear"
-                  },
-                  "showPoints": "never",
-                  "showValues": false,
-                  "spanNulls": false,
-                  "stacking": {
-                    "group": "A",
-                    "mode": "none"
-                  },
-                  "thresholdsStyle": {
-                    "mode": "off"
-                  }
-                },
-                "thresholds": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    }
-                  ]
-                },
-                "max": 100
               },
               "overrides": []
             },
@@ -964,7 +701,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-6"
+              "name": "panel-1"
             },
             "height": 8,
             "width": 24,
@@ -977,7 +714,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-7"
+              "name": "panel-2"
             },
             "height": 8,
             "width": 24,
@@ -990,7 +727,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-1"
+              "name": "panel-3"
             },
             "height": 8,
             "width": 24,
@@ -1003,38 +740,12 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-2"
-            },
-            "height": 8,
-            "width": 24,
-            "x": 0,
-            "y": 32
-          }
-        },
-        {
-          "kind": "GridLayoutItem",
-          "spec": {
-            "element": {
-              "kind": "ElementReference",
-              "name": "panel-3"
-            },
-            "height": 8,
-            "width": 24,
-            "x": 0,
-            "y": 40
-          }
-        },
-        {
-          "kind": "GridLayoutItem",
-          "spec": {
-            "element": {
-              "kind": "ElementReference",
               "name": "panel-4"
             },
             "height": 8,
             "width": 24,
             "x": 0,
-            "y": 48
+            "y": 32
           }
         }
       ]
