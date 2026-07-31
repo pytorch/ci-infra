@@ -448,7 +448,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfDay(created_at) AS time,\n  countIf(conclusion = 'failure') AS failures\nFROM (\n  SELECT id, created_at, conclusion\n  FROM default.workflow_job\n  WHERE $__timeFilter(created_at)\n    AND hasAny(labels, ['linux.dgx.b200','linux.dgx.b200.8'])\n    AND workflow_name = 'vLLM Helion Kernel Correctness'\n  ORDER BY _inserted_at DESC\n  LIMIT 1 BY id\n)\nGROUP BY time\nORDER BY time"
+                      "rawSql": "SELECT\n  toStartOfDay(created_at) AS time,\n  countIf(conclusion = 'failure') AS failures\nFROM (\n  SELECT id, created_at, conclusion\n  FROM default.workflow_job\n  WHERE $__timeFilter(created_at)\n    AND hasAny(labels, ['linux.dgx.b200','linux.dgx.b200.8'])\n    AND repository_full_name = 'pytorch/helion'\n    AND head_branch = 'main'\n  ORDER BY _inserted_at DESC\n  LIMIT 1 BY id\n)\nGROUP BY time\nORDER BY time"
                     },
                     "version": "v0"
                   },
@@ -460,10 +460,10 @@
             "transformations": []
           }
         },
-        "description": "Daily total count of failed jobs (conclusion = 'failure') for the vLLM Helion Kernel Correctness workflow on DGX B200 runners.",
+        "description": "Daily total count of failed jobs (conclusion = 'failure') for pytorch/helion workflows running on DGX B200 runners, on the main branch only.",
         "id": 4,
         "links": [],
-        "title": "Helion failures daily",
+        "title": "B200 failures daily on Helion main",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
