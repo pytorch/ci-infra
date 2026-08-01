@@ -3450,9 +3450,9 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "count by(cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or vector(0)",
+                      "expr": "sum(kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or vector(0)",
                       "instant": false,
-                      "legendFormat": "{{cluster}}",
+                      "legendFormat": "",
                       "queryType": "range",
                       "range": true
                     },
@@ -3466,94 +3466,59 @@
             "transformations": []
           }
         },
-        "description": "Per-cluster count of hf-cache rclone mounts whose last container termination was OOMKilled. Sticky: includes already-recovered mounts until the pod is replaced (early-warning/upper-bound, not a live \"currently down\" count). The restart counter is not retained for the hf-cache namespace, so this last-terminated-reason gauge is the OOM signal.",
+        "description": "hf-cache rclone mounts whose last termination was OOMKilled, reduced as MAX over the selected time window — RED if any OOM occurred in the window, green if none. Sticky signal (a mount stays flagged until its pod is replaced), so it includes already-recovered mounts; the restart counter isn’t retained for the hf-cache namespace, so this reason gauge is used.",
         "id": 144,
         "links": [],
         "title": "hf-cache Mounts OOM-killed",
         "vizConfig": {
-          "group": "timeseries",
+          "group": "stat",
           "kind": "VizConfig",
           "spec": {
             "fieldConfig": {
               "defaults": {
-                "decimals": 0,
                 "color": {
-                  "mode": "palette-classic-by-name",
-                  "seriesBy": "max"
+                  "mode": "thresholds"
                 },
-                "custom": {
-                  "axisSoftMax": 5,
-                  "axisBorderShow": false,
-                  "axisCenteredZero": false,
-                  "axisColorMode": "text",
-                  "axisLabel": "",
-                  "axisPlacement": "auto",
-                  "barAlignment": 0,
-                  "barWidthFactor": 0.9,
-                  "drawStyle": "line",
-                  "fillOpacity": 0,
-                  "gradientMode": "none",
-                  "hideFrom": {
-                    "legend": false,
-                    "tooltip": false,
-                    "viz": false
-                  },
-                  "insertNulls": false,
-                  "lineInterpolation": "linear",
-                  "lineStyle": {
-                    "fill": "solid"
-                  },
-                  "lineWidth": 2,
-                  "pointSize": 5,
-                  "scaleDistribution": {
-                    "type": "linear"
-                  },
-                  "showPoints": "auto",
-                  "showValues": false,
-                  "spanNulls": false,
-                  "stacking": {
-                    "group": "A",
-                    "mode": "none"
-                  },
-                  "thresholdsStyle": {
-                    "mode": "line+area"
-                  }
-                },
+                "max": null,
+                "min": 0,
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "green",
-                      "value": 0
+                      "value": null,
+                      "color": "green"
                     },
                     {
-                      "color": "red",
-                      "value": 1
+                      "value": 1,
+                      "color": "red"
                     }
                   ]
-                }
+                },
+                "unit": "short",
+                "decimals": 0,
+                "noValue": null
               },
               "overrides": []
             },
             "options": {
-              "annotations": {
-                "clustering": -1,
-                "multiLane": false
+              "colorMode": "background",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "max"
+                ],
+                "fields": "",
+                "values": false
               },
-              "legend": {
-                "calcs": [],
-                "displayMode": "list",
-                "placement": "bottom",
-                "showLegend": true
-              },
-              "tooltip": {
-                "hideZeros": false,
-                "mode": "single",
-                "sort": "none"
-              }
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
             }
           },
-          "version": "13.1.0-25668120414"
+          "version": "13.2.0-30402795349"
         }
       }
     },
@@ -3647,6 +3612,374 @@
           "version": "13.2.0-30402795349"
         }
       }
+    },
+    "panel-146": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "sum by (cluster) (kube_deployment_status_replicas_unavailable{cluster=~\"$cluster\"} or clamp_min(kube_statefulset_replicas{cluster=~\"$cluster\"} - kube_statefulset_status_replicas_ready{cluster=~\"$cluster\"}, 0)) + (count by (cluster) ((kube_daemonset_status_number_unavailable{cluster=~\"$cluster\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\"}, 1)) > 0.1) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "legendFormat": "{{cluster}}",
+                      "range": true,
+                      "instant": false
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Per-cluster workload health: count of unavailable Deployment/StatefulSet replicas, plus DaemonSets that are >10% unavailable (churn-tolerant, so routine node scale-up/down does not trip it). Green=0, yellow=1, red>=2.",
+        "id": 146,
+        "links": [],
+        "title": "Workloads",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": null,
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "green"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#EAB839"
+                    },
+                    {
+                      "value": 2,
+                      "color": "red"
+                    }
+                  ]
+                },
+                "unit": "short",
+                "decimals": 0,
+                "noValue": null
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "values": false,
+                "calcs": [
+                  "lastNotNull"
+                ]
+              },
+              "showPercentChange": false,
+              "textMode": "value_and_name",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-147": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "(count by (cluster) (up{cluster=~\"$cluster\", job=~\"monitoring/coredns|monitoring/nodelocaldns|monitoring/arc-listeners|dcgm-exporter\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (harbor_health{cluster=~\"$cluster\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (group by (cluster, proxy)(haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\"}) unless group by (cluster, proxy)(haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\", state=\"UP\"} == 1)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((100 * sum by (cluster)(rate(apiserver_request_total{cluster=~\"$cluster\", code=~\"5..\"}[5m])) / clamp_min(sum by (cluster)(rate(apiserver_request_total{cluster=~\"$cluster\"}[5m])), 1)) >= 2) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((100 * max by (cluster)(node_nf_conntrack_entries{cluster=~\"$cluster\"} / node_nf_conntrack_entries_limit{cluster=~\"$cluster\"})) >= 60) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "legendFormat": "{{cluster}}",
+                      "range": true,
+                      "instant": false
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Per-cluster count of unreachable/unhealthy services: scrape targets down (CoreDNS, NodeLocal DNS, ARC Listeners, DCGM), Harbor unhealthy, BuildKit LB backends down, API Server 5xx>=2%, conntrack>=60%. Green=0, yellow=1, red>=2. Fires on ANY down scrape target, so it can be slightly more eager than the per-service %-healthy panels (never falsely green).",
+        "id": 147,
+        "links": [],
+        "title": "Liveness",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": null,
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "green"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#EAB839"
+                    },
+                    {
+                      "value": 2,
+                      "color": "red"
+                    }
+                  ]
+                },
+                "unit": "short",
+                "decimals": 0,
+                "noValue": null
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "values": false,
+                "calcs": [
+                  "lastNotNull"
+                ]
+              },
+              "showPercentChange": false,
+              "textMode": "value_and_name",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-148": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "(count by (cluster) ((time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\"})) >= 600) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((time() - max by (cluster)(gha_capacity_reconcile_last_success_timestamp_seconds{cluster=~\"$cluster\"})) >= 600) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"arc-runners\", job_name=~\"zombie-cleanup-.*\"})) >= 7200) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (sum by (cluster)(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\", status=\"success\"}[5m])) == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "legendFormat": "{{cluster}}",
+                      "range": true,
+                      "instant": false
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Per-cluster count of stale scheduled jobs / reconcile loops: Harbor Cache Recovery (>10m), ARC Capacity reconcile (>10m), Zombie Cleanup (>2h), Node Compactor (no successful cycle in 5m). Green=0, yellow=1, red>=2.",
+        "id": 148,
+        "links": [],
+        "title": "Freshness",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": null,
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "green"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#EAB839"
+                    },
+                    {
+                      "value": 2,
+                      "color": "red"
+                    }
+                  ]
+                },
+                "unit": "short",
+                "decimals": 0,
+                "noValue": null
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "values": false,
+                "calcs": [
+                  "lastNotNull"
+                ]
+              },
+              "showPercentChange": false,
+              "textMode": "value_and_name",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-149": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "(count by (cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (sum by (cluster)(increase(kube_pod_container_status_restarts_total{cluster=~\"$cluster\"}[1h])) >= 20) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "legendFormat": "{{cluster}}",
+                      "range": true,
+                      "instant": false
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Per-cluster: hf-cache rclone OOM-kills (any in window) + a restart storm (>=20 container restarts in 1h; the baseline is ~10/h so this flags genuine storms, not routine churn). Green=0, yellow=1, red>=2. Restart coverage limited to namespaces where the restart counter is retained (see Container Restarts tile).",
+        "id": 149,
+        "links": [],
+        "title": "OOM / Restarts",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": null,
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "green"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#EAB839"
+                    },
+                    {
+                      "value": 2,
+                      "color": "red"
+                    }
+                  ]
+                },
+                "unit": "short",
+                "decimals": 0,
+                "noValue": null
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "values": false,
+                "calcs": [
+                  "lastNotNull"
+                ]
+              },
+              "showPercentChange": false,
+              "textMode": "value_and_name",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
     }
   },
   "layout": {
@@ -3656,7 +3989,73 @@
         {
           "kind": "RowsLayoutRow",
           "spec": {
+            "title": "Summary",
             "collapse": false,
+            "layout": {
+              "kind": "GridLayout",
+              "spec": {
+                "items": [
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-146"
+                      },
+                      "x": 0,
+                      "y": 0,
+                      "width": 24,
+                      "height": 4
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-147"
+                      },
+                      "x": 0,
+                      "y": 4,
+                      "width": 24,
+                      "height": 4
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-148"
+                      },
+                      "x": 0,
+                      "y": 8,
+                      "width": 24,
+                      "height": 4
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-149"
+                      },
+                      "x": 0,
+                      "y": 12,
+                      "width": 24,
+                      "height": 4
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "kind": "RowsLayoutRow",
+          "spec": {
+            "collapse": true,
             "layout": {
               "kind": "GridLayout",
               "spec": {
@@ -4030,7 +4429,7 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-119"
+                        "name": "panel-144"
                       },
                       "height": 3,
                       "width": 5,
@@ -4043,7 +4442,7 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-130"
+                        "name": "panel-119"
                       },
                       "height": 3,
                       "width": 4,
@@ -4056,11 +4455,24 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-131"
+                        "name": "panel-130"
                       },
                       "height": 3,
                       "width": 5,
                       "x": 0,
+                      "y": 18
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-131"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 5,
                       "y": 18
                     }
                   },
@@ -4073,7 +4485,7 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 5,
+                      "x": 10,
                       "y": 18
                     }
                   },
@@ -4086,19 +4498,6 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 10,
-                      "y": 18
-                    }
-                  },
-                  {
-                    "kind": "GridLayoutItem",
-                    "spec": {
-                      "element": {
-                        "kind": "ElementReference",
-                        "name": "panel-138"
-                      },
-                      "height": 3,
-                      "width": 5,
                       "x": 15,
                       "y": 18
                     }
@@ -4108,7 +4507,7 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-139"
+                        "name": "panel-138"
                       },
                       "height": 3,
                       "width": 4,
@@ -4121,7 +4520,7 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-127"
+                        "name": "panel-139"
                       },
                       "height": 3,
                       "width": 5,
@@ -4134,7 +4533,7 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-112"
+                        "name": "panel-127"
                       },
                       "height": 3,
                       "width": 5,
@@ -4147,12 +4546,12 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-144"
+                        "name": "panel-112"
                       },
-                      "height": 8,
-                      "width": 24,
-                      "x": 0,
-                      "y": 24
+                      "height": 3,
+                      "width": 5,
+                      "x": 10,
+                      "y": 21
                     }
                   }
                 ]
@@ -4175,7 +4574,7 @@
     "osdc"
   ],
   "timeSettings": {
-    "autoRefresh": "1m",
+    "autoRefresh": "30s",
     "autoRefreshIntervals": [
       "5s",
       "10s",
