@@ -3980,6 +3980,38 @@
           "version": "13.2.0-30402795349"
         }
       }
+    },
+    "panel-150": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 150,
+        "links": [],
+        "title": "",
+        "vizConfig": {
+          "group": "text",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {},
+              "overrides": []
+            },
+            "options": {
+              "content": "Matrix of diverging-signal counts by check-type (each row) and cluster (each tile). 0 = healthy; a higher number / red = something to investigate — expand that cluster's section below for detail.",
+              "mode": "markdown"
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
     }
   },
   "layout": {
@@ -4000,10 +4032,23 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-146"
+                        "name": "panel-150"
                       },
                       "x": 0,
                       "y": 0,
+                      "width": 24,
+                      "height": 2
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-146"
+                      },
+                      "x": 0,
+                      "y": 2,
                       "width": 24,
                       "height": 4
                     }
@@ -4016,7 +4061,7 @@
                         "name": "panel-147"
                       },
                       "x": 0,
-                      "y": 4,
+                      "y": 6,
                       "width": 24,
                       "height": 4
                     }
@@ -4029,7 +4074,7 @@
                         "name": "panel-148"
                       },
                       "x": 0,
-                      "y": 8,
+                      "y": 10,
                       "width": 24,
                       "height": 4
                     }
@@ -4042,7 +4087,7 @@
                         "name": "panel-149"
                       },
                       "x": 0,
-                      "y": 12,
+                      "y": 14,
                       "width": 24,
                       "height": 4
                     }
