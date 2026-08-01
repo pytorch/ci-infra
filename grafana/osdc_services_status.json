@@ -439,95 +439,6 @@
         }
       }
     },
-    "panel-106": {
-      "kind": "Panel",
-      "spec": {
-        "data": {
-          "kind": "QueryGroup",
-          "spec": {
-            "queries": [
-              {
-                "kind": "PanelQuery",
-                "spec": {
-                  "hidden": false,
-                  "query": {
-                    "datasource": {
-                      "name": "${datasource}"
-                    },
-                    "group": "prometheus",
-                    "kind": "DataQuery",
-                    "spec": {
-                      "expr": "min(time() - git_cache_central_last_success_timestamp{cluster=~\"$cluster\"})",
-                      "legendFormat": ""
-                    },
-                    "version": "v0"
-                  },
-                  "refId": "A"
-                }
-              }
-            ],
-            "queryOptions": {},
-            "transformations": []
-          }
-        },
-        "description": "Seconds since the git cache central StatefulSet last synced. Yellow at 30 min, red at 1 h. Affects runner clone speed.",
-        "id": 106,
-        "links": [],
-        "title": "Git Cache Central",
-        "vizConfig": {
-          "group": "stat",
-          "kind": "VizConfig",
-          "spec": {
-            "fieldConfig": {
-              "defaults": {
-                "color": {
-                  "mode": "thresholds"
-                },
-                "max": 3600,
-                "min": 0,
-                "thresholds": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "#EAB839",
-                      "value": 1800
-                    },
-                    {
-                      "color": "red",
-                      "value": 3600
-                    }
-                  ]
-                },
-                "unit": "s"
-              },
-              "overrides": []
-            },
-            "options": {
-              "colorMode": "background",
-              "graphMode": "area",
-              "justifyMode": "auto",
-              "orientation": "auto",
-              "percentChangeColorMode": "standard",
-              "reduceOptions": {
-                "calcs": [
-                  "lastNotNull"
-                ],
-                "fields": "",
-                "values": false
-              },
-              "showPercentChange": false,
-              "textMode": "auto",
-              "wideLayout": true
-            }
-          },
-          "version": "13.2.0-30402795349"
-        }
-      }
-    },
     "panel-107": {
       "kind": "Panel",
       "spec": {
@@ -2575,6 +2486,951 @@
           "version": "13.2.0-30402795349"
         }
       }
+    },
+    "panel-134": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "clamp_min(100 * (1 - (sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}) / clamp_min(sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}), 1))), 0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Ready fraction of the hf-cache rclone FUSE mount DaemonSets (all GPU tiers). Grey = not deployed on this cluster.",
+        "id": 134,
+        "links": [],
+        "title": "HF Cache Mount (% healthy)",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": 100,
+                "min": 80,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 85
+                    },
+                    {
+                      "color": "green",
+                      "value": 93
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-135": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"keda\", deployment=\"keda-operator\"}) >= bool 1)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "KEDA operator Deployment readiness. Grey = KEDA not deployed on this cluster; DOWN = operator not ready.",
+        "id": 135,
+        "links": [],
+        "title": "KEDA Operator",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "text": "DOWN"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "1": {
+                        "color": "green",
+                        "text": "UP"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ],
+                "noValue": null,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-136": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "clamp_max(sum(increase(keda_scaler_detail_errors_total{cluster=~\"$cluster\"}[10m])), 1)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Recent KEDA scaler errors (10m window). ERRORING = a build-node autoscaler trigger is failing / falling back to the fixed pool. Grey = no scalers on this cluster.",
+        "id": 136,
+        "links": [],
+        "title": "KEDA Scalers",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "green",
+                        "text": "OK"
+                      },
+                      "1": {
+                        "color": "red",
+                        "text": "ERRORING"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ],
+                "noValue": null,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-137": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"kube-system\", deployment=\"bin-pack-scheduler\"}) >= bool 1) or on() vector(0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "bin-pack-scheduler Deployment readiness (secondary kube-scheduler). DOWN = not ready / crashlooping.",
+        "id": 137,
+        "links": [],
+        "title": "Bin-Pack Scheduler",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "text": "DOWN"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "1": {
+                        "color": "green",
+                        "text": "UP"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ],
+                "noValue": "DOWN",
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-138": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "clamp_min(100 * (1 - (sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}) / clamp_min(sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}), 1))), 0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Ready fraction of the prometheus-node-exporter DaemonSet (source of node memory/conntrack metrics).",
+        "id": 138,
+        "links": [],
+        "title": "Node Exporter (% healthy)",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": 100,
+                "min": 80,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 85
+                    },
+                    {
+                      "color": "green",
+                      "value": 93
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-139": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"monitoring\", deployment=\"prometheus-pushgateway\"}) >= bool 1) or on() vector(0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "prometheus-pushgateway Deployment readiness (relays zombie-cleanup metrics).",
+        "id": 139,
+        "links": [],
+        "title": "Prometheus Pushgateway",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "text": "DOWN"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "1": {
+                        "color": "green",
+                        "text": "UP"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ],
+                "noValue": "DOWN",
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-140": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"}, 1))), 0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Ready fraction of the ebs-csi-node DaemonSet (per-node EBS volume attach).",
+        "id": 140,
+        "links": [],
+        "title": "EBS CSI Node (% healthy)",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": 100,
+                "min": 80,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 85
+                    },
+                    {
+                      "color": "green",
+                      "value": 93
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-141": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"}, 1))), 0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Ready fraction of the algif-mitigation DaemonSet (kernel CVE mitigation).",
+        "id": 141,
+        "links": [],
+        "title": "Algif Mitigation (% healthy)",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": 100,
+                "min": 80,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 85
+                    },
+                    {
+                      "color": "green",
+                      "value": 93
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-142": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"}, 1))), 0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Ready fraction of the dirtyfrag-mitigation DaemonSet (kernel CVE mitigation).",
+        "id": 142,
+        "links": [],
+        "title": "DirtyFrag Mitigation (% healthy)",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": 100,
+                "min": 80,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 85
+                    },
+                    {
+                      "color": "green",
+                      "value": 93
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-143": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"}, 1))), 0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Ready fraction of the node-performance-tuning DaemonSet.",
+        "id": 143,
+        "links": [],
+        "title": "Node Performance Tuning (% healthy)",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "max": 100,
+                "min": 80,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 85
+                    },
+                    {
+                      "color": "green",
+                      "value": 93
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
     }
   },
   "layout": {
@@ -2672,11 +3528,24 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-106"
+                        "name": "panel-135"
                       },
                       "height": 3,
                       "width": 5,
                       "x": 5,
+                      "y": 3
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-136"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 10,
                       "y": 3
                     }
                   },
@@ -2689,19 +3558,6 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 10,
-                      "y": 3
-                    }
-                  },
-                  {
-                    "kind": "GridLayoutItem",
-                    "spec": {
-                      "element": {
-                        "kind": "ElementReference",
-                        "name": "panel-105"
-                      },
-                      "height": 3,
-                      "width": 5,
                       "x": 15,
                       "y": 3
                     }
@@ -2711,7 +3567,7 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-108"
+                        "name": "panel-105"
                       },
                       "height": 3,
                       "width": 4,
@@ -2724,11 +3580,24 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-107"
+                        "name": "panel-108"
                       },
                       "height": 3,
                       "width": 5,
                       "x": 0,
+                      "y": 6
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-107"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 5,
                       "y": 6
                     }
                   },
@@ -2741,7 +3610,7 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 5,
+                      "x": 10,
                       "y": 6
                     }
                   },
@@ -2754,19 +3623,6 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 10,
-                      "y": 6
-                    }
-                  },
-                  {
-                    "kind": "GridLayoutItem",
-                    "spec": {
-                      "element": {
-                        "kind": "ElementReference",
-                        "name": "panel-118"
-                      },
-                      "height": 3,
-                      "width": 5,
                       "x": 15,
                       "y": 6
                     }
@@ -2776,7 +3632,7 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-109"
+                        "name": "panel-118"
                       },
                       "height": 3,
                       "width": 4,
@@ -2789,11 +3645,37 @@
                     "spec": {
                       "element": {
                         "kind": "ElementReference",
-                        "name": "panel-122"
+                        "name": "panel-137"
                       },
                       "height": 3,
                       "width": 5,
                       "x": 0,
+                      "y": 9
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-109"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 5,
+                      "y": 9
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-122"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 10,
                       "y": 9
                     }
                   },
@@ -2806,8 +3688,47 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 5,
+                      "x": 15,
                       "y": 9
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-141"
+                      },
+                      "height": 3,
+                      "width": 4,
+                      "x": 20,
+                      "y": 9
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-142"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 0,
+                      "y": 12
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-143"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 5,
+                      "y": 12
                     }
                   },
                   {
@@ -2820,7 +3741,20 @@
                       "height": 3,
                       "width": 5,
                       "x": 10,
-                      "y": 9
+                      "y": 12
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-140"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 15,
+                      "y": 12
                     }
                   },
                   {
@@ -2831,9 +3765,9 @@
                         "name": "panel-128"
                       },
                       "height": 3,
-                      "width": 5,
-                      "x": 15,
-                      "y": 9
+                      "width": 4,
+                      "x": 20,
+                      "y": 12
                     }
                   },
                   {
@@ -2844,9 +3778,22 @@
                         "name": "panel-129"
                       },
                       "height": 3,
-                      "width": 4,
-                      "x": 20,
-                      "y": 9
+                      "width": 5,
+                      "x": 0,
+                      "y": 15
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-134"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 5,
+                      "y": 15
                     }
                   },
                   {
@@ -2858,8 +3805,8 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 0,
-                      "y": 12
+                      "x": 10,
+                      "y": 15
                     }
                   },
                   {
@@ -2871,8 +3818,8 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 5,
-                      "y": 12
+                      "x": 15,
+                      "y": 15
                     }
                   },
                   {
@@ -2883,9 +3830,9 @@
                         "name": "panel-131"
                       },
                       "height": 3,
-                      "width": 5,
-                      "x": 10,
-                      "y": 12
+                      "width": 4,
+                      "x": 20,
+                      "y": 15
                     }
                   },
                   {
@@ -2897,8 +3844,8 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 15,
-                      "y": 12
+                      "x": 0,
+                      "y": 18
                     }
                   },
                   {
@@ -2909,9 +3856,35 @@
                         "name": "panel-133"
                       },
                       "height": 3,
-                      "width": 4,
-                      "x": 20,
-                      "y": 12
+                      "width": 5,
+                      "x": 5,
+                      "y": 18
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-138"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 10,
+                      "y": 18
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-139"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 15,
+                      "y": 18
                     }
                   },
                   {
@@ -2922,9 +3895,9 @@
                         "name": "panel-127"
                       },
                       "height": 3,
-                      "width": 5,
-                      "x": 0,
-                      "y": 15
+                      "width": 4,
+                      "x": 20,
+                      "y": 18
                     }
                   },
                   {
@@ -2936,8 +3909,8 @@
                       },
                       "height": 3,
                       "width": 5,
-                      "x": 5,
-                      "y": 15
+                      "x": 0,
+                      "y": 21
                     }
                   }
                 ]
