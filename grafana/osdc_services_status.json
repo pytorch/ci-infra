@@ -4664,9 +4664,19 @@
       "spec": {
         "allowCustomValue": true,
         "current": {
-          "text": "All",
+          "text": [
+            "meta-prod-aws-ue1",
+            "meta-prod-aws-ue2",
+            "meta-prod-aws-uw1",
+            "lf-prod-aws-ue1",
+            "lf-prod-aws-ue2"
+          ],
           "value": [
-            "$__all"
+            "meta-prod-aws-ue1",
+            "meta-prod-aws-ue2",
+            "meta-prod-aws-uw1",
+            "lf-prod-aws-ue1",
+            "lf-prod-aws-ue2"
           ]
         },
         "definition": "label_values(up,cluster)",
