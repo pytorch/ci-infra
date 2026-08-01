@@ -1,19 +1,14 @@
 # ARC runner definition: l-barm64g4-94-344
 # Instance type: m8g.metal-24xl (dedicated node — true bare-metal runner, 96c/384Gi)
 # Used for: inductor CPU perf benchmarks (aarch64, needs bare-metal for noise isolation)
+# Name says 94-344; actual request is 92c/338Gi, which is the most Karpenter can
+# fit on this node. Name kept for label stability — see the name-vs-actual table
+# in docs/node-utilization-optimization.md.
 runner:
   name: l-barm64g4-94-344
   instance_type: m8g.metal-24xl
   node_fleet: m8g-metal
   disk_size: 256
-  # NOTE: name says 94-344 but the request is 92c/338Gi — the name is kept for
-  # label stability (see the name-vs-actual table in
-  # docs/node-utilization-optimization.md). 94c/344Gi does NOT fit a 96c/384Gi
-  # node: Karpenter allocates 393216Mi - 6% VM overhead - 8362Mi kubelet reserve
-  # (255 + 11 x 737 max-pods) - 100Mi eviction = ~361161Mi, and ~10078Mi of that
-  # goes to DaemonSets, leaving ~351083Mi / 94335m for the job pod (which itself
-  # adds 320m + 522Mi of hooks sidecars). The old m8g-large fleet hid this by
-  # falling back to m8g.48xlarge (192c/768Gi) and running the job on half a node.
   vcpu: 92
   memory: 338Gi
   gpu: 0

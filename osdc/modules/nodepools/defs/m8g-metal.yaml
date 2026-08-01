@@ -1,15 +1,11 @@
 # Karpenter NodePool fleet: m8g-metal — dedicated pool for large m8g runners.
 # Name-only subset of m8g; separation is enforced by the node-fleet=m8g-metal taint.
-# True AWS bare-metal (Graviton4), so no virtualized m8g node is ever substituted in.
+# Single instance type on purpose: a fallback would silently substitute a
+# virtualized m8g node into a bare-metal perf benchmark.
 fleet:
   name: m8g-metal
   arch: arm64
   gpu: false
-  # NOT an availability gate — m8g.metal-24xl IS offered in both us-west-1 AZs
-  # available to this account (us-west-1a/usw1-az1, us-west-1c/usw1-az3), verified
-  # via ec2 describe-instance-type-offerings. Excluded by choice: we don't want a
-  # bare-metal type in the smallest region. Consequence: l-barm64g4-94-344 is
-  # force-zeroed on meta-staging-aws-uw1, so this runner has no staging-uw1 coverage.
   exclude_regions:
     - us-west-1
   instances:
