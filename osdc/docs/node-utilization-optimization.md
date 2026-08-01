@@ -214,7 +214,11 @@ The only way to push these above 85% is to use instances where `N × runner_size
 
 This trades the heavy `m8g.48xlarge` bin-packing for honest silicon — per-pod cost on `l-arm64g3-16-62` rises ~30-50% at peak burst, and the standing bare-metal pool carries a fixed cost. See PR #591 for the full rationale.
 
-The same correction was later applied to the Graviton4 perf runner: `l-barm64g4-94-344` was introduced (PR #810) on a virtualized `m8g.24xlarge` in the `m8g-large` fleet as a stand-in for `m8g.metal-24xl`, and has since been re-pointed to the real `m8g.metal-24xl` on a new dedicated `m8g-metal` fleet. Advertised specs are identical (96c/384Gi), so the 94c/344Gi request is unchanged; the dedicated fleet taint is what guarantees no virtualized `m8g` node is substituted in for a perf benchmark. The pool sets `exclude_regions: [us-west-1]` by choice rather than by necessity — `m8g.metal-24xl` is offered in both us-west-1 AZs available to the account — to keep a bare-metal type out of the smallest region; this auto-zeroes the runner's capacity on `meta-staging-aws-uw1`, so the runner has no staging-uw1 coverage.
+The same correction was later applied to the Graviton4 perf runner: `l-barm64g4-94-344` was introduced (PR #810) on a virtualized `m8g.24xlarge` in the `m8g-large` fleet as a stand-in for `m8g.metal-24xl`, and has since been re-pointed to the real `m8g.metal-24xl` on a new dedicated `m8g-metal` fleet. The dedicated fleet taint is what guarantees no virtualized `m8g` node is substituted in for a perf benchmark.
+
+Moving to a single-instance fleet also exposed a latent sizing bug. The def asked for 94c/344Gi, which never actually fit a 96c/384Gi node — Karpenter allocates `393216Mi - 6% VM overhead - 8362Mi kubelet reserve (255 + 11 x 737 max-pods) - 100Mi eviction ~= 361161Mi`, of which ~10078Mi goes to DaemonSets, leaving ~351083Mi and 94335m for the job pod (which adds 320m + 522Mi of hooks sidecars on top of its own request). The old `m8g-large` fleet masked this because `m8g.48xlarge` sits at weight 100, so Karpenter quietly provisioned a 192c/768Gi node and ran the "bare-metal-equivalent" perf job on roughly half of it — worth remembering when comparing historical aarch64 perf numbers. The request is now 92c/338Gi (~2.0 cores / ~4.3GiB of margin); the name is kept for label stability.
+
+Note that `just analyze-utilization` models DaemonSet overhead at 460m/1542Mi, well under the ~1355m/10078Mi Karpenter actually accounts for on a staging workload node, so its headroom figures are optimistic for near-full-node runners. Trust Karpenter's arithmetic over the analyzer when a runner is sized to fill a node. The pool sets `exclude_regions: [us-west-1]` by choice rather than by necessity — `m8g.metal-24xl` is offered in both us-west-1 AZs available to the account — to keep a bare-metal type out of the smallest region; this auto-zeroes the runner's capacity on `meta-staging-aws-uw1`, so the runner has no staging-uw1 coverage.
 
 ### Phase 3: Retire Old Nodepools (DONE — merged into Phase 2)
 No ARC runners use r5.24xlarge anymore. The nodepool is retained solely for RE job-assigner workloads. r7g.16xlarge kept for the single memory-heavy ARM64 runner. Karpenter will drain underutilized r5 nodes naturally after redeployment.
@@ -242,5 +246,6 @@ Some runner names don't exactly match their actual resource requests (the actual
 | `l-x86iavx512-94-192` | 94c/192Gi | 94c/189Gi |
 | `l-arm64g2-6-32` | 6c/32Gi | 6c/29Gi |
 | `l-barm64g4-62-226` | 62c/226Gi | 62c/223Gi |
+| `l-barm64g4-94-344` | 94c/344Gi | 92c/338Gi |
 
 The analysis scripts use the actual def values. The ratio categorizations are unaffected by these differences.
