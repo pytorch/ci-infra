@@ -579,11 +579,43 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "WITH samples AS (\n  SELECT\n    time_stamp AS ts,\n    label,\n    if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n    max(total_count) AS runners,\n    multiIf(label = 'linux.dgx.b200', 24, label = 'linux.dgx.b200.8', 3, 0) AS expected\n  FROM misc.runner_fleet_count\n  WHERE $__timeFilter(time_stamp)\n    AND org = 'pytorch'\n    AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n    AND ('$view' IN ('aggregated','all') OR label = '$view')\n  GROUP BY ts, label, series, expected\n),\nper_sample AS (\n  SELECT ts, series, sum(runners) AS runners, sum(expected) AS expected\n  FROM samples\n  GROUP BY ts, series\n)\nSELECT * FROM (\n  SELECT toStartOfDay(ts) AS time, series, max(runners) AS runners\n  FROM per_sample\n  GROUP BY time, series\n  UNION ALL\n  SELECT toStartOfDay(ts) AS time, concat(series, ' expected') AS series, max(expected) AS runners\n  FROM per_sample\n  GROUP BY time, series\n)\nORDER BY time, series"
+                      "rawSql": "SELECT\n  time_stamp AS time,\n  max(total_count) AS `Registered runners`\nFROM misc.runner_fleet_count\nWHERE $__timeFilter(time_stamp)\n  AND org = 'pytorch'\n  AND label = 'linux.dgx.b200'\nGROUP BY time\nORDER BY time"
                     },
                     "version": "v0"
                   },
                   "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "SELECT\n  arrayJoin([$__fromTime, $__toTime]) AS time,\n  toUInt64(24) AS `Expected capacity`\nORDER BY time"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
                 }
               }
             ],
@@ -591,10 +623,10 @@
             "transformations": []
           }
         },
-        "description": "Registered self-hosted runners carrying each B200 label, from misc.runner_fleet_count (sampled every 30 min). Daily peak. The dashed line is the expected count from multi-tenant/inventory/manual_inventory: 24 for linux.dgx.b200 (3 hosts x num_users=8) and 3 for linux.dgx.b200.8 (3 hosts x num_users=1).",
+        "description": "Registered self-hosted runners carrying the linux.dgx.b200 label, including online, offline, and busy registrations. The stepped line uses 30-minute samples from misc.runner_fleet_count. The dashed Expected capacity line is 24 runner slots (3 hosts x 8 users) from multi-tenant/inventory/manual_inventory.",
         "id": 5,
         "links": [],
-        "title": "Total runners [view]",
+        "title": "Registered runners: linux.dgx.b200",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -615,8 +647,8 @@
                   "axisPlacement": "auto",
                   "barAlignment": 0,
                   "barWidthFactor": 0.6,
-                  "drawStyle": "bars",
-                  "fillOpacity": 70,
+                  "drawStyle": "line",
+                  "fillOpacity": 5,
                   "gradientMode": "none",
                   "hideFrom": {
                     "legend": false,
@@ -624,16 +656,16 @@
                     "viz": false
                   },
                   "insertNulls": false,
-                  "lineInterpolation": "linear",
+                  "lineInterpolation": "stepAfter",
                   "lineStyle": {
                     "fill": "solid"
                   },
-                  "lineWidth": 1,
+                  "lineWidth": 2,
                   "pointSize": 5,
                   "scaleDistribution": {
                     "type": "linear"
                   },
-                  "showPoints": "auto",
+                  "showPoints": "never",
                   "showValues": false,
                   "spanNulls": false,
                   "stacking": {
@@ -657,56 +689,27 @@
               "overrides": [
                 {
                   "matcher": {
-                    "id": "byName",
-                    "options": "linux.dgx.b200 expected",
+                    "id": "byFrameRefID",
+                    "options": "A",
                     "scope": "series"
                   },
                   "properties": [
                     {
-                      "id": "custom.drawStyle",
-                      "value": "line"
-                    },
-                    {
-                      "id": "custom.lineStyle",
-                      "value": {
-                        "fill": "dash",
-                        "dash": [
-                          10,
-                          10
-                        ]
-                      }
-                    },
-                    {
-                      "id": "custom.lineWidth",
-                      "value": 2
-                    },
-                    {
-                      "id": "custom.fillOpacity",
-                      "value": 0
-                    },
-                    {
-                      "id": "custom.showPoints",
-                      "value": "never"
-                    },
-                    {
-                      "id": "color",
-                      "value": {
-                        "fixedColor": "#EAB839",
-                        "mode": "fixed"
-                      }
+                      "id": "displayName",
+                      "value": "Registered runners"
                     }
                   ]
                 },
                 {
                   "matcher": {
-                    "id": "byName",
-                    "options": "linux.dgx.b200.8 expected",
+                    "id": "byFrameRefID",
+                    "options": "B",
                     "scope": "series"
                   },
                   "properties": [
                     {
-                      "id": "custom.drawStyle",
-                      "value": "line"
+                      "id": "displayName",
+                      "value": "Expected capacity"
                     },
                     {
                       "id": "custom.lineStyle",
@@ -719,8 +722,8 @@
                       }
                     },
                     {
-                      "id": "custom.lineWidth",
-                      "value": 2
+                      "id": "custom.lineInterpolation",
+                      "value": "linear"
                     },
                     {
                       "id": "custom.fillOpacity",
@@ -729,26 +732,196 @@
                     {
                       "id": "custom.showPoints",
                       "value": "never"
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    },
+    "panel-6": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
                     },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "SELECT\n  time_stamp AS time,\n  max(total_count) AS `Registered runners`\nFROM misc.runner_fleet_count\nWHERE $__timeFilter(time_stamp)\n  AND org = 'pytorch'\n  AND label = 'linux.dgx.b200.8'\nGROUP BY time\nORDER BY time"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "SELECT\n  arrayJoin([$__fromTime, $__toTime]) AS time,\n  toUInt64(3) AS `Expected capacity`\nORDER BY time"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Registered self-hosted runners carrying the linux.dgx.b200.8 label, including online, offline, and busy registrations. The stepped line uses 30-minute samples from misc.runner_fleet_count. The dashed Expected capacity line is 3 runner slots (3 hosts x 1 user) from multi-tenant/inventory/manual_inventory.",
+        "id": 6,
+        "links": [],
+        "title": "Registered runners: linux.dgx.b200.8",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic-by-name",
+                  "seriesBy": "max"
+                },
+                "min": 0,
+                "unit": "short",
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 5,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "stepAfter",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
                     {
-                      "id": "color",
-                      "value": {
-                        "fixedColor": "#EAB839",
-                        "mode": "fixed"
-                      }
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byFrameRefID",
+                    "options": "A",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Registered runners"
                     }
                   ]
                 },
                 {
                   "matcher": {
-                    "id": "byName",
-                    "options": "b200 (aggregated) expected",
+                    "id": "byFrameRefID",
+                    "options": "B",
                     "scope": "series"
                   },
                   "properties": [
                     {
-                      "id": "custom.drawStyle",
-                      "value": "line"
+                      "id": "displayName",
+                      "value": "Expected capacity"
                     },
                     {
                       "id": "custom.lineStyle",
@@ -761,8 +934,8 @@
                       }
                     },
                     {
-                      "id": "custom.lineWidth",
-                      "value": 2
+                      "id": "custom.lineInterpolation",
+                      "value": "linear"
                     },
                     {
                       "id": "custom.fillOpacity",
@@ -771,13 +944,6 @@
                     {
                       "id": "custom.showPoints",
                       "value": "never"
-                    },
-                    {
-                      "id": "color",
-                      "value": {
-                        "fixedColor": "#EAB839",
-                        "mode": "fixed"
-                      }
                     }
                   ]
                 }
@@ -818,8 +984,21 @@
               "name": "panel-5"
             },
             "height": 8,
-            "width": 24,
+            "width": 12,
             "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-6"
+            },
+            "height": 8,
+            "width": 12,
+            "x": 12,
             "y": 0
           }
         },
