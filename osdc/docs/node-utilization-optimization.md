@@ -216,7 +216,7 @@ This trades the heavy `m8g.48xlarge` bin-packing for honest silicon — per-pod 
 
 The same correction was later applied to the Graviton4 perf runner: `l-barm64g4-94-344` (PR #810) was re-pointed from a virtualized `m8g.24xlarge` stand-in to the real `m8g.metal-24xl` on a dedicated single-instance `m8g-metal` fleet.
 
-That move exposed a latent sizing bug. The def asked for 94c/344Gi, which never fit a 96c/384Gi node under Karpenter's accounting; `m8g-large` masked it by falling back to `m8g.48xlarge` (weight 100), so the "bare-metal-equivalent" perf job had been running on roughly half a 192c/768Gi node — worth knowing when comparing historical aarch64 perf numbers. The request is now 92c/338Gi.
+That move exposed a latent sizing bug. The def asked for 94c/344Gi, which never fit a 96c/384Gi node under Karpenter's accounting; `m8g-large` masked it by falling back to `m8g.48xlarge` (weight 100), so the "bare-metal-equivalent" perf job had been running on roughly half a 192c/768Gi node — worth knowing when comparing historical aarch64 perf numbers. The request is now 92c/341Gi. Note that ~7.9GiB of the overhead Karpenter charges on CPU nodes is phantom — it reserves for the `hf-cache-mount-gpu*` DaemonSets because their `instance-gpu-count` affinity is not provably unsatisfiable when that label is absent. If that is fixed, this def can go back toward 344Gi.
 
 Caveat for any near-full-node runner: `just analyze-utilization` models DaemonSet overhead at 460m/1542Mi, far below the ~1355m/10078Mi Karpenter actually charges on a workload node, so its headroom figures are optimistic. Trust Karpenter's arithmetic when a runner is sized to fill a node.
 
@@ -246,6 +246,6 @@ Some runner names don't exactly match their actual resource requests (the actual
 | `l-x86iavx512-94-192` | 94c/192Gi | 94c/189Gi |
 | `l-arm64g2-6-32` | 6c/32Gi | 6c/29Gi |
 | `l-barm64g4-62-226` | 62c/226Gi | 62c/223Gi |
-| `l-barm64g4-94-344` | 94c/344Gi | 92c/338Gi |
+| `l-barm64g4-94-344` | 94c/344Gi | 92c/341Gi |
 
 The analysis scripts use the actual def values. The ratio categorizations are unaffected by these differences.
