@@ -245,8 +245,8 @@ class TestEndToEnd:
     def test_multi_module_isolation(self):
         """Two modules in the same namespace don't interfere with each other.
 
-        arc-runners deploys cpu/gpu runners, arc-runners-b200 deploys B200 runners.
-        When arc-runners cleans up, it must NOT touch B200 secrets.
+        arc-runners deploys cpu/gpu runners, arc-runners-h100 deploys H100 runners.
+        When arc-runners cleans up, it must NOT touch H100 secrets.
         """
         # Module 1 (arc-runners): expected runners
         mod1_expected = expected_runner_names(["linux-cpu.yaml"])
@@ -269,9 +269,9 @@ class TestEndToEnd:
             # Module 1 stale (should be deleted)
             {"secret_name": "sh.helm.release.v1.arc-old-runner.v1", "release_name": "arc-old-runner"},
             {"secret_name": "sh.helm.release.v1.arc-old-runner.v2", "release_name": "arc-old-runner"},
-            # Module 2 (B200) — must NOT be touched
-            {"secret_name": "sh.helm.release.v1.arc-a-linux-b200.v1", "release_name": "arc-a-linux-b200"},
-            {"secret_name": "sh.helm.release.v1.arc-a-linux-b200.v2", "release_name": "arc-a-linux-b200"},
+            # Module 2 (H100) — must NOT be touched
+            {"secret_name": "sh.helm.release.v1.arc-a-linux-h100.v1", "release_name": "arc-a-linux-h100"},
+            {"secret_name": "sh.helm.release.v1.arc-a-linux-h100.v2", "release_name": "arc-a-linux-h100"},
         ]
 
         orphans = find_orphaned_secrets(mod1_releases, all_secrets)
@@ -280,10 +280,10 @@ class TestEndToEnd:
             "sh.helm.release.v1.arc-old-runner.v1",
             "sh.helm.release.v1.arc-old-runner.v2",
         ]
-        # B200 secrets are NOT in the orphan list
-        b200_names = [s["secret_name"] for s in all_secrets if "b200" in s["secret_name"]]
-        for b200 in b200_names:
-            assert b200 not in orphans
+        # H100 secrets are NOT in the orphan list
+        h100_names = [s["secret_name"] for s in all_secrets if "h100" in s["secret_name"]]
+        for h100 in h100_names:
+            assert h100 not in orphans
 
     def test_nothing_stale_no_orphans(self):
         """When all runners are current, no cleanup happens."""

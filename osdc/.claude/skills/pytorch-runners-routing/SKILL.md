@@ -7,7 +7,7 @@ description: >
   mt-/lf-/c-mt- = OSDC ARC). Covers the runner determinator (fleet prefixes mt- default /
   lf- / c-mt- plus the separate amd-do-), the test-infra #5132 experiment config (lf,
   amd-do), the now-unconditional EC2->ARC label translation via .github/arc.yaml and
-  map_ec2_to_arc.py (the meta_only_runners H100/B200 override and the onnx exclusion),
+  map_ec2_to_arc.py (the meta_only_runners H100 override and the onnx exclusion),
   build-vs-test runner decoupling, and the _runner-determinator.yml / _linux-build.yml /
   _linux-test.yml flow. Old-infra ownership spans test-infra/terraform-aws-github-runner,
   test-infra scale-config.yml / lf-scale-config.yml, and pytorch-gha-infra/runners; OSDC
@@ -66,7 +66,7 @@ PR #189219, which also removed the `arc` experiment and the old `use-arc` output
 | `linux.` and other bare | bare | **Old ALI — EC2** | Meta (`gh-ci`, `AWS_PROFILE=fbossci`) | `test-infra:.github/scale-config.yml`, deployed by `pytorch-gha-infra`. **Legacy** — determinator no longer emits it. `map_ec2_to_arc.py` translates ordinary bare `linux.*` -> `mt-…` (OSDC ARC); only `arc.yaml` identity/passthrough entries stay bare and land on literal old-infra/partner runners. |
 | `lf.` | dot | Old ALI — EC2 | Linux Foundation (parallel deploy) | `test-infra:.github/lf-scale-config.yml`. **Dead** in the determinator. |
 | `c.` / `lf.c.` | dot | Old ALI — EC2 canary | Meta / LF | `test-infra` generated `canary-scale-config.yml` / `lf-canary-scale-config.yml` (prefix-substituted from `scale-config.yml` by `validate_scale_config.py --generate`). |
-| identity passthrough (`linux.rocm.gpu.*`, `linux.idc.xpu`, `linux.client.xpu`, `linux.google.tpuv7x.1`, `linux.dgx.b200.8`) | bare | Literal self-hosted (old-infra / partner HW) | `arc.yaml` identity entries — no prefix; land on a runner registering that exact string. |
+| identity passthrough (`linux.rocm.gpu.*`, `linux.idc.xpu`, `linux.client.xpu`, `linux.google.tpuv7x.1`, `linux.dgx.b200`, `linux.dgx.b200.8`) | bare | Literal self-hosted (old-infra / partner HW) | `arc.yaml` identity entries — no prefix; land on a runner registering that exact string. |
 
 ## Mental Model: Bare Label + Fleet Prefix + Unconditional Translation
 
@@ -84,10 +84,10 @@ For the Linux build/test path, the `runs-on:` value is **assembled at runtime** 
 
 Examples: `linux.c7i.2xlarge` -> `mt-l-x86iavx512-8-64` (default) or
 `lf-l-x86iavx512-8-64` (`lf` on). `linux.aws.h100` -> `mt-l-x86iamx-22-225-h100`
-regardless of prefix (H100/B200 pinned to Meta via `meta_only_runners`, see
-[Meta-Only Override for H100/B200](#meta-only-override-for-h100b200)).
-`linux.dgx.b200.8` stays `linux.dgx.b200.8` (identity passthrough — old runner until
-OSDC has capacity).
+regardless of prefix (H100 pinned to Meta via `meta_only_runners`, see
+[Meta-Only Override for H100](#meta-only-override-for-h100)).
+`linux.dgx.b200.8` stays `linux.dgx.b200.8` (identity passthrough — DGX runner; OSDC B200
+decommissioned).
 
 ## The 5 Files That Define Runner Routing
 
@@ -96,7 +96,7 @@ OSDC has capacity).
 | `.github/workflows/_runner-determinator.yml` | Reusable workflow. Caller passes `check_experiments` / `opt_out_experiments`. Emits `label-type` (the fleet prefix), `amd-do-label-type`, `runner-config`, `runner-type`, `runner-label`, `ci-docker-hash`. |
 | `.github/scripts/runner_determinator.py` | The script. Fetches the rollout config from `pytorch/test-infra#5132` (first comment), evaluates per-user opt-in/out + per-workflow allowlist + rollout %, and emits the fleet prefix. |
 | `.github/scripts/test_runner_determinator.py` | Tests for the determinator. Run on PR changes to the script. |
-| `.github/arc.yaml` | EC2 -> ARC label mapping (`runner_mapping`) AND `meta_only_runners` override list for H100/B200. |
+| `.github/arc.yaml` | EC2 -> ARC label mapping (`runner_mapping`) AND `meta_only_runners` override list for H100. |
 | `.github/scripts/map_ec2_to_arc.py` + `test_map_ec2_to_arc.py` | Script that rewrites a test-matrix's `runner:` field from EC2 labels to ARC labels using `arc.yaml`. Invoked unconditionally from `_linux-build.yml`. |
 
 ## The Two Reusable Workflows That Consume the Determinator Output
@@ -266,16 +266,16 @@ runner_mapping:
   linux.aws.h100: l-x86iamx-22-225-h100
   linux.aws.h100.4: l-x86iamx-88-900-h100-4
   linux.aws.h100.8: l-bx86iamx-176-1800-h100-8
-  linux.dgx.b200: l-x86iamx-22-225-b200
-  # ... CPU, A100, H100, B200, A10G, T4, L4, ARM64
+  linux.dgx.b200: linux.dgx.b200                       # passthrough — OSDC B200 decommissioned
+  # ... CPU, A100, H100, A10G, T4, L4, ARM64
   linux.dgx.b200.8: linux.dgx.b200.8                   # passthrough — identity mapping
   linux.rocm.gpu.2: linux.rocm.gpu.2                   # passthrough
   linux.idc.xpu: linux.idc.xpu                         # passthrough
 ```
 
 **Passthrough rule** (identity mapping in the table): `mapped == clean` means the runner
-is not OSDC-managed (ROCm, XPU, TPU, and `linux.dgx.b200.8` until OSDC has 8-GPU B200
-capacity). The script keeps the original label WITHOUT prefixing — so it lands on the
+is not OSDC-managed (ROCm, XPU, TPU, and both `linux.dgx.b200` / `linux.dgx.b200.8`
+since OSDC B200 was decommissioned). The script keeps the original label WITHOUT prefixing — so it lands on the
 existing self-hosted / old-infra runner.
 
 **ARC label naming convention** is documented as a comment at the top of `arc.yaml`:
@@ -288,10 +288,10 @@ Examples: `l-x86iavx512-8-64` (Linux, x86, Intel AVX-512, 8 vCPU, 64 GiB),
 `l-bx86iamx-176-1800-h100-8` (Linux, bare-metal, x86, Intel AMX, 176 vCPU, 1800 GiB,
 8x H100).
 
-### Meta-Only Override for H100/B200
+### Meta-Only Override for H100
 
-H100 and B200 hardware exists only on the Meta OSDC fleet — LF and AWS EC2 don't carry
-those machines. Routing an H100/B200 job to `lf-l-...-h100` would queue forever.
+H100 hardware exists only on the Meta OSDC fleet — LF and AWS EC2 don't carry
+those machines. Routing an H100 job to `lf-l-...-h100` would queue forever.
 
 The fix: the `meta_only_runners` list in `.github/arc.yaml`:
 
@@ -300,21 +300,19 @@ meta_only_runners:
   - linux.aws.h100
   - linux.aws.h100.4
   - linux.aws.h100.8
-  - linux.dgx.b200
 ```
 
 In `map_ec2_to_arc.py`, the per-entry loop has an early branch for any label in this
 set: `entry["runner"] = "mt-" + mapped` (forces Meta OSDC, overriding whatever
-`--prefix` was passed). This decouples the H100/B200 test runner from the build runner's
+`--prefix` was passed). This decouples the H100 test runner from the build runner's
 fleet — the build CPU is free to land wherever the experiment routes it, but the GPU
 test job is always pinned to Meta OSDC.
 
-**Important**: `linux.dgx.b200.8` (8-GPU B200, used by `b200-distributed.yml` and
-`b200-symm-mem.yml`) is an **identity passthrough** in `runner_mapping` and is **NOT** in
-`meta_only_runners` — OSDC has 8-GPU B200 runners but not enough capacity yet, so tests
-stay on the existing `linux.dgx.b200.8` runner while the OSDC build runs. When OSDC gains
-capacity, replace the identity mapping with a real ARC label AND add the EC2 label to
-`meta_only_runners`.
+**Important**: With OSDC B200 decommissioned, both `linux.dgx.b200` (1-GPU) and
+`linux.dgx.b200.8` (8-GPU B200, used by `b200-distributed.yml` and `b200-symm-mem.yml`)
+are **identity passthroughs** in `runner_mapping` and are **NOT** in `meta_only_runners`
+— OSDC no longer carries any B200 runners, so both stay on the existing DGX
+`linux.dgx.b200` / `linux.dgx.b200.8` runners.
 
 ## Build vs Test Runner Decoupling — Why It Matters
 
@@ -331,7 +329,7 @@ are four patterns in the wild:
    consideration for that workflow. Used across the inductor family
    (`inductor.yml`, `inductor-unittest.yml`, `inductor-periodic.yml`,
    `inductor-nightly.yml`, `inductor-perf-test-*`), `dynamo-unittest.yml`, etc.
-4. **`meta_only_runners`** — targets a specific runner *label* (H100/B200) rather than a
+4. **`meta_only_runners`** — targets a specific runner *label* (H100) rather than a
    whole workflow. The cleanest tool when "the build can land anywhere but this specific
    test runner must always be Meta OSDC".
 
@@ -347,7 +345,7 @@ job passes no experiment inputs, so defaults apply (`lf` eligible unless opted o
 | `h100-cutlass-backend.yml` | `linux.aws.h100` | `lf` | — | |
 | `h100-distributed.yml` | `linux.aws.h100.8` | `lf` | — | |
 | `h100-symm-mem.yml` | `linux.aws.h100.4` | `lf` | — | |
-| `test-b200.yml` | `linux.dgx.b200` | `lf` | — | B200 forced `mt-` via `meta_only_runners` |
+| `test-b200.yml` | `linux.dgx.b200` | `lf` | — | `linux.dgx.b200` is identity passthrough -> DGX runner; OSDC B200 decommissioned |
 | `b200-distributed.yml` | `linux.dgx.b200.8` | (none) | — | build pinned `runner_prefix: "mt-"`; `get-label-type` used only for `ci-docker-hash`; b200.8 test = identity passthrough -> old bare runner |
 | `b200-symm-mem.yml` | `linux.dgx.b200.8` | (none) | — | same as `b200-distributed.yml` |
 | `inductor-perf-test-nightly-h100.yml` | `linux.aws.h100` | (none) | `lf` | |
@@ -377,7 +375,7 @@ job passes no experiment inputs, so defaults apply (`lf` eligible unless opted o
 | `linux.g6.4xlarge.experimental.nvidia.gpu`, `linux.g6.12xlarge.nvidia.gpu` | L4 |
 | `linux.aws.a100` | A100 (p4de) |
 | `linux.aws.h100`, `linux.aws.h100.4`, `linux.aws.h100.8` | H100 (p5) — Meta-only |
-| `linux.dgx.b200` | B200 (p6) — Meta-only |
+| `linux.dgx.b200` | B200 1-GPU — identity passthrough (DGX runner) |
 | `linux.dgx.b200.8` | B200 8-GPU — identity passthrough (old runner) |
 
 ### ARM64
@@ -417,8 +415,7 @@ never be `lf-` — it stays `mt-`. Examples: the whole inductor family
 ### "I want this specific GPU test runner to always go to Meta OSDC, but let the build follow the experiment"
 
 Add the EC2 label to `meta_only_runners` in `.github/arc.yaml`. No workflow changes
-needed. Already done for `linux.aws.h100`, `linux.aws.h100.4`, `linux.aws.h100.8`,
-`linux.dgx.b200`.
+needed. Already done for `linux.aws.h100`, `linux.aws.h100.4`, `linux.aws.h100.8`.
 
 ### "I want this build job to always go to Meta OSDC (skip the determinator's fleet choice)"
 
@@ -443,7 +440,7 @@ Trace through:
 Add the EC2 -> ARC mapping to `runner_mapping` in `.github/arc.yaml`. If it's a
 passthrough (not OSDC-managed), add an identity mapping (`linux.foo: linux.foo`).
 Otherwise `map_ec2_to_arc.py` errors with `error: no ARC runner found for '<label>'` —
-the lookup is strict, there is no implicit passthrough. If it's a new H100/B200 variant,
+the lookup is strict, there is no implicit passthrough. If it's a new H100 variant,
 also add the EC2 label to `meta_only_runners`.
 
 ### "How do I add a new experiment?"
@@ -458,9 +455,9 @@ routing. Workflows opt in via `check_experiments: <name>`.
 
 | Symptom | Likely cause |
 |---------|-------------|
-| Job stuck queued on `lf-l-...-h100` or `lf-l-...-b200` | H100/B200 not in `meta_only_runners`. Add it. |
+| Job stuck queued on `lf-l-...-h100` | H100 not in `meta_only_runners`. Add it. |
 | `map_ec2_to_arc.py` error `error: no ARC runner found for '<label>'` | Missing entry in `runner_mapping`. Add a mapping (or an identity passthrough if not OSDC-managed). |
-| GPU test lands on a bare/old label instead of `mt-l-...` | The bare label is an identity passthrough in `runner_mapping` (e.g. `linux.dgx.b200.8`) — intentional until OSDC capacity lands. To move it to OSDC, replace the identity mapping and add a `meta_only_runners` entry. |
+| GPU test lands on a bare/old label instead of `mt-l-...` | The bare label is an identity passthrough in `runner_mapping` (e.g. `linux.dgx.b200.8`) — intentional (not OSDC-managed). To move it to OSDC, replace the identity mapping and add a `meta_only_runners` entry. |
 | Job lands on the default Meta fleet despite expecting `lf-` | User opted out via `#@user` in #5132, PR has `no-runner-experiments` (opts out of `lf`), `lf` is below rollout %, or the workflow sets `opt_out_experiments: lf`. Set the user to 100% opt-in to debug. |
 | New runner added to a test-matrix breaks the build's map step | Missing from `arc.yaml`. The per-entry lookup is strict — no implicit passthrough for unknown labels. |
 | Onnx tests silently dropped on the ARC path | Intentional. `map_ec2_to_arc.py` excludes `config: onnx` because onnxruntime's `hardware_concurrency()` sees all host CPUs on ARC k8s instead of the container cpuset. See the comment in the script. |

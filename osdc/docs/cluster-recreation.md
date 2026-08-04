@@ -249,7 +249,7 @@ All must pass before declaring cutover complete and starting the soak.
 | Pod egress | `kubectl run -it --rm --image=curlimages/curl curl-test -- curl -sI https://github.com/` | HTTP 200 |
 | Harbor proxy | Pull `<harbor>/dockerhub-proxy/library/alpine:latest` | Image pulls (cold cache) |
 | pypi-cache | `pip install --index-url http://pypi-cache.pypi-cache.svc/simple/cuda-12.6.3/ requests` | Wheel fetched |
-| Distributed (prod only) | NCCL / `torch.distributed` 2-node on H100 or B200 | Job completes; no socket errors |
+| Distributed (prod only) | NCCL / `torch.distributed` 2-node on H100 | Job completes; no socket errors |
 | Smoke | `just smoke ${CLUSTER}` | Exit 0 |
 | Change-specific | Operator adds checks specific to the change | Per-change |
 

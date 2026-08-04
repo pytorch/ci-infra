@@ -12,8 +12,6 @@ OSDC uses Kubernetes Guaranteed QoS pods (requests == limits) for all runner wor
 
 **Original state** (before Phase 2): 36 of 39 runner types had homogeneous utilization below 90%. Several had worst-case utilization under 20%. After Phase 2 (ratio-matched nodepools), x86 CPU worst-case improved from 12.6% to ~74% and ARM64 from 37.9% to 75.3%.
 
-> **Note**: This analysis covers all runners including B200 runners in `modules/arc-runners-b200/defs/`.
-
 ## How Packing Works
 
 Each node's allocatable resources are reduced by:
@@ -69,7 +67,6 @@ Runners have ISA (instruction set) requirements encoded in their names that cons
 | g4dn.8xlarge | 32c/128Gi @ $2.18/hr | 1 (T4) | **90.6%** | `l-x86iavx512-29-115-t4` fills the node |
 | g4dn.12xlarge | 48c/192Gi @ $3.91/hr | 1 (T4) | **95.6%** | `l-x86iavx512-45-172-t4-4` fills the node (FIXED) |
 | g4dn.metal | 96c/384Gi @ $7.82/hr | 1 (T4) | 96.0% | Good — `l-bx86iavx512-94-344-t4-8` fills the node |
-| p6-b200.48xlarge | 192c/2048Gi @ $55.47/hr | 4 (B200) | 88.1% | Good — runners scale proportionally to GPU count |
 | p4d.24xlarge | 96c/1152Gi (8x A100 40GB SXM4) | 4 (A100) | n/a | Added after this snapshot — `l-x86iavx512-{11-125,22-250,44-500}-a100*` + `l-bx86iavx512-88-1000-a100-8`, 1/2/4/8 GPU splits |
 | p5.48xlarge | 192c/2048Gi (8x H100) | 4 (H100) | n/a | Added after this snapshot — `l-x86iamx-{22-225,44-450,88-900}-h100*` + `l-bx86iamx-176-1800-h100-8`, 1/2/4/8 GPU splits |
 
@@ -154,18 +151,16 @@ GPU nodepools are constrained by GPU count, limiting instance options. The origi
 - `l-x86aavx2-189-704-a10g-8` → `g5.48xlarge` (192c/768Gi, 8 GPU)
 - `l-x86aavx2-29-113-l4` → `g6.8xlarge`, `l-x86aavx2-45-172-l4-4` → `g6.12xlarge`
 
-**B200 nodepools**: Already well-optimized at 88% utilization. No changes needed — the runners are designed to scale proportionally to GPU count on p6-b200.48xlarge.
-
 ## Nodepool Count Impact
 
 | State | CPU Nodepools | GPU Nodepools | Total |
 |-------|--------------|---------------|-------|
-| Pre-Phase 2 | 2 (r5.24xlarge, r7g.16xlarge) | 6 (g4dn.8xl, g4dn.12xl, g4dn.metal, g5.48xl, g6.48xl, p6-b200) | 8 |
-| Phase 2 (proposed at the time) | 9 (3×amx/avx2 + 3×avx512 + 3×arm64) | 6 (unchanged) | 15 |
+| Pre-Phase 2 | 2 (r5.24xlarge, r7g.16xlarge) | 5 (g4dn.8xl, g4dn.12xl, g4dn.metal, g5.48xl, g6.48xl) | 7 |
+| Phase 2 (proposed at the time) | 9 (3×amx/avx2 + 3×avx512 + 3×arm64) | 5 (unchanged) | 14 |
 
-This increased from 8 to 15 nodepool defs in the original Phase 2 plan (9 CPU pools — including the dedicated bare-metal m8g.16xlarge for `l-barm64g4-62-226` — plus 6 GPU pools). Each nodepool is a Karpenter NodePool CRD — lightweight, no ongoing cost. The infrastructure impact is minimal.
+This increased from 7 to 14 nodepool defs in the original Phase 2 plan (9 CPU pools — including the dedicated bare-metal m8g.16xlarge for `l-barm64g4-62-226` — plus 5 GPU pools). Each nodepool is a Karpenter NodePool CRD — lightweight, no ongoing cost. The infrastructure impact is minimal.
 
-**Post-snapshot state**: After commit `fa950b4` ("Migrate nodepool defs from single-instance to fleet format"), the per-instance-size nodepool defs were collapsed into family-level **fleet** files. Each fleet lists multiple weighted instance sizes (`c7i.48xlarge`, `c7i.24xlarge`, …) and Karpenter picks an appropriate size per workload. The current `modules/nodepools/defs/` directory holds 14 fleet files (`c7a`, `c7i`, `c7i-runner`, `g4dn`, `g5`, `g6`, `m6i`, `m7i`, `m8g`, `p4d-24xlarge`, `r5`, `r7a`, `r7g`, `r7i`), plus separate `nodepools-h100/defs/p5.yaml` and `nodepools-b200/defs/p6.yaml`. The runner-to-instance-size pinning shown above is now a soft preference (fleet weights), not a hard one-pool-per-size split.
+**Post-snapshot state**: After commit `fa950b4` ("Migrate nodepool defs from single-instance to fleet format"), the per-instance-size nodepool defs were collapsed into family-level **fleet** files. Each fleet lists multiple weighted instance sizes (`c7i.48xlarge`, `c7i.24xlarge`, …) and Karpenter picks an appropriate size per workload. The current `modules/nodepools/defs/` directory holds 14 fleet files (`c7a`, `c7i`, `c7i-runner`, `g4dn`, `g5`, `g6`, `m6i`, `m7i`, `m8g`, `p4d-24xlarge`, `r5`, `r7a`, `r7g`, `r7i`), plus separate `nodepools-h100/defs/p5.yaml`. The runner-to-instance-size pinning shown above is now a soft preference (fleet weights), not a hard one-pool-per-size split.
 
 **Dedicated runner pool (`c7i-runner`)**: Added after this snapshot for the proactive-capacity / preemption design. It is a name-only clone of the `c7i` fleet, separated by the `node-fleet=c7i-runner` taint, and hosts the lightweight ARC runner-orchestrator pods plus placeholders — workflow pods continue to land on c7a/c7i/m7i/etc. The split is enforced by the `node-fleet=c7i-runner` NodePool taint + matching toleration on runner pods, plus the `CAPACITY_AWARE_RUNNER_NODE_FLEET=c7i-runner` env var on each AutoscalingListener (which pins placeholder-runner and runner-orchestrator pods to that fleet). Because the orchestrator no longer lives on the workflow node, the per-workflow-pod overhead dropped from `750m/1Gi sidecar + hooks` to just the hooks containers (320m/522Mi). See `docs/arc-fork-build-deploy.md` for the full env-var reference.
 

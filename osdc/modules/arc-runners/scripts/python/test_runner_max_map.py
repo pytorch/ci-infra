@@ -254,7 +254,6 @@ class TestEnabledArcRunnerModules:
                         "karpenter",
                         "arc-runners",
                         "arc-runners-h100",
-                        "arc-runners-b200",
                         "buildkit",
                     ]
                 }
@@ -263,7 +262,6 @@ class TestEnabledArcRunnerModules:
         assert enabled_arc_runner_modules(cy, "arc-x") == [
             "arc-runners",
             "arc-runners-h100",
-            "arc-runners-b200",
         ]
 
     def test_excludes_unrelated_modules(self):
@@ -471,21 +469,19 @@ class TestBuildMaxRunnersMap:
             "clusters": {
                 "arc-x": {
                     "arc-runners": {"runner_name_prefix": ""},
-                    "modules": ["arc-runners", "arc-runners-h100", "arc-runners-b200"],
+                    "modules": ["arc-runners", "arc-runners-h100"],
                 }
             },
         }
         modules = {
             "arc-runners": {"cpu-1": {"name": "cpu-1"}},
             "arc-runners-h100": {"h100-1": {"name": "h100-1", "max_runners": 8}},
-            "arc-runners-b200": {"b200-1": {"name": "b200-1", "max_runners": 1}},
         }
         repo = make_repo(tmp_path, clusters_yaml, modules)
         result = build_max_runners_map(repo, clusters_yaml, "arc-x")
         assert result == {
             "cpu-1": MAX_INT32,
             "h100-1": 8,
-            "b200-1": 1,
         }
 
     def test_region_excluded_instance_forces_zero(self, tmp_path):
@@ -800,7 +796,7 @@ class TestMain:
 
 class TestEndToEnd:
     def test_realistic_production_like_setup(self, tmp_path, monkeypatch, capsys):
-        """Mirrors the meta-prod-aws-ue2 cluster shape: prefix=mt-, three modules."""
+        """Mirrors the meta-prod-aws-ue2 cluster shape: prefix=mt-, two modules."""
         clusters_yaml = {
             "defaults": {},
             "clusters": {
@@ -812,7 +808,6 @@ class TestEndToEnd:
                         "nodepools",
                         "arc-runners",
                         "arc-runners-h100",
-                        "arc-runners-b200",
                     ],
                 }
             },
@@ -825,9 +820,6 @@ class TestEndToEnd:
             "arc-runners-h100": {
                 "l-x86iamx-22-225-h100": {"name": "l-x86iamx-22-225-h100", "max_runners": 8},
             },
-            "arc-runners-b200": {
-                "l-x86iamx-22-225-b200": {"name": "l-x86iamx-22-225-b200", "max_runners": 1},
-            },
         }
         repo = make_repo(tmp_path, clusters_yaml, modules)
         monkeypatch.setenv("OSDC_ROOT", str(repo))
@@ -837,7 +829,6 @@ class TestEndToEnd:
         parsed = json.loads(captured.out)
         assert parsed == {
             "mt-l-arm64g3-16-62": MAX_INT32,
-            "mt-l-x86iamx-22-225-b200": 1,
             "mt-l-x86iamx-22-225-h100": 8,
             "mt-l-x86iavx512-2-4": MAX_INT32,
         }

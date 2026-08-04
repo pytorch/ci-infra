@@ -308,9 +308,6 @@ class TestDeriveFleetName:
     def test_derive_fleet_name_gpu_multi(self):
         assert derive_fleet_name("g5.48xlarge") == "g5"
 
-    def test_derive_fleet_name_b200(self):
-        assert derive_fleet_name("p6-b200.48xlarge") == "p6-b200"
-
     def test_derive_fleet_name_metal(self):
         assert derive_fleet_name("c7i.metal-24xl") == "c7i"
 
@@ -778,7 +775,7 @@ class TestGenerateRunner:
 
     def test_max_runners_applied_when_set(self, tmp_path):
         """max_runners: N in the def emits maxRunners: N in the helm values."""
-        def_file = make_def_file(tmp_path, "fixed-runner", "p6-b200.48xlarge", 22, 225, gpu=1, max_runners=8)
+        def_file = make_def_file(tmp_path, "fixed-runner", "p5.48xlarge", 22, 225, gpu=1, max_runners=8)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -956,7 +953,7 @@ class TestGenerateRunner:
 
     def test_pause_runners_overrides_def_max_runners(self, tmp_path):
         """pause_runners=true overrides a def-level max_runners value."""
-        def_file = make_def_file(tmp_path, "fixed-runner", "p6-b200.48xlarge", 22, 225, gpu=1, max_runners=8)
+        def_file = make_def_file(tmp_path, "fixed-runner", "p5.48xlarge", 22, 225, gpu=1, max_runners=8)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -2936,9 +2933,7 @@ class TestImexChannels:
         0 is deliberate: it is falsy, so this also proves the gate uses
         ``is not None`` rather than truthiness (a truthiness check would drop 0).
         """
-        def_file = make_def_file(
-            tmp_path, "imex-runner", "p6-b200.48xlarge", 22, 225, gpu=1, disk_size=600, imex_channels=0
-        )
+        def_file = make_def_file(tmp_path, "imex-runner", "p5.48xlarge", 22, 225, gpu=1, disk_size=600, imex_channels=0)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
@@ -3083,14 +3078,14 @@ class TestComputeClusterSharding:
             {
                 "meta-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
                 "meta-prod-aws-ue2": {
-                    "modules": ["arc-runners", "arc-runners-b200"],
+                    "modules": ["arc-runners", "arc-runners-h100"],
                     "arc-runners": {"runner_name_prefix": "mt-"},
                 },
             }
         )
         assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 2)
         assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-") == (1, 2)
-        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners-b200", "mt-") == (0, 1)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners-h100", "mt-") == (0, 1)
 
     def test_three_peer_staging_clusters(self):
         yml = self._yaml(

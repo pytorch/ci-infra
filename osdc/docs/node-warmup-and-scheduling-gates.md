@@ -2,7 +2,7 @@
 
 ## Overview
 
-When Karpenter provisions a new runner node, several initialization steps must complete before the node can accept GitHub Actions workflow jobs. These steps are orchestrated primarily through Kubernetes-native mechanisms — startup taints, DaemonSets, and init containers. The standard nodepools (g4dn, g5, g6, p4d, c7i, c7a, m8g, etc.) require no per-node EC2 userdata scripts; the H100 (p5.48xlarge) and B200 (p6-b200.48xlarge) pools are the exception — both ship a per-fleet bash script referenced by `user_data_script:` in their def (`modules/nodepools-h100/scripts/h100-node-setup.sh`, `modules/nodepools-b200/scripts/b200-node-setup.sh`) that resolves the node's primary IPv6 from IMDS and writes the `<NODE_IPV6> harbor` /etc/hosts entry from cloud-init, before the registry-mirror-config DaemonSet would otherwise do it.
+When Karpenter provisions a new runner node, several initialization steps must complete before the node can accept GitHub Actions workflow jobs. These steps are orchestrated primarily through Kubernetes-native mechanisms — startup taints, DaemonSets, and init containers. The standard nodepools (g4dn, g5, g6, p4d, c7i, c7a, m8g, etc.) require no per-node EC2 userdata scripts; the H100 (p5.48xlarge) pool is the exception — it ships a per-fleet bash script referenced by `user_data_script:` in its def (`modules/nodepools-h100/scripts/h100-node-setup.sh`) that resolves the node's primary IPv6 from IMDS and writes the `<NODE_IPV6> harbor` /etc/hosts entry from cloud-init, before the registry-mirror-config DaemonSet would otherwise do it.
 
 The cluster is end-to-end IPv6-only for pod networking (EKS `ip_family = "ipv6"`, kube-proxy IPv6, NLD binds the IPv6 ULA `fd00::10`, kube-dns ClusterIP is IPv6) — many of the conventions below (per-node /etc/hosts rewrites for `harbor:30002`, NLD bind addresses, `case "$KUBE_DNS_CLUSTER_IP" in *:*` validation) follow from that.
 
@@ -45,7 +45,7 @@ Runner pods include an init container that polls for a file on the host filesyst
 - Extracts to `/mnt/runner-container-hooks/dist/` on host NVMe
 - Validates `dist/index.js` exists after extraction
 - Writes version marker for idempotency
-- Pinned via `nodeSelector: node-fleet: c7i-runner` — runs only on the dedicated c7i-runner pool, where runner pods live. Workflow-pool nodes and GPU runner pools (g4dn/g5/g6/p4d/p5/p6) do NOT get this DaemonSet because runner pods never schedule there.
+- Pinned via `nodeSelector: node-fleet: c7i-runner` — runs only on the dedicated c7i-runner pool, where runner pods live. Workflow-pool nodes and GPU runner pools (g4dn/g5/g6/p4d/p5) do NOT get this DaemonSet because runner pods never schedule there.
 
 **Init container**: `wait-for-hooks` (`modules/arc-runners/templates/runner.yaml.tpl`)
 - Polls `/mnt/host-hooks/dist/index.js` every 10 seconds
@@ -166,7 +166,7 @@ Sibling DaemonSet to `algif-mitigation`, same shape (privileged `nsenter` into P
 | `instance-type={type}` | Permanent | `NoSchedule` | ARC runner NodePools | Never (scheduling constraint) |
 | `node-fleet={fleet}` | Permanent | `NoSchedule` | ARC runner NodePools | Never (fleet-based scheduling) |
 | `workload/buildkit-{arch}=true` | Permanent | `NoSchedule` | BuildKit NodePools | Never (scheduling constraint) |
-| `nvidia.com/gpu=true` | Permanent | `NoSchedule` | GPU NodePools only — applied by both the standard `generate_nodepools.py` (g4dn, g5, g6, p4d) and the specialized H100 (`modules/nodepools-h100`) and B200 (`modules/nodepools-b200`) generators. The `topology_manager_policy: single-numa-node` (scope `pod`) override is a per-def opt-in (set in the fleet YAML) and is used by p4d in the standard generator AND by H100/B200 in the specialized generators; other GPU pools inherit the runner default (`best-effort`/`container`). | Never (scheduling constraint) |
+| `nvidia.com/gpu=true` | Permanent | `NoSchedule` | GPU NodePools only — applied by both the standard `generate_nodepools.py` (g4dn, g5, g6, p4d) and the specialized H100 (`modules/nodepools-h100`) generator. The `topology_manager_policy: single-numa-node` (scope `pod`) override is a per-def opt-in (set in the fleet YAML) and is used by p4d in the standard generator AND by H100 in the specialized generator; other GPU pools inherit the runner default (`best-effort`/`container`). | Never (scheduling constraint) |
 | `node-compactor.osdc.io/consolidating=true` | Runtime (dynamic) | `NoSchedule` | Applied by node-compactor | node-compactor controller (protected by `min_node_age`: 900s) |
 | `CriticalAddonsOnly=true` | Permanent | `NoSchedule` | Base infrastructure nodes (EKS-managed) | Never |
 | `node-init.osdc.io/cache-enforcer=true` | Startup | `NoSchedule` | Karpenter NodePools on clusters that enable the `cache-enforcer` module | `cache-enforcer` DaemonSet via taint-remover at end-of-init |

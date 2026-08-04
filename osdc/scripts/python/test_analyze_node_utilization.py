@@ -620,13 +620,13 @@ class TestMain:
     def test_single_repo_layout_discovers_peer_modules(self, capsys):
         """Single-repo layout (consumer_root == upstream_dir) still walks peer modules.
 
-        Regression for the case where arc-runners-b200 / nodepools-b200 (and any
+        Regression for the case where arc-runners-h100 / nodepools-h100 (and any
         future fixed-capacity GPU module) live next to the upstream defs in the
         same repo and were silently dropped by an earlier consumer_root guard.
         """
         result = main(["--threshold", "1"])
         assert result in (0, 1)
         output = capsys.readouterr().out
-        assert "arc-runners-b200/defs" in output
-        assert "nodepools-b200/defs" in output
-        assert "p6-b200.48xlarge" in output
+        assert "arc-runners-h100/defs" in output
+        assert "nodepools-h100/defs" in output
+        assert "p5.48xlarge" in output

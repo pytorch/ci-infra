@@ -121,10 +121,9 @@ def resolve_runner_name_prefix(clusters_yaml: dict, cluster_id: str) -> str:
 def enabled_arc_runner_modules(clusters_yaml: dict, cluster_id: str) -> list[str]:
     """Return enabled module names matching `arc-runners` or `arc-runners-*`.
 
-    Matches the variant pattern used by the GPU shims (arc-runners-h100,
-    arc-runners-b200, ...) without hardcoding the variant list — any future
-    variant module that follows the `arc-runners-<suffix>` naming will be
-    picked up automatically.
+    Matches the variant pattern used by the GPU shims (arc-runners-h100, ...)
+    without hardcoding the variant list — any future variant module that
+    follows the `arc-runners-<suffix>` naming will be picked up automatically.
     """
     cluster_cfg = get_cluster(clusters_yaml, cluster_id)
     modules = cluster_cfg.get("modules", []) or []

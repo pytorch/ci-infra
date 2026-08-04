@@ -295,8 +295,8 @@ def resource_placeholders(upstream_dir: Path, cluster_modules: list[str]) -> dic
     template's hardcoded CPU/memory/GPU assertions so they track the deployed
     runner spec instead of drifting.
 
-    Base module defs are processed first, then specialized variants (-opt/-b200/
-    -h100), so a variant that redefines a shared label wins.
+    Base module defs are processed first, then specialized variants (-opt/-h100),
+    so a variant that redefines a shared label wins.
     """
     base = [m for m in cluster_modules if m == "arc-runners"]
     specialized = sorted(m for m in cluster_modules if m.startswith("arc-runners") and m != "arc-runners")
@@ -381,7 +381,7 @@ def generate_workflow(
         content = strip_conditional_block(content, tag, keep=tag not in excluded_blocks)
 
     # Resource-assertion guard (after stripping, so placeholders inside a removed
-    # job — e.g. b200 on a non-b200 cluster — are already gone). A surviving
+    # job — e.g. h100 on a non-h100 cluster — are already gone). A surviving
     # resource placeholder means a running job's runner def wasn't found: a real bug.
     leftover_res = re.findall(r"\{\{(?:VCPU|MEMGI|TORCHMEM|GPU)__[A-Z0-9_]+\}\}", content)
     if leftover_res:

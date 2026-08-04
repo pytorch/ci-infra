@@ -57,7 +57,7 @@ FAKE_CONFIG = {
             "nodepools-h100": {
                 "capacity_reservation_ids": ["cr-aaa111", "cr-bbb222"],
             },
-            "nodepools-b200": {
+            "nodepools-a100": {
                 "capacity_reservation_ids": [],
             },
         },
@@ -421,7 +421,7 @@ class TestMain:
 
     def test_empty_list_value(self, capsys):
         """Empty list prints as empty string."""
-        code = run_main("production", "nodepools-b200.capacity_reservation_ids")
+        code = run_main("production", "nodepools-a100.capacity_reservation_ids")
         assert code == 0
         assert capsys.readouterr().out.strip() == ""
 

@@ -11,7 +11,7 @@
 # block on-demand loading, then defensively rmmod's it if anything has
 # already loaded it.
 #
-# Runs on EVERY node (base infra + Karpenter ARC + BuildKit + GPU + H100/B200).
+# Runs on EVERY node (base infra + Karpenter ARC + BuildKit + GPU + H100).
 # Same shape as registry-mirror-config.yaml.
 #
 # REMOVE this DaemonSet (and the modprobe.d file via the script's exit path)
@@ -123,7 +123,7 @@ spec:
 
       priorityClassName: system-node-critical
 
-      # Run on ALL nodes (base infra + Karpenter-managed: ARC, BuildKit, GPU, H100, B200)
+      # Run on ALL nodes (base infra + Karpenter-managed: ARC, BuildKit, GPU, H100)
       tolerations:
         - operator: Exists
 
