@@ -1976,12 +1976,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends curl
       - name: Health check (reachable from a regular runner, like buildkitd)
+        shell: bash
         run: |
           set -euo pipefail
           curl -fsS "$SANDBOX/healthz"
           echo ""
           echo "PASS: sandbox Service reachable from arc-runners"
       - name: Run a task through the sandbox (credential-free clone + Bedrock)
+        shell: bash
         run: |
           set -euo pipefail
           RESP=$(curl -fsS -X POST "$SANDBOX/run" \
