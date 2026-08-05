@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """Sandbox agent HTTP worker.
 
-A long-running, credential-free worker — callable over the network exactly like
-buildkitd (a runner does `curl sandbox-agent.ai-sandbox.svc:8080/run ...`, no K8s
-RBAC, just a NetworkPolicy allow). It runs under gVisor on the ai-sandbox fleet.
+A long-running worker — callable over the network like buildkitd (a runner does
+`curl sandbox-agent.ai-sandbox.svc:8080/run ...`, no K8s RBAC, just a NetworkPolicy
+allow). It runs under gVisor on the ai-sandbox fleet.
 
-It holds NO credentials: it clones the target repo through the agent-vault proxy
-(which injects a read-only GitHub token on the wire) and calls Bedrock through
-the sigv4 proxy (which signs with its IRSA identity). This process never sees a
-token.
+Credentials: the ONLY credential the agent holds is a read-only Bedrock IRSA role
+(bound to its ServiceAccount). It clones PUBLIC repos anonymously (no token) and
+calls Bedrock directly with boto3 (which uses the IRSA web-identity credentials).
 
 Endpoints:
   GET  /healthz  -> {"status": "ok"}
   POST /run      -> body {"repo","ref","task","model"?}; returns
                     {"cloned": bool, "file_count": int, "report": str, "errors": {...}}
 
-Single worker, one task at a time (prototype). stdlib only.
+Single worker, one task at a time (prototype).
 """
 
 from __future__ import annotations
@@ -25,29 +24,26 @@ import os
 import socket
 import subprocess
 import tempfile
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 PORT = int(os.environ.get("PORT", "8080"))
 REGION = os.environ.get("AWS_REGION", "us-east-1")
-SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 DEFAULT_MODEL = os.environ.get("BEDROCK_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
-BEDROCK_TIMEOUT_S = 120
 
 
 def clone_repo(repo: str, ref: str, dest: str) -> int:
-    """Shallow-clone through the agent-vault proxy (env: HTTPS_PROXY, GIT_SSL_CAINFO).
-
-    Returns the tracked-file count. Raises on failure.
-    """
+    """Shallow, anonymous clone of a public repo. Returns the tracked-file count."""
     subprocess.run(
         ["git", "clone", "--depth", "1", "--branch", ref, f"https://github.com/{repo}.git", dest],
         check=True,
         capture_output=True,
         text=True,
         timeout=CLONE_TIMEOUT_S,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
     listing = subprocess.run(
         ["git", "-C", dest, "ls-files"],
@@ -60,25 +56,17 @@ def clone_repo(repo: str, ref: str, dest: str) -> int:
 
 
 def invoke_bedrock(model: str, prompt: str) -> str:
-    """Call Bedrock InvokeModel through the sigv4 proxy (unsigned in, signed out)."""
+    """Call Bedrock InvokeModel directly via boto3 (signed with the pod's IRSA creds)."""
     body = json.dumps(
         {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 1024,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         }
-    ).encode()
-    req = urllib.request.Request(
-        f"http://{SIGV4_PROXY}/model/{model}/invoke",
-        data=body,
-        method="POST",
-        headers={
-            "Host": f"bedrock-runtime.{REGION}.amazonaws.com",
-            "Content-Type": "application/json",
-        },
     )
-    with urllib.request.urlopen(req, timeout=BEDROCK_TIMEOUT_S) as resp:  # noqa: S310
-        payload = json.loads(resp.read())
+    client = boto3.client("bedrock-runtime", region_name=REGION)
+    resp = client.invoke_model(modelId=model, body=body, contentType="application/json", accept="application/json")
+    payload = json.loads(resp["body"].read())
     content = payload.get("content") or []
     return content[0]["text"] if content else ""
 
@@ -107,7 +95,7 @@ def run_task(spec: dict) -> dict:
         prompt = f"Task: {task}\n\nRepository {repo}@{ref} has {result['file_count']} tracked files."
         try:
             result["report"] = invoke_bedrock(model, prompt)
-        except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as exc:
+        except (BotoCoreError, ClientError, KeyError, ValueError) as exc:
             result["errors"]["bedrock"] = str(exc)
 
     return result

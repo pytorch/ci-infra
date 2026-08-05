@@ -1,11 +1,11 @@
-# The sandbox worker: a long-running, credential-free HTTP service on the gVisor
-# fleet, callable over the network like buildkitd. __AGENT_IMAGE__ / __AWS_REGION__
-# are substituted by deploy.sh (image comes from clusters.yaml agent_sandbox.agent_image).
+# The sandbox worker: a long-running HTTP service on the gVisor fleet, callable
+# over the network like buildkitd. __AGENT_IMAGE__ / __AWS_REGION__ are substituted
+# by deploy.sh (image from clusters.yaml agent_sandbox.agent_image).
 #
-# runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under
-# runsc. It holds NO credentials — HTTPS_PROXY points at agent-vault (token
-# injected on the wire) and Bedrock is reached via the sigv4 proxy. The only
-# secret mounted is the agent-vault CA (to trust the MITM), read-only.
+# runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under runsc.
+# The only credential it holds is the read-only Bedrock IRSA role bound to the
+# sandbox-agent SA (annotated by deploy.sh) — used directly by boto3. It clones
+# public repos anonymously; no proxies, no mounted secrets.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,21 +41,10 @@ spec:
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
+            # Region for boto3 / Bedrock. IRSA injects AWS_ROLE_ARN +
+            # AWS_WEB_IDENTITY_TOKEN_FILE automatically (from the SA annotation).
             - name: AWS_REGION
               value: "__AWS_REGION__"
-            - name: SIGV4_PROXY
-              value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
-            # Egress plumbing: HTTPS through agent-vault (Bedrock uses plain HTTP
-            # to the sigv4 proxy, so it is not routed through HTTPS_PROXY).
-            - name: HTTPS_PROXY
-              value: "http://agent-vault.ai-sandbox.svc.cluster.local:14322"
-            - name: https_proxy
-              value: "http://agent-vault.ai-sandbox.svc.cluster.local:14322"
-            # Trust the agent-vault MITM CA for the injected-credential hosts.
-            - name: GIT_SSL_CAINFO
-              value: "/etc/agent-vault-ca/ca.crt"
-            - name: CURL_CA_BUNDLE
-              value: "/etc/agent-vault-ca/ca.crt"
           readinessProbe:
             httpGet:
               path: /healthz
@@ -66,10 +55,6 @@ spec:
             runAsNonRoot: true
             runAsUser: 1000
             allowPrivilegeEscalation: false
-          volumeMounts:
-            - name: agent-vault-ca
-              mountPath: /etc/agent-vault-ca
-              readOnly: true
           resources:
             requests:
               cpu: "500m"
@@ -77,13 +62,6 @@ spec:
             limits:
               cpu: "2"
               memory: "2Gi"
-      volumes:
-        - name: agent-vault-ca
-          secret:
-            secretName: agent-vault-ca
-            items:
-              - key: ca.crt
-                path: ca.crt
 ---
 apiVersion: v1
 kind: Service

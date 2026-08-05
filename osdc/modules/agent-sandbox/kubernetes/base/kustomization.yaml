@@ -8,7 +8,5 @@ resources:
   - namespace.yaml
   - runtimeclass.yaml
   - serviceaccounts.yaml
-  - agent-vault.yaml
-  - sigv4-proxy.yaml
   - sandbox-agent.yaml
   - networkpolicy.yaml

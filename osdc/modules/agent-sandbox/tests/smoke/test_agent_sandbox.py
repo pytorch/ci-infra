@@ -1,10 +1,9 @@
-"""Smoke tests for the agent-sandbox module.
+"""Smoke tests for the agent-sandbox module (no-proxy model).
 
-Validates the deployed standing infrastructure: namespace, the gvisor
-RuntimeClass, the two egress proxies (agent-vault + sigv4-proxy), their Services,
-the IRSA-annotated sigv4-proxy SA, the credential-free sandbox-agent SA, and the
-NetworkPolicies. These check the security spine is wired — not that an agent run
-succeeds (that is the e2e test).
+Validates the deployed sandbox: namespace, the gvisor RuntimeClass, the
+sandbox-agent worker + Service (callable from arc-runners), the credential model
+(agent SA holds ONLY a read-only Bedrock IRSA role, no K8s token, no K8s RBAC),
+and the ingress-only NetworkPolicy (egress is open in the prototype).
 """
 
 from __future__ import annotations
@@ -34,8 +33,6 @@ class TestAgentSandboxRuntimeClass:
         assert rc["handler"] == "runsc", f"gvisor RuntimeClass must use handler 'runsc', got {rc.get('handler')!r}."
 
     def test_gvisor_pins_sandbox_fleet(self) -> None:
-        """scheduling.nodeSelector must pin agent pods to the ai-sandbox fleet so
-        they can only land on nodes that actually have the runsc handler."""
         rc = run_kubectl(["get", "runtimeclass", "gvisor"])
         node_selector = rc.get("scheduling", {}).get("nodeSelector", {})
         assert node_selector.get("node-fleet") == "ai-sandbox", (
@@ -43,33 +40,8 @@ class TestAgentSandboxRuntimeClass:
         )
 
 
-class TestAgentSandboxProxies:
-    """Both credential proxies must be running (off the sandbox fleet)."""
-
-    def test_agent_vault_ready(self, all_deployments: dict) -> None:
-        assert_deployment_ready(all_deployments, NAMESPACE, "agent-vault")
-
-    def test_sigv4_proxy_ready(self, all_deployments: dict) -> None:
-        assert_deployment_ready(all_deployments, NAMESPACE, "sigv4-proxy")
-
-    @pytest.mark.parametrize("svc_name", ["agent-vault", "sigv4-proxy"])
-    def test_proxy_service_exists(self, all_services: dict, svc_name: str) -> None:
-        svcs = filter_services(all_services, namespace=NAMESPACE, name=svc_name)
-        assert len(svcs) == 1, f"Expected Service '{svc_name}' in '{NAMESPACE}'."
-
-    def test_header_proxy_default_deny_and_inject(self) -> None:
-        """The header-proxy (mitmproxy) addon must default-deny non-allow-listed
-        hosts and inject the credential on the wire."""
-        cm = run_kubectl(["get", "configmap", "agent-vault-config"], namespace=NAMESPACE)
-        addon = cm.get("data", {}).get("inject.py", "")
-        assert "_ALLOWED" in addon, "inject addon must define a host allowlist."
-        assert "403" in addon, "inject addon must default-deny hosts not on the allowlist."
-        assert "Authorization" in addon, "inject addon must attach the Authorization header."
-
-
 class TestSandboxWorker:
-    """The callable worker — a Deployment + Service reachable from arc-runners,
-    like buildkitd."""
+    """The callable worker — a Deployment + Service reachable from arc-runners, like buildkitd."""
 
     def test_worker_ready(self, all_deployments: dict) -> None:
         assert_deployment_ready(all_deployments, NAMESPACE, "sandbox-agent")
@@ -79,7 +51,6 @@ class TestSandboxWorker:
         assert len(svcs) == 1, f"Expected Service 'sandbox-agent' in '{NAMESPACE}'."
 
     def test_worker_runs_under_gvisor(self, all_deployments: dict) -> None:
-        """The worker Deployment must request the gvisor RuntimeClass."""
         dep = next(d for d in all_deployments["items"] if d["metadata"]["name"] == "sandbox-agent")
         rc = dep["spec"]["template"]["spec"].get("runtimeClassName")
         assert rc == "gvisor", f"sandbox-agent must set runtimeClassName: gvisor, got {rc!r}."
@@ -97,23 +68,19 @@ class TestSandboxWorker:
         )
 
 
-class TestAgentSandboxServiceAccounts:
-    def test_sigv4_proxy_sa_has_irsa(self) -> None:
-        """sigv4-proxy signs AWS/Bedrock with a read-only IRSA role."""
-        sa = run_kubectl(["get", "serviceaccount", "sigv4-proxy"], namespace=NAMESPACE)
-        ann = sa.get("metadata", {}).get("annotations", {})
-        assert IRSA_KEY in ann, "sigv4-proxy SA missing IRSA annotation — deploy.sh did not annotate it."
-        assert ann[IRSA_KEY].startswith("arn:aws:iam::"), f"IRSA annotation is not an IAM role ARN: {ann[IRSA_KEY]}"
-
-    def test_agent_sa_is_credential_and_token_free(self) -> None:
-        """The untrusted agent SA must NOT automount a K8s token and must have no
-        IRSA role — the agent holds no credentials of any kind."""
+class TestAgentSandboxCredentials:
+    def test_agent_sa_holds_only_bedrock_irsa(self) -> None:
+        """The agent SA is bound to exactly one credential — a read-only Bedrock
+        IRSA role — and does NOT automount a K8s token."""
         sa = run_kubectl(["get", "serviceaccount", "sandbox-agent"], namespace=NAMESPACE)
         assert sa.get("automountServiceAccountToken") is False, (
             "sandbox-agent SA must set automountServiceAccountToken: false."
         )
         ann = sa.get("metadata", {}).get("annotations", {})
-        assert IRSA_KEY not in ann, "sandbox-agent SA must NOT carry an IRSA role — the agent gets no AWS identity."
+        assert IRSA_KEY in ann, (
+            "sandbox-agent SA must carry the Bedrock IRSA annotation — deploy.sh did not annotate it."
+        )
+        assert ann[IRSA_KEY].startswith("arn:aws:iam::"), f"IRSA annotation is not an IAM role ARN: {ann[IRSA_KEY]}"
 
     def test_agent_sa_has_no_rbac(self) -> None:
         """The agent SA must not be able to touch the K8s API at all."""
@@ -132,8 +99,15 @@ class TestAgentSandboxServiceAccounts:
 
 
 class TestAgentSandboxNetworkPolicies:
-    def test_default_deny_exists(self) -> None:
+    def test_ingress_restricted_egress_open(self) -> None:
+        """Prototype: ingress locked to arc-runners; egress is OPEN (no egress policy)."""
         nps = run_kubectl(["get", "networkpolicies"], namespace=NAMESPACE)
-        names = {np["metadata"]["name"] for np in nps.get("items", [])}
-        assert "default-deny" in names, f"agent-sandbox must ship a default-deny NetworkPolicy; got {sorted(names)}."
-        assert len(names) >= 5, f"Expected the full NetworkPolicy set (>=5); got {sorted(names)}."
+        items = nps.get("items", [])
+        names = {np["metadata"]["name"] for np in items}
+        assert {"default-deny-ingress", "sandbox-agent-ingress"} <= names, (
+            f"expected ingress policies default-deny-ingress + sandbox-agent-ingress; got {sorted(names)}."
+        )
+        egress_policies = [np["metadata"]["name"] for np in items if "Egress" in np["spec"].get("policyTypes", [])]
+        assert not egress_policies, (
+            f"prototype egress must be OPEN — no Egress NetworkPolicy expected, found {egress_policies}."
+        )
