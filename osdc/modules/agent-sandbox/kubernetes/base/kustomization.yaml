@@ -1,0 +1,13 @@
+# Agent-sandbox Kubernetes resources (namespace-scoped + the cluster-scoped
+# gvisor RuntimeClass). The agent Job itself is NOT here — it is rendered and
+# created per-run from job-template.yaml.tpl (see deploy.sh / README).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - runtimeclass.yaml
+  - serviceaccounts.yaml
+  - agent-vault.yaml
+  - sigv4-proxy.yaml
+  - networkpolicy.yaml

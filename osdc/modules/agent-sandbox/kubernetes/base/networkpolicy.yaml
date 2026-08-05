@@ -1,0 +1,134 @@
+# Network isolation for the ai-sandbox namespace.
+#
+# IMPORTANT (prototype limitation): under IPv6-only AWS VPC CNI, NetworkPolicy is
+# NOT a hard egress boundary — it does not apply to the IPv4-egress interface
+# (the same gap that made node-level iptables in cache-enforcer unreliable). This
+# is best-effort defense-in-depth ONLY. The intended production boundary is a
+# dedicated sandbox subnet with no NAT/IGW route (+ Security-Groups-for-Pods),
+# which is deferred to Phase 2 and NOT implemented here. Do not treat these
+# policies as the thing that guarantees the agent cannot exfiltrate.
+
+# Baseline: deny all ingress and egress in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Agent egress: ONLY the two proxies + DNS. No direct internet path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-agent-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-agent
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agent-vault
+      ports:
+        - protocol: TCP
+          port: 14322
+    - to:
+        - podSelector:
+            matchLabels:
+              app: sigv4-proxy
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# Proxy ingress: only from agent pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - agent-vault
+          - sigv4-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: sandbox-agent
+      ports:
+        - protocol: TCP
+          port: 14322
+        - protocol: TCP
+          port: 8080
+
+---
+# Proxy egress: DNS + external HTTPS/HTTP (this is the only sanctioned egress
+# out of the namespace; the proxies are the credential/authorization boundary).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - agent-vault
+          - sigv4-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: "::/0"
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80

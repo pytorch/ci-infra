@@ -1,0 +1,118 @@
+# Infisical Agent Vault — header-injection egress proxy (the mature project that
+# yagop/sandbox is a simplified copy of). TLS-MITM forward proxy: the agent sets
+# HTTPS_PROXY to this Service and trusts the proxy CA; the proxy substitutes the
+# real credential (held here, never in the agent) on the wire.
+#
+# Runs on base infra nodes (tolerates CriticalAddonsOnly), NOT on the sandbox
+# fleet — the credential never shares a node/gVisor sandbox with agent code.
+#
+# PROTOTYPE — VERIFY BEFORE DEPLOY:
+#   * Image tag: pin to a real released digest of infisical/agent-vault.
+#   * config.json schema, CLI flags, and listen port (14322) must be confirmed
+#     against the pinned Agent Vault version — this is a preview-stage upstream
+#     whose interface may differ from what is encoded here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-vault-config
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+data:
+  config.json: |
+    {
+      "listen": ":14322",
+      "unmatched_host_policy": "deny",
+      "secrets": {
+        "github": { "type": "bearer", "env": "GITHUB_TOKEN" }
+      },
+      "rules": [
+        { "host": "github.com", "secret": "github" },
+        { "host": "api.github.com", "secret": "github" },
+        { "host": "codeload.github.com", "secret": "github" }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-vault
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: agent-vault
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-vault
+  template:
+    metadata:
+      labels:
+        app: agent-vault
+        osdc.io/module: agent-sandbox
+    spec:
+      serviceAccountName: agent-vault
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: agent-vault
+          # TODO(prototype): pin by digest; verify the real entrypoint/flags.
+          image: infisical/agent-vault:latest
+          args: ["proxy", "--config", "/etc/agent-vault/config.json"]
+          ports:
+            - name: proxy
+              containerPort: 14322
+          env:
+            # Real credential lives here, injected from the K8s Secret. The agent
+            # never receives it — it only sends a request the proxy authenticates.
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agent-sandbox-creds
+                  key: github-token
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agent-vault
+              readOnly: true
+            - name: ca
+              mountPath: /etc/agent-vault/ca
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 2000
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: agent-vault-config
+        - name: ca
+          secret:
+            # Pre-generated MITM CA (ca.crt + ca.key). Created out-of-band; the
+            # agent trusts ca.crt. See README.
+            secretName: agent-vault-ca
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-vault
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: agent-vault
+spec:
+  selector:
+    app: agent-vault
+  ports:
+    - name: proxy
+      port: 14322
+      targetPort: proxy

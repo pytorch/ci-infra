@@ -2094,6 +2094,22 @@ test-janitor cluster:
     echo "Janitor e2e tests completed in ${elapsed}"; \
     exit $rc
 
+# Run agent-sandbox e2e isolation test (gVisor + credential-free agent pod)
+test-agent-sandbox cluster:
+    @just kubeconfig {{cluster}}
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    export OSDC_ROOT="{{ROOT}}"; \
+    export OSDC_UPSTREAM="{{UPSTREAM}}"; \
+    SECONDS=0; \
+    cd {{UPSTREAM}}/modules/agent-sandbox/tests/e2e && \
+    uv run pytest test_e2e.py -v --tb=long \
+        --cluster-id="{{cluster}}" \
+        && rc=0 || rc=$?; \
+    echo ""; \
+    if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi; \
+    echo "Agent-sandbox e2e tests completed in ${elapsed}"; \
+    exit $rc
+
 # Run smoke tests against a deployed cluster
 smoke cluster:
     #!/usr/bin/env bash
