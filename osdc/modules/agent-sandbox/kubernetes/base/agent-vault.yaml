@@ -91,8 +91,9 @@ spec:
           image: mitmproxy/mitmproxy:latest
           command:
             - mitmdump
+            # OSDC EKS is IPv6-only — bind :: so the Service target (IPv6) is reachable.
             - --listen-host
-            - "0.0.0.0"
+            - "::"
             - --listen-port
             - "14322"
             - --set

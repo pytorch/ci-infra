@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import urllib.error
@@ -145,9 +146,16 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[sandbox-agent] {fmt % args}")
 
 
+class HTTPServerV6(HTTPServer):
+    # OSDC EKS is IPv6-only: the pod IP (and the readiness probe / Service target)
+    # are IPv6, so the listener must bind :: — a default AF_INET server binds
+    # 0.0.0.0 and is unreachable on this cluster.
+    address_family = socket.AF_INET6
+
+
 def main() -> None:
-    server = HTTPServer(("", PORT), Handler)
-    print(f"[sandbox-agent] listening on :{PORT}")
+    server = HTTPServerV6(("::", PORT), Handler)
+    print(f"[sandbox-agent] listening on [::]:{PORT}", flush=True)
     server.serve_forever()
 
 

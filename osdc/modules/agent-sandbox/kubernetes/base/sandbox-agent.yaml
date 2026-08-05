@@ -32,10 +32,15 @@ spec:
       containers:
         - name: agent
           image: __AGENT_IMAGE__
+          # Prototype uses a mutable :prototype tag; re-pull on every start so a
+          # fresh push is picked up.
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
           env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
             - name: AWS_REGION
               value: "__AWS_REGION__"
             - name: SIGV4_PROXY
