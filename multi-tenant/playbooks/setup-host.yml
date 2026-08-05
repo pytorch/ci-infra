@@ -377,11 +377,25 @@
       become: true
       become_user: "{{ item.name }}"
       ansible.builtin.shell: |
-        containers=$(docker ps -q)
-        if [ -n "$containers" ]; then
-          docker stop $containers
+        set -o pipefail
+        uid="$(id -u)"
+        # become_user has no ~/.bashrc, so set the rootless docker env ourselves.
+        export DOCKER_HOST="unix:///run/user/${uid}/docker.sock"
+        export XDG_RUNTIME_DIR="/run/user/${uid}"
+        export PATH="$HOME/bin:$PATH"
+        [ -S "/run/user/${uid}/docker.sock" ] || { echo "no docker socket"; exit 0; }
+        c=$(docker ps -q -f "name=ghad-main-shared-instance-container")
+        [ -n "$c" ] || { echo "no runner container"; exit 0; }
+        # Leave a running job alone (Runner.Worker present); ghad-manager respawns it after.
+        if docker top "$c" 2>/dev/null | grep -q "Runner.Worker"; then
+          echo "skip: job in progress"
+        else
+          echo "stopping idle runner"
+          docker stop "$c"
         fi
       loop: "{{ created_users.results }}"
+      loop_control:
+        label: "{{ item.name }}"
 
     - name: Create a HF cache directory
       ansible.builtin.file:
