@@ -57,6 +57,17 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
   | sed -e "s|__AGENT_IMAGE__|${AGENT_IMAGE}|g" -e "s|__AWS_REGION__|${REGION}|g" \
   | kubectl_apply_if_changed -f -
 
+# --- Prune the removed credential-proxy resources (idempotent) ---
+# The mitmproxy (agent-vault) + aws-sigv4-proxy were dropped from this module;
+# kubectl apply won't delete resources no longer in the manifest set, so remove
+# them explicitly. Operator-provided secrets (agent-vault-ca, agent-sandbox-creds)
+# are left alone — they were created out-of-band and deleting them is the
+# operator's call.
+echo "[agent-sandbox] Pruning removed proxy resources (if present)..."
+kubectl delete deployment,service,serviceaccount agent-vault sigv4-proxy \
+  -n "$NAMESPACE" --ignore-not-found
+kubectl delete configmap agent-vault-config -n "$NAMESPACE" --ignore-not-found
+
 # --- Annotate the sandbox-agent SA with its Bedrock IRSA role ---
 # The pod-identity webhook injects the web-identity token from this annotation
 # (independent of automountServiceAccountToken: false). Restart so running pods
