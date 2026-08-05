@@ -28,4 +28,4 @@ mkdir -p ~/.docker
 sudo cat /docker/config.json | jq 'del(.currentContext)' > ~/.docker/config.json
 sudo chown -R 1000:1000 ~/.docker
 
-sudo su - $RUNNER_USER -c "/bin/bash -c './config.sh --url $RUNNER_URL --token $GH_TOKEN --name ${INSTANCE_ID}-${RUNNER_UID} --labels $INSTANCE_LABEL --ephemeral && ./run.sh'"
+sudo su - $RUNNER_USER -c "/bin/bash -c './config.sh --url $RUNNER_URL --token $GH_TOKEN --name ${INSTANCE_ID}-${RUNNER_UID} --labels $INSTANCE_LABEL --unattended --replace --ephemeral && ./run.sh'"
