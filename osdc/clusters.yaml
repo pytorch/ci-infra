@@ -263,8 +263,9 @@ clusters:
     pypi_cache:
       replicas: 1
     agent_sandbox:
-      # PROTOTYPE. Set to your built+pushed agent image (see modules/agent-sandbox/agent).
-      agent_image: "ghcr.io/pytorch/ci-agent-sandbox:prototype"
+      # PROTOTYPE. Built + pushed to the in-cluster Harbor `osdc` project; nodes
+      # pull it via the harbor:30002 mirror (see modules/agent-sandbox/README.md).
+      agent_image: "harbor:30002/osdc/ci-agent-sandbox:prototype"
     modules:
       - karpenter
       - arc

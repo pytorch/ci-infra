@@ -52,11 +52,22 @@ egress lockdown, and a per-task-ephemeral (vs warm) worker are deferred (see
 
 ## One-time prerequisites (operator, out-of-band)
 
-1. **Build + push the agent image**, then set `agent_sandbox.agent_image` in
-   `clusters.yaml`:
-   ```
-   docker build -t <registry>/ci-agent-sandbox:prototype modules/agent-sandbox/agent
-   docker push  <registry>/ci-agent-sandbox:prototype
+1. **Build + push the agent image to the in-cluster Harbor `osdc` project**
+   (nodes pull it anonymously via the `harbor:30002` mirror; `clusters.yaml`
+   already points `agent_sandbox.agent_image` at `harbor:30002/osdc/ci-agent-sandbox:prototype`):
+   ```bash
+   # build for the sandbox fleet's arch (amd64) and export a tarball
+   docker buildx build --platform linux/amd64 -t ci-agent-sandbox:prototype \
+     -o type=docker,dest=/tmp/agent.tar modules/agent-sandbox/agent
+
+   # ensure the osdc project exists + is public, then push via port-forward (crane treats localhost as http)
+   HARBOR_PASS=$(kubectl get secret harbor-admin-password -n harbor-system -o jsonpath='{.data.password}' | base64 -d)
+   kubectl port-forward svc/harbor -n harbor-system 8081:80 >/dev/null 2>&1 &
+   curl -s -u "admin:$HARBOR_PASS" -X POST http://localhost:8081/api/v2.0/projects \
+     -H 'Content-Type: application/json' \
+     -d '{"project_name":"osdc","public":true}'   # 201 created / 409 exists — both fine
+   crane auth login localhost:8081 -u admin -p "$HARBOR_PASS"
+   crane push /tmp/agent.tar localhost:8081/osdc/ci-agent-sandbox:prototype
    ```
 2. **Create the two Secrets** in `ai-sandbox` (NOT committed):
    - `agent-sandbox-creds` — the injected credential (read-only!):
