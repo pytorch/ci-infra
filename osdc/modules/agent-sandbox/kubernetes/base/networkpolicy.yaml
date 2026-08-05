@@ -23,6 +23,32 @@ spec:
     - Egress
 
 ---
+# Agent ingress: callable from arc-runners over the network, like buildkitd
+# (mirrors buildkit's buildkitd-lb-ingress). The runner needs NO K8s RBAC — just
+# this network allow. Everything else is denied by default-deny above.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-agent-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: arc-runners
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
 # Agent egress: ONLY the two proxies + DNS. No direct internet path.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

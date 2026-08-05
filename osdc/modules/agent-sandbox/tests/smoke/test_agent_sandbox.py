@@ -68,6 +68,36 @@ class TestAgentSandboxProxies:
         )
 
 
+class TestSandboxWorker:
+    """The callable worker — a Deployment + Service reachable from arc-runners,
+    like buildkitd."""
+
+    def test_worker_ready(self, all_deployments: dict) -> None:
+        assert_deployment_ready(all_deployments, NAMESPACE, "sandbox-agent")
+
+    def test_worker_service_exists(self, all_services: dict) -> None:
+        svcs = filter_services(all_services, namespace=NAMESPACE, name="sandbox-agent")
+        assert len(svcs) == 1, f"Expected Service 'sandbox-agent' in '{NAMESPACE}'."
+
+    def test_worker_runs_under_gvisor(self, all_deployments: dict) -> None:
+        """The worker Deployment must request the gvisor RuntimeClass."""
+        dep = next(d for d in all_deployments["items"] if d["metadata"]["name"] == "sandbox-agent")
+        rc = dep["spec"]["template"]["spec"].get("runtimeClassName")
+        assert rc == "gvisor", f"sandbox-agent must set runtimeClassName: gvisor, got {rc!r}."
+
+    def test_callable_from_arc_runners(self) -> None:
+        """A NetworkPolicy must allow arc-runners to reach the worker (buildkitd
+        parity: network access, not RBAC, is the entry point)."""
+        np = run_kubectl(["get", "networkpolicy", "sandbox-agent-ingress"], namespace=NAMESPACE)
+        froms = [f for rule in np["spec"].get("ingress", []) for f in rule.get("from", [])]
+        allowed_ns = {
+            f.get("namespaceSelector", {}).get("matchLabels", {}).get("kubernetes.io/metadata.name") for f in froms
+        }
+        assert "arc-runners" in allowed_ns, (
+            f"sandbox-agent-ingress must allow the arc-runners namespace; got {allowed_ns}."
+        )
+
+
 class TestAgentSandboxServiceAccounts:
     def test_sigv4_proxy_sa_has_irsa(self) -> None:
         """sigv4-proxy signs AWS/Bedrock with a read-only IRSA role."""
@@ -107,4 +137,4 @@ class TestAgentSandboxNetworkPolicies:
         nps = run_kubectl(["get", "networkpolicies"], namespace=NAMESPACE)
         names = {np["metadata"]["name"] for np in nps.get("items", [])}
         assert "default-deny" in names, f"agent-sandbox must ship a default-deny NetworkPolicy; got {sorted(names)}."
-        assert len(names) >= 4, f"Expected the full NetworkPolicy set (>=4); got {sorted(names)}."
+        assert len(names) >= 5, f"Expected the full NetworkPolicy set (>=5); got {sorted(names)}."

@@ -7,13 +7,13 @@ set -euo pipefail
 # Deploys the standing sandbox infrastructure:
 #   1. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
 #   2. Applies the namespace, gvisor RuntimeClass, service accounts, both proxies
-#      (agent-vault + sigv4-proxy) and the NetworkPolicies.
+#      (agent-vault + sigv4-proxy), the sandbox-agent worker + Service, and the
+#      NetworkPolicies. The agent image + region are substituted from clusters.yaml.
 #   3. Annotates the sigv4-proxy SA with the IRSA role and restarts it.
 #
-# It does NOT create agent Jobs — those are per-run (see run-agent.sh). It also
-# does NOT create the two required Secrets (agent-sandbox-creds, agent-vault-ca);
+# It does NOT create the two required Secrets (agent-sandbox-creds, agent-vault-ca);
 # those are operator-provided out-of-band (see README). The deploy warns if they
-# are missing so the proxies aren't silently broken.
+# are missing so the proxies/worker aren't silently broken.
 
 CLUSTER="$1"
 export CNAME="$2"
@@ -32,6 +32,11 @@ CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 NAMESPACE=ai-sandbox
 BUCKET_CFG=$(uv run "$CFG" "$CLUSTER" state_bucket)
+AGENT_IMAGE=$(uv run "$CFG" "$CLUSTER" agent_sandbox.agent_image "")
+if [[ -z "$AGENT_IMAGE" ]]; then
+  echo "[agent-sandbox] ERROR: agent_sandbox.agent_image not set for $CLUSTER in clusters.yaml" >&2
+  exit 1
+fi
 
 # --- Read terraform outputs (sigv4-proxy IRSA role) ---
 echo "[agent-sandbox] Reading terraform outputs..."
@@ -46,9 +51,11 @@ SIGV4_ROLE_ARN=$(tofu output -raw sigv4_proxy_role_arn)
 cd - >/dev/null
 echo "[agent-sandbox] sigv4-proxy IRSA role: ${SIGV4_ROLE_ARN}"
 
-# --- Apply static manifests ---
-echo "[agent-sandbox] Applying base manifests..."
-kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/base/"
+# --- Apply manifests (substitute the agent image + region into sandbox-agent) ---
+echo "[agent-sandbox] Applying base manifests (agent image: ${AGENT_IMAGE})..."
+kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
+  | sed -e "s|__AGENT_IMAGE__|${AGENT_IMAGE}|g" -e "s|__AWS_REGION__|${REGION}|g" \
+  | kubectl_apply_if_changed -f -
 
 # --- Annotate the sigv4-proxy SA with its IRSA role, then restart it ---
 kubectl annotate sa sigv4-proxy -n "$NAMESPACE" \
@@ -63,9 +70,11 @@ for secret in agent-sandbox-creds agent-vault-ca; do
   fi
 done
 
-echo "[agent-sandbox] Waiting for proxy rollouts..."
+echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/agent-vault -n "$NAMESPACE" --timeout=5m || true
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m || true
+kubectl rollout status deployment/sandbox-agent -n "$NAMESPACE" --timeout=10m || true
 
-echo "[agent-sandbox] Deployed. Launch a run with:"
-echo "    modules/agent-sandbox/run-agent.sh $CLUSTER <repo> <ref> <task> <bedrock-model-id>"
+echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd:"
+echo "    curl -sf -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \\"
+echo "      -d '{\"repo\":\"pytorch/pytorch\",\"ref\":\"main\",\"task\":\"...\"}'"

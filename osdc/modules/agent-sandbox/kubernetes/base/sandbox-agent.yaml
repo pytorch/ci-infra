@@ -1,0 +1,97 @@
+# The sandbox worker: a long-running, credential-free HTTP service on the gVisor
+# fleet, callable over the network like buildkitd. __AGENT_IMAGE__ / __AWS_REGION__
+# are substituted by deploy.sh (image comes from clusters.yaml agent_sandbox.agent_image).
+#
+# runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under
+# runsc. It holds NO credentials — HTTPS_PROXY points at agent-vault (token
+# injected on the wire) and Bedrock is reached via the sigv4 proxy. The only
+# secret mounted is the agent-vault CA (to trust the MITM), read-only.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-agent
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: sandbox-agent
+spec:
+  # Prototype: one warm worker, one task at a time (like buildkitd max-parallelism=1).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-agent
+  template:
+    metadata:
+      labels:
+        app: sandbox-agent
+        osdc.io/module: agent-sandbox
+    spec:
+      runtimeClassName: gvisor
+      serviceAccountName: sandbox-agent
+      automountServiceAccountToken: false
+      containers:
+        - name: agent
+          image: __AGENT_IMAGE__
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AWS_REGION
+              value: "__AWS_REGION__"
+            - name: SIGV4_PROXY
+              value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
+            # Egress plumbing: HTTPS through agent-vault (Bedrock uses plain HTTP
+            # to the sigv4 proxy, so it is not routed through HTTPS_PROXY).
+            - name: HTTPS_PROXY
+              value: "http://agent-vault.ai-sandbox.svc.cluster.local:14322"
+            - name: https_proxy
+              value: "http://agent-vault.ai-sandbox.svc.cluster.local:14322"
+            # Trust the agent-vault MITM CA for the injected-credential hosts.
+            - name: GIT_SSL_CAINFO
+              value: "/etc/agent-vault-ca/ca.crt"
+            - name: CURL_CA_BUNDLE
+              value: "/etc/agent-vault-ca/ca.crt"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: agent-vault-ca
+              mountPath: /etc/agent-vault-ca
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: agent-vault-ca
+          secret:
+            secretName: agent-vault-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-agent
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: sandbox-agent
+spec:
+  selector:
+    app: sandbox-agent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
