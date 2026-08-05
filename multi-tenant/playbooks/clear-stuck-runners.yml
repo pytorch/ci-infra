@@ -1,43 +1,15 @@
 ---
-# Clear orphaned / misregistered multi-tenant runner containers.
+# Stop runner containers that are Up but not healthily connected to GitHub, so
+# ghad-manager can respawn a correct one. Two cases: orphaned (expected
+# "<hostname>-<uid>" runner offline) or misregistered (connected under the hex
+# container hostname with wrong labels, so it never gets a job). Either way an
+# ephemeral runner never exits and the container wedges the GPU slot.
 #
-# Two failure modes this clears (both wedge the GPU slot because the container
-# is Up so ghad-manager won't respawn the correct runner):
-#   1. Orphaned    -> container Up but the expected runner "<hostname>-<uid>"
-#                     (e.g. dgxb200-04-1003) is not connected to GitHub.
-#   2. Misregistered -> container Up and connected, but registered under the
-#                     WRONG name (its hex container hostname) with default
-#                     labels, so it never matches a DGX job. This is the
-#                     config.sh-without-`--unattended` fallback bug; the fix is
-#                     in scripts/multi-tenant-gpu-main.sh, this just remediates.
+# Only stops a container that is NOT busy (under its expected or actual name)
+# AND up longer than min_uptime_hours (default 2h). Dry-run unless -e apply=true;
+# aborts before stopping anything if the GitHub API check fails.
 #
-# What it does per host:
-#   1. Asks GitHub which org runners are online/busy (needs your token).
-#   2. For each tenant, checks whether its container is Up, for how long, and
-#      what name it actually registered as (from the in-container ~/.runner).
-#   3. Classifies every slot:
-#        keep   -> Up AND connected as "<hostname>-<uid>" (idle OR busy)  => kept
-#        young  -> Up but for less than min_uptime_hours                  => kept
-#        STUCK  -> Up > min_uptime_hours AND (not connected OR name drift) => stop
-#        none   -> no running container (ghad-manager will spawn)
-#   4. Dry-run by default. With -e apply=true it stops ONLY the STUCK
-#      containers; ghad-manager respawns a fresh, connected runner within ~20s.
-#
-# Safeguard: a container is stopped ONLY when it is (a) NOT healthily connected
-# (either offline, or connected under the wrong name), (b) NOT busy under either
-# name, AND (c) has been running longer than min_uptime_hours (default 2h). The
-# 2h floor means transient/mid-registration containers are never touched.
-#
-# Safety:
-#   * Never stops a runner reporting busy=true under either its expected or its
-#     actual (drifted) name — a container running a job is always kept.
-#   * An already-running container cannot fix its own registration (ghad-manager
-#     only re-registers by respawning, which requires stopping it first) — so
-#     there is no race where a "stuck" slot silently becomes healthy.
-#   * If the GitHub API call fails (bad/unscoped token, network), the play
-#     aborts on the `uri` task BEFORE stopping anything.
-#
-# Run it via:  just clear-stuck-runners [host/group] [apply]   (see justfile)
+# Run via: just clear-stuck-runners [host/group] [apply]
 
 - name: Clear orphaned runner containers not connected to GitHub
   hosts: all
