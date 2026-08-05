@@ -22,13 +22,21 @@ data:
 
     The agent never sees GITHUB_TOKEN — it makes a plain request and this addon
     attaches the credential for allow-listed hosts. Any other host is refused.
+
+    Auth scheme differs by endpoint: git-over-HTTPS (github.com, codeload) uses
+    Basic (x-access-token:<token>), while the REST API (api.github.com) uses
+    Bearer. Injecting Bearer at the git endpoints yields a 401 -> git prompts for
+    a username -> "could not read Username" failure.
     """
+    import base64
     import os
 
     from mitmproxy import http
 
     _TOKEN = os.environ.get("GITHUB_TOKEN", "")
-    _ALLOWED = {"github.com", "api.github.com", "codeload.github.com"}
+    _GIT_HOSTS = {"github.com", "codeload.github.com"}
+    _API_HOSTS = {"api.github.com"}
+    _ALLOWED = _GIT_HOSTS | _API_HOSTS
 
 
     def request(flow: http.HTTPFlow) -> None:
@@ -36,8 +44,13 @@ data:
         if host not in _ALLOWED:
             flow.response = http.Response.make(403, b"host not allowed by sandbox proxy\n")
             return
-        if _TOKEN:
+        if not _TOKEN:
+            return
+        if host in _API_HOSTS:
             flow.request.headers["Authorization"] = f"Bearer {_TOKEN}"
+        else:
+            basic = base64.b64encode(f"x-access-token:{_TOKEN}".encode()).decode()
+            flow.request.headers["Authorization"] = f"Basic {basic}"
 ---
 apiVersion: apps/v1
 kind: Deployment
