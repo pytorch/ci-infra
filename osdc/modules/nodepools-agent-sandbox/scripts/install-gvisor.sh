@@ -27,14 +27,16 @@ install_bin() {
 install_bin runsc
 install_bin containerd-shim-runsc-v1
 
-# Register runsc as a containerd runtime handler. EKS AL2023 ships a single
-# /etc/containerd/config.toml; appending a runtime stanza is additive and does
-# not disturb the default runc runtime.
+# Register runsc as a containerd runtime handler. EKS AL2023 ships containerd
+# v2.x with config `version = 3`, whose CRI plugin key is
+# `io.containerd.cri.v1.runtime` (NOT the containerd-1.x `io.containerd.grpc.v1.cri`
+# — a v1-style stanza is silently ignored, so runsc never registers). Appending a
+# runtime stanza under the v3 key is additive and leaves the default runc alone.
 CONFIG=/etc/containerd/config.toml
 if ! grep -q 'containerd.runtimes.runsc' "${CONFIG}"; then
   cat >>"${CONFIG}" <<'EOF'
 
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
   runtime_type = "io.containerd.runsc.v1"
 EOF
 fi

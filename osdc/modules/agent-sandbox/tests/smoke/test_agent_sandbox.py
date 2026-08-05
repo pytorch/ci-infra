@@ -9,7 +9,6 @@ succeeds (that is the e2e test).
 
 from __future__ import annotations
 
-import json
 import subprocess
 
 import pytest
@@ -58,14 +57,14 @@ class TestAgentSandboxProxies:
         svcs = filter_services(all_services, namespace=NAMESPACE, name=svc_name)
         assert len(svcs) == 1, f"Expected Service '{svc_name}' in '{NAMESPACE}'."
 
-    def test_agent_vault_default_deny_egress(self) -> None:
-        """Agent Vault must run in strict deny mode — only allow-listed hosts get
-        credentials AND reach out; everything else is refused."""
+    def test_header_proxy_default_deny_and_inject(self) -> None:
+        """The header-proxy (mitmproxy) addon must default-deny non-allow-listed
+        hosts and inject the credential on the wire."""
         cm = run_kubectl(["get", "configmap", "agent-vault-config"], namespace=NAMESPACE)
-        config = json.loads(cm["data"]["config.json"])
-        assert config.get("unmatched_host_policy") == "deny", (
-            "agent-vault config must set unmatched_host_policy=deny (default-deny egress)."
-        )
+        addon = cm.get("data", {}).get("inject.py", "")
+        assert "_ALLOWED" in addon, "inject addon must define a host allowlist."
+        assert "403" in addon, "inject addon must default-deny hosts not on the allowlist."
+        assert "Authorization" in addon, "inject addon must attach the Authorization header."
 
 
 class TestSandboxWorker:

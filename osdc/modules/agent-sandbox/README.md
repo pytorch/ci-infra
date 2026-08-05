@@ -35,9 +35,12 @@ egress lockdown, and a per-task-ephemeral (vs warm) worker are deferred (see
 
 - **Isolation:** `nodepools-agent-sandbox` fleet installs gVisor (runsc) via node
   userData; the `gvisor` RuntimeClass pins the worker there.
-- **Credentials:** `agent-vault` (Infisical Agent Vault) header-injection proxy
-  for GitHub; `aws-sigv4-proxy` for AWS/Bedrock via a read-only IRSA role
-  (terraform). The worker holds neither.
+- **Credentials:** `agent-vault` — a **mitmproxy**-based header-injection proxy
+  (a ~10-line addon that default-denies non-allow-listed hosts and injects the
+  GitHub token on the wire) for GitHub; `aws-sigv4-proxy` for AWS/Bedrock via a
+  read-only IRSA role (terraform). The worker holds neither. (We initially picked
+  Infisical Agent Vault, but it is a stateful server — accounts/vaults/DB — not a
+  config-file injector, so the prototype uses mitmproxy, which we fully own.)
 - **Invocation:** `sandbox-agent` Service (`:8080`), reachable from `arc-runners`
   via `sandbox-agent-ingress` NetworkPolicy — BuildKit parity.
 
@@ -68,9 +71,8 @@ egress lockdown, and a per-task-ephemeral (vs warm) worker are deferred (see
      kubectl create secret generic agent-vault-ca -n ai-sandbox \
        --from-file=ca.crt=ca.crt --from-file=ca.key=ca.key
      ```
-3. **Verify the upstream proxy specifics** (preview-stage software): pin
-   `infisical/agent-vault` + `aws-sigv4-proxy` by digest and confirm Agent
-   Vault's `config.json` schema / flags / listen port against the pinned version.
+3. **Pin the proxy images by digest** (`mitmproxy/mitmproxy`, `aws-sigv4-proxy`)
+   before any non-prototype use.
 
 ## Deploy
 
@@ -112,4 +114,4 @@ it clones a repo through the proxy without the runner or worker holding a token.
   Per-task-ephemeral pods (a dispatcher that creates a Job per request) are Phase 2.
 - **Output is trusted as-is.** The propose/dispose validation + approval gate is
   Phase 2.
-- **Upstream proxies are preview-stage** — vendor + digest-pin before non-prototype use.
+- **Proxy images are unpinned** (`mitmproxy/mitmproxy:latest`, `aws-sigv4-proxy:latest`) — digest-pin before non-prototype use.

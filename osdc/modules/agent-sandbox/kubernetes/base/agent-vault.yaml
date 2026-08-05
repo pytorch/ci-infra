@@ -1,16 +1,14 @@
-# Infisical Agent Vault — header-injection egress proxy (the mature project that
-# yagop/sandbox is a simplified copy of). TLS-MITM forward proxy: the agent sets
-# HTTPS_PROXY to this Service and trusts the proxy CA; the proxy substitutes the
-# real credential (held here, never in the agent) on the wire.
+# Header-injection egress proxy (mitmproxy). Named "agent-vault" for Service/label
+# stability, but implemented with mitmproxy + a tiny addon — the Infisical Agent
+# Vault image turned out to be a stateful server, not a config-file injector, so
+# we use the mature, self-owned option instead.
 #
-# Runs on base infra nodes (tolerates CriticalAddonsOnly), NOT on the sandbox
-# fleet — the credential never shares a node/gVisor sandbox with agent code.
-#
-# PROTOTYPE — VERIFY BEFORE DEPLOY:
-#   * Image tag: pin to a real released digest of infisical/agent-vault.
-#   * config.json schema, CLI flags, and listen port (14322) must be confirmed
-#     against the pinned Agent Vault version — this is a preview-stage upstream
-#     whose interface may differ from what is encoded here.
+# TLS-MITM forward proxy: the agent sets HTTPS_PROXY to this Service and trusts
+# the proxy CA (agent-vault-ca); the addon injects the read-only GitHub token
+# (held here, never in the agent) on the wire, and default-denies any host not on
+# the allowlist. Runs on base infra nodes (tolerates CriticalAddonsOnly), NOT on
+# the sandbox fleet — the credential never shares a node/gVisor sandbox with agent
+# code.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,19 +17,27 @@ metadata:
   labels:
     osdc.io/module: agent-sandbox
 data:
-  config.json: |
-    {
-      "listen": ":14322",
-      "unmatched_host_policy": "deny",
-      "secrets": {
-        "github": { "type": "bearer", "env": "GITHUB_TOKEN" }
-      },
-      "rules": [
-        { "host": "github.com", "secret": "github" },
-        { "host": "api.github.com", "secret": "github" },
-        { "host": "codeload.github.com", "secret": "github" }
-      ]
-    }
+  inject.py: |
+    """mitmproxy addon: default-deny egress + inject the GitHub token on the wire.
+
+    The agent never sees GITHUB_TOKEN — it makes a plain request and this addon
+    attaches the credential for allow-listed hosts. Any other host is refused.
+    """
+    import os
+
+    from mitmproxy import http
+
+    _TOKEN = os.environ.get("GITHUB_TOKEN", "")
+    _ALLOWED = {"github.com", "api.github.com", "codeload.github.com"}
+
+
+    def request(flow: http.HTTPFlow) -> None:
+        host = flow.request.pretty_host
+        if host not in _ALLOWED:
+            flow.response = http.Response.make(403, b"host not allowed by sandbox proxy\n")
+            return
+        if _TOKEN:
+            flow.request.headers["Authorization"] = f"Bearer {_TOKEN}"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -53,15 +59,50 @@ spec:
         osdc.io/module: agent-sandbox
     spec:
       serviceAccountName: agent-vault
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # fsGroup makes the /certs emptyDir group-writable so mitmproxy (uid 1000)
+        # can use the CA the init container writes there.
+        fsGroup: 1000
       tolerations:
         - key: CriticalAddonsOnly
           operator: Exists
           effect: NoSchedule
+      initContainers:
+        # mitmproxy expects a single PEM (key + cert) at <confdir>/mitmproxy-ca.pem.
+        # Build it from the operator-provided CA secret.
+        - name: build-ca
+          # TODO(prototype): pin by digest.
+          image: mitmproxy/mitmproxy:latest
+          command: ["sh", "-c", "cat /ca/ca.key /ca/ca.crt > /certs/mitmproxy-ca.pem"]
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: ca
+              mountPath: /ca
+              readOnly: true
+            - name: certs
+              mountPath: /certs
       containers:
-        - name: agent-vault
-          # TODO(prototype): pin by digest; verify the real entrypoint/flags.
-          image: infisical/agent-vault:latest
-          args: ["proxy", "--config", "/etc/agent-vault/config.json"]
+        - name: mitmproxy
+          # TODO(prototype): pin by digest.
+          image: mitmproxy/mitmproxy:latest
+          command:
+            - mitmdump
+            - --listen-host
+            - "0.0.0.0"
+            - --listen-port
+            - "14322"
+            - --set
+            - confdir=/certs
+            # Pods have public (global) IPv6 source addresses; without this
+            # mitmproxy refuses them as non-local clients.
+            - --set
+            - block_global=false
+            - -s
+            - /addons/inject.py
           ports:
             - name: proxy
               containerPort: 14322
@@ -74,25 +115,22 @@ spec:
                   name: agent-sandbox-creds
                   key: github-token
           volumeMounts:
-            - name: config
-              mountPath: /etc/agent-vault
+            - name: addon
+              mountPath: /addons
               readOnly: true
-            - name: ca
-              mountPath: /etc/agent-vault/ca
-              readOnly: true
+            - name: certs
+              mountPath: /certs
           securityContext:
-            runAsNonRoot: true
-            runAsUser: 2000
             allowPrivilegeEscalation: false
           resources:
             requests:
               cpu: "100m"
-              memory: "128Mi"
+              memory: "256Mi"
             limits:
               cpu: "500m"
-              memory: "256Mi"
+              memory: "512Mi"
       volumes:
-        - name: config
+        - name: addon
           configMap:
             name: agent-vault-config
         - name: ca
@@ -100,6 +138,8 @@ spec:
             # Pre-generated MITM CA (ca.crt + ca.key). Created out-of-band; the
             # agent trusts ca.crt. See README.
             secretName: agent-vault-ca
+        - name: certs
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

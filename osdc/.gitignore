@@ -24,3 +24,6 @@ modules/*/generated/
 .DS_Store
 .env
 
+ca.crt
+ca.key
+*.pem
