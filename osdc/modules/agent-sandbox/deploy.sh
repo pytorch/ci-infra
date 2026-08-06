@@ -67,6 +67,11 @@ echo "[agent-sandbox] Pruning removed proxy resources (if present)..."
 kubectl delete deployment,service,serviceaccount agent-vault sigv4-proxy \
   -n "$NAMESPACE" --ignore-not-found
 kubectl delete configmap agent-vault-config -n "$NAMESPACE" --ignore-not-found
+# Stale NetworkPolicies from the proxy design: the old `default-deny` (now
+# `default-deny-ingress`) plus the proxy/agent egress policies. Leaving them would
+# keep egress restricted, contradicting the open-egress prototype.
+kubectl delete networkpolicy default-deny proxy-ingress proxy-egress sandbox-agent-egress \
+  -n "$NAMESPACE" --ignore-not-found
 
 # --- Annotate the sandbox-agent SA with its Bedrock IRSA role ---
 # The pod-identity webhook injects the web-identity token from this annotation
