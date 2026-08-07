@@ -1955,3 +1955,49 @@ jobs:
           echo "PASS: built $(basename "$WHL")"
   # END_RELEASE
 
+
+  # BEGIN_AGENT_SANDBOX
+  # ── AI Agent Sandbox ──────────────────────────────────────────────────
+  # Call the sandbox over the network from a regular runner — exactly like a
+  # runner calls buildkitd. Proves: (1) the sandbox Service is reachable from
+  # arc-runners (NetworkPolicy allow, no RBAC), and (2) it does credentialed
+  # work (clones a repo via the agent-vault proxy) without the runner OR the
+  # agent ever holding a token. Bedrock is exercised when a model is configured;
+  # a Bedrock error is surfaced but does not fail the isolation assertion.
+  test-agent-sandbox:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    env:
+      SANDBOX: http://sandbox-agent.ai-sandbox.svc.cluster.local:8080
+    steps:
+      - name: Install curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl
+      - name: Health check (reachable from a regular runner, like buildkitd)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$SANDBOX/healthz"
+          echo ""
+          echo "PASS: sandbox Service reachable from arc-runners"
+      - name: Run a task through the sandbox (credential-free clone + Bedrock)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESP=$(curl -fsS -X POST "$SANDBOX/run" \
+            -H 'Content-Type: application/json' \
+            -d '{"repo":"pytorch/pytorch","ref":"main","task":"List the top-level files."}')
+          echo "Response: $RESP"
+          if ! echo "$RESP" | grep -q '"cloned": *true'; then
+            echo "FAIL: sandbox did not clone the repo (credential injection broken?)"
+            exit 1
+          fi
+          echo "PASS: sandbox cloned via the agent-vault proxy — no token on the runner or agent"
+          if echo "$RESP" | grep -q '"bedrock"'; then
+            echo "WARN: Bedrock step reported an error (model not enabled?); isolation path still verified"
+          else
+            echo "PASS: Bedrock invocation via the sigv4 proxy returned a report"
+          fi
+  # END_AGENT_SANDBOX

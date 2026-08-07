@@ -1,0 +1,26 @@
+# gVisor RuntimeClass. Cluster-scoped. The handler "runsc" is registered in
+# containerd on the ai-sandbox fleet by nodepools-agent-sandbox/scripts/install-gvisor.sh.
+#
+# The scheduling block auto-stamps every pod that sets runtimeClassName: gvisor
+# with the nodeSelector + tolerations for the ai-sandbox fleet, so the agent Job
+# spec doesn't have to repeat them and cannot accidentally land on a non-gVisor
+# node (a node without the runsc handler would fail to start the pod).
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+  labels:
+    osdc.io/module: agent-sandbox
+handler: runsc
+scheduling:
+  nodeSelector:
+    node-fleet: ai-sandbox
+  tolerations:
+    - key: node-fleet
+      operator: Equal
+      value: ai-sandbox
+      effect: NoSchedule
+    - key: instance-type
+      operator: Equal
+      value: c7i.8xlarge
+      effect: NoSchedule
