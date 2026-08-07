@@ -15,7 +15,7 @@ Before declaring runner/nodepool work complete: run `just lint` and `just test` 
 
 ## Runner & NodePool Change Checklist (MANDATORY)
 
-When changing runner definitions (`modules/arc-runners/defs/`, `modules/arc-runners-h100/defs/`, `modules/arc-runners-b200/defs/`) or NodePool definitions (`modules/nodepools/defs/`, `modules/nodepools-h100/defs/`, `modules/nodepools-b200/defs/`), you MUST update the following `scripts/python/` files to stay in sync:
+When changing runner definitions (`modules/arc-runners/defs/`, `modules/arc-runners-h100/defs/`) or NodePool definitions (`modules/nodepools/defs/`, `modules/nodepools-h100/defs/`), you MUST update the following `scripts/python/` files to stay in sync:
 
 | File | What to update |
 |------|---------------|
@@ -42,7 +42,7 @@ All self-hosted runner pods run in `containerMode: kubernetes-novolume`. Workflo
 2. **Auto-resolve**: otherwise `resolve_runner_version.py` is invoked. It uses the SHA of the most recent commit touching anything under `osdc/` as a lookup key into the `arc-runner-version-lock` ConfigMap (namespace `osdc-system`, key `history.json`, capped at 20 entries newest-first). Cache hit returns the locked `tag@digest`. Cache miss calls GitHub `/releases/latest`, resolves the digest via `crane digest`, prepends the entry, and writes back with optimistic-concurrency (resourceVersion); 409 retries up to 5 times.
 3. **Final fallback**: `generate_runners.py` line ~275 contains `cluster_config.get("runner_image", "ghcr.io/actions/actions-runner:2.333.1")` — but in practice `deploy.sh` always exports `RUNNER_IMAGE`, so the literal `2.333.1` only ever appears via unit tests, never via deploy.
 
-The three `arc-runners*` modules (`arc-runners`, `arc-runners-h100`, `arc-runners-b200`) deploy concurrently and share the same lock ConfigMap. The H100 and B200 modules `exec` into the base `arc-runners/deploy.sh` with `ARC_RUNNERS_DEFS_DIR` / `ARC_RUNNERS_OUTPUT_DIR` / `ARC_RUNNERS_MODULE_NAME` overrides, so they inherit the resolver result. See `docs/runner-image-autoresolve.md` for the full ConfigMap shape, failure modes, and rollback paths.
+The two `arc-runners*` modules (`arc-runners`, `arc-runners-h100`) deploy concurrently and share the same lock ConfigMap. The H100 module `exec`s into the base `arc-runners/deploy.sh` with `ARC_RUNNERS_DEFS_DIR` / `ARC_RUNNERS_OUTPUT_DIR` / `ARC_RUNNERS_MODULE_NAME` overrides, so it inherits the resolver result. See `docs/runner-image-autoresolve.md` for the full ConfigMap shape, failure modes, and rollback paths.
 
 There is no longer a `.github/workflows/osdc-auto-update-deploy-prod.yml` — deploy-time resolution replaced the Renovate flow. The smoke test `modules/arc-runners/tests/smoke/test_runner_version_lock.py` validates the ConfigMap shape and cross-checks the locked entry against the deployed `AutoscalingRunnerSet` pod templates.
 
@@ -141,7 +141,7 @@ Generated EC2NodeClass `userData` is multipart MIME. The `application/node.eks.a
 
 Generated EC2NodeClass templates set `spec.metadataOptions.httpProtocolIPv6: enabled`. Under IPv6-only EKS the instance metadata service (IMDS) is reachable at `[fd00:ec2::254]` instead of the IPv4 link-local `169.254.169.254`. Workloads, kubelet, and AWS SDKs that talk to IMDS must do so over IPv6; enabling `httpProtocolIPv6` is what makes the IMDS endpoint listen on the IPv6 link-local address. Applied to: every nodepool generator output (`modules/nodepools/scripts/python/generate_nodepools.py`) and the pypi-cache nodepool template (`modules/pypi-cache/kubernetes/ec2nodeclass.yaml.tpl`).
 
-GPU pools (H100, B200) optionally append a `text/x-shellscript` MIME part via the per-def `user_data_script` field — used today for one-shot containerd registry mirror config that must be in place before any image pull. Prefer DaemonSets where possible; reserve `user_data_script` for boot-critical setup only.
+GPU pools (H100) optionally append a `text/x-shellscript` MIME part via the per-def `user_data_script` field — used today for one-shot containerd registry mirror config that must be in place before any image pull. Prefer DaemonSets where possible; reserve `user_data_script` for boot-critical setup only.
 
 **TEMPORARY mitigations** — two kernel-mod blacklist DaemonSets with identical shape and the same lifecycle:
 - `base/kubernetes/algif-mitigation.yaml` — modprobe blacklist for CVE-2026-31431 ("Copy Fail" algif_aead LPE). Remove once nodes are on a kernel 6.12.85+ AL2023 AMI. AMI pinnings tagged with `TODO(CVE-2026-31431)` markers are the trigger points: `clusters.yaml`, `modules/nodepools/scripts/python/generate_nodepools.py`, `modules/buildkit/scripts/python/generate_buildkit.py`, `modules/pypi-cache/kubernetes/ec2nodeclass.yaml.tpl`. Watch https://explore.alas.aws.amazon.com/CVE-2026-31431.html.
@@ -170,7 +170,7 @@ nodepool:
   node_compactor: true                        # per-def override of cluster default
 ```
 
-**`fleet:`** — multi-instance fleet (one NodePool per instance, all sharing a `node-fleet` label/taint). Used by every current def — including single-instance GPU pools (`p4d.yaml`, `nodepools-h100/defs/p5.yaml`, `nodepools-b200/defs/p6.yaml`), which are fleets with one instance entry.
+**`fleet:`** — multi-instance fleet (one NodePool per instance, all sharing a `node-fleet` label/taint). Used by every current def — including single-instance GPU pools (`p4d.yaml`, `nodepools-h100/defs/p5.yaml`), which are fleets with one instance entry.
 ```yaml
 fleet:
   name: g5
@@ -187,9 +187,9 @@ fleet:
 
 **`fleets:`** — multi-fleet file (several fleets in one YAML). Detected by the generator but unused in the current defs.
 
-**`-large` companion fleets** (dual-fleet pattern): full-node 8-GPU runners (`l-bx86iavx512-88-1000-a100-8`, `l-bx86iamx-176-1800-h100-8`, `l-bx86iamx-176-1800-b200-8`) override `node_fleet` to point at dedicated `-large` companion pools: `p4d-large`, `p5-large`, `p6-b200-large` (plus CPU equivalents `c7i-large`, `c7a-large`, `r7a-large`, `m7g-metal`, `m8g-large`, `g4dn-metal`, `g5-large`). The companion fleets deliberately do **NOT** set `single-numa-node` because an 8-GPU pod spans both NUMA nodes and would hit `TopologyAffinityError` under `single-numa-node`. The packed multi-tenant pool keeps the strict NUMA policy; the `-large` companion stays at `best-effort`.
+**`-large` companion fleets** (dual-fleet pattern): full-node 8-GPU runners (`l-bx86iavx512-88-1000-a100-8`, `l-bx86iamx-176-1800-h100-8`) override `node_fleet` to point at dedicated `-large` companion pools: `p4d-large`, `p5-large` (plus CPU equivalents `c7i-large`, `c7a-large`, `r7a-large`, `m7g-metal`, `m8g-large`, `g4dn-metal`, `g5-large`). The companion fleets deliberately do **NOT** set `single-numa-node` because an 8-GPU pod spans both NUMA nodes and would hit `TopologyAffinityError` under `single-numa-node`. The packed multi-tenant pool keeps the strict NUMA policy; the `-large` companion stays at `best-effort`.
 
-NUMA defaults: `topologyManagerPolicy: best-effort` for everything by default. Only the packed GPU pools `p4d`, `p5`, `p6` pin `single-numa-node` with `pod` scope. Their `-large` companions stay at `best-effort` so the whole-node 8-GPU runner can span both NUMA nodes.
+NUMA defaults: `topologyManagerPolicy: best-effort` for everything by default. Only the packed GPU pools `p4d`, `p5` pin `single-numa-node` with `pod` scope. Their `-large` companions stay at `best-effort` so the whole-node 8-GPU runner can span both NUMA nodes.
 
 **Not in the schema**: there is no `bucket`, `max_pods`, `pod_cidr_buckets`, or per-AZ fan-out. EC2NodeClasses are emitted without `spec.kubelet.maxPods` (kubelet uses the AWS-stock default per `ENI_MAX_PODS`). An IPv4 + Custom Networking bucket scheme was considered (`INCREASE_IPV4.md`) but the codebase moved to IPv6-only EKS in PR #576; do not add these fields — they will be silently ignored by the generator.
 
@@ -197,7 +197,7 @@ Generated YAMLs contain `CLUSTER_NAME_PLACEHOLDER` — `deploy.sh` does `sed` re
 
 ### Runner Def File Schema
 
-`modules/arc-runners/defs/*.yaml` (and `arc-runners-h100/defs`, `arc-runners-b200/defs`):
+`modules/arc-runners/defs/*.yaml` (and `arc-runners-h100/defs`):
 ```yaml
 runner:
   name: l-x86iamx-22-225-h100   # ~42 char limit (see docs/runner_naming_convention.md)
@@ -256,7 +256,7 @@ Lives at `base/node-compactor/` (NOT under `modules/`). Cluster-level default `n
 
 - **Runner pod** (750m CPU, **1Gi memory**) — lightweight ARC orchestrator; mounts hook ConfigMap. Bumped from 512Mi to 1Gi to give native Node.js stdio buffers (held open by slow CRI exec during pod-density bursts) headroom — observed OOMs traced back to native buffers, not V8 heap. `.NET` runner caps via `DOTNET_GCHeapHardLimit=C800000` (200 MiB), Node hooks via `NODE_OPTIONS=--max-old-space-size=128`. Resources are fixed in `templates/runner.yaml.tpl`, NOT in def files. Listener `CAPACITY_AWARE_RUNNER_CPU/MEMORY` env vars MUST stay in sync with these.
 - **Job pod** (resources from def file `vcpu`/`memory`/`disk_size`/`gpu`) — runs actual workflow containers, gets git cache volume.
-- Min runners 0; runner scaling is unlimited unless `max_runners` is set in the def. Prefer overspend over outage — only cap fixed-capacity reserved pools (e.g. H100/B200 Capacity Blocks).
+- Min runners 0; runner scaling is unlimited unless `max_runners` is set in the def. Prefer overspend over outage — only cap fixed-capacity reserved pools (e.g. H100 Capacity Blocks).
 
 **Init container `wait-for-hooks`**: every runner pod runs an Alpine init container that polls `/mnt/host-hooks/dist/index.js` (placed by the `runner-hooks-warmer` DaemonSet in `arc-runners` namespace) for up to 300s, then snapshots `dist/` + `.version` into an emptyDir consumed by the main runner. This is a hard scheduling-gate dependency: nodes without the warmer DaemonSet ready cannot run jobs. Remove when upstream merges the patched hooks.
 
@@ -278,7 +278,7 @@ The pairing ensures workflow pods can claim the capacity reserved by the placeho
 
 ## GPU Nodepools
 
-Three NVIDIA GPU node families are supported, each with a unified single-fleet runner family providing 1/2/4/8-GPU splits via `nvidia.com/gpu` resource requests (NUMA single-numa-node policy).
+Two NVIDIA GPU node families are supported, each with a unified single-fleet runner family providing 1/2/4/8-GPU splits via `nvidia.com/gpu` resource requests (NUMA single-numa-node policy).
 
 | GPU | Instance | Module | Capacity model | Notes |
 |-----|----------|--------|----------------|-------|
@@ -286,13 +286,12 @@ Three NVIDIA GPU node families are supported, each with a unified single-fleet r
 | **L4** / T4 / older | g6, g4dn fleets | `nodepools` | on-demand | shared `nodepools` defs |
 | **A100 40GB SXM4** | p4d.24xlarge | `nodepools` (`p4d.yaml` `fleet:` + companion `p4d-large.yaml`) | **on-demand** (no Capacity Block) | excludes us-west-1; packed runners `l-x86iavx512-{11-125-a100, 22-250-a100-2, 44-500-a100-4}` on the `p4d` fleet (single-numa-node), `l-bx86iavx512-88-1000-a100-8` pinned via `node_fleet: p4d-large` (best-effort) |
 | **H100 80GB SXM5** | p5.48xlarge | **`nodepools-h100`** (`p5.yaml` + `p5-large.yaml`) + **`arc-runners-h100`** | **AWS Capacity Blocks** (`reserved`; reservation IDs are per-cluster under `clusters.<id>.nodepools-h100.capacity_reservation_ids` — e.g. us-east-2 single `cr-0c3f05dffb85ed832`, us-west-1 dual `cr-04d3d1d84e127a562` + `cr-09a53051589034fb8` for 48 H100s total) | All H100 defs use the per-cluster max_runners dict form. Default values (sized for one 8-GPU node): 1-GPU=8, 2-GPU=4, 4-GPU=2, 8-GPU=1. `arc-cbr-production-uw1` overrides: 1-GPU=48, 2-GPU=24, 4-GPU=12, 8-GPU=6 (sized for the 6 reserved nodes). 8-GPU def pins `node_fleet: p5-large`. Packed `p5.yaml` uses `user_data_script: scripts/h100-node-setup.sh` |
-| **B200** | p6-b200.48xlarge | **`nodepools-b200`** (`p6.yaml` + `p6-b200-large.yaml`) + **`arc-runners-b200`** | **AWS Capacity Blocks** (`reserved`, single ID `cr-0b15c0b3163f09d26` in us-east-2) | All B200 defs use plain-int max_runners (no per-cluster dict): 1-GPU=8, 2-GPU=4, 4-GPU=2, 8-GPU=1. 8-GPU def pins `node_fleet: p6-b200-large`. Packed `p6.yaml` uses `user_data_script: scripts/b200-node-setup.sh` |
 
-A100 nodes scale fully with workload (no warm floor — first job after consolidation pays a 5-10 min cold start). H100/B200 nodes are reserved capacity, so concurrency is capped to the reservation.
+A100 nodes scale fully with workload (no warm floor — first job after consolidation pays a 5-10 min cold start). H100 nodes are reserved capacity, so concurrency is capped to the reservation.
 
 ## Modular Submodule Pattern (GPU pools)
 
-`nodepools-h100`, `nodepools-b200`, `arc-runners-h100`, `arc-runners-b200` are thin shims that **delegate to the base modules** (`nodepools`, `arc-runners`) with overridden defs/output paths. New GPU SKUs can be added as new sibling modules without touching the base.
+`nodepools-h100`, `arc-runners-h100` are thin shims that **delegate to the base modules** (`nodepools`, `arc-runners`) with overridden defs/output paths. New GPU SKUs can be added as new sibling modules without touching the base.
 
 `modules/nodepools-h100/deploy.sh`:
 ```bash

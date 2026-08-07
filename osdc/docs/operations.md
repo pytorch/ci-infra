@@ -89,7 +89,7 @@ just deploy-module meta-staging-aws-uw1 monitoring
 just deploy-module meta-staging-aws-uw1 logging
 ```
 
-The full per-cluster module list lives in `clusters.yaml` under `clusters.<id>.modules`. Production clusters add GPU pools (`nodepools-h100`, `nodepools-b200`) and matching runners (`arc-runners-h100`, `arc-runners-b200`).
+The full per-cluster module list lives in `clusters.yaml` under `clusters.<id>.modules`. Production clusters add GPU pools (`nodepools-h100`) and matching runners (`arc-runners-h100`).
 
 ## Day-to-day operations
 

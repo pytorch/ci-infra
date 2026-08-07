@@ -19,7 +19,7 @@ Job counts and peak concurrency by runner type over the last 30 days. Source: `d
 - The `lf.` prefix (Linux Foundation) is stripped and merged with non-prefixed equivalents — they run on the same hardware.
 - Meta-labels (`self-hosted`, `Linux`, `macOS`, `windows`, `X64`, `ARM64`, etc.) are excluded.
 - **Scope: pytorch/pytorch only.** Other repos share the same runner pools but are not included. True infrastructure peak may be higher.
-- **OSDC vs. non-OSDC labels.** OSDC manages only AWS-hosted Linux x86/ARM64 runners (CPU + AWS GPU instances). The Windows, macOS, ROCm (AMD MI-series), DGX B200, Google TPU, Intel XPU, and IBM s390x sections below are run by other providers and are included only for capacity context. The `linux.aws.h100*`, `linux.aws.a100`, and `linux.dgx.b200*` rows in "Other providers" are non-OSDC labels; the OSDC equivalents use the `a.linux.h100*` / `a.linux.a100*` / `a.linux.b200*` namespace (see `scripts/python/pytorch_workload_data.py` and `docs/runner_naming_convention.md`). At the 2026-03-18 snapshot these OSDC GPU labels saw negligible traffic; with H100/A100 in production they are now significant but not yet re-queried.
+- **OSDC vs. non-OSDC labels.** OSDC manages only AWS-hosted Linux x86/ARM64 runners (CPU + AWS GPU instances). The Windows, macOS, ROCm (AMD MI-series), DGX B200, Google TPU, Intel XPU, and IBM s390x sections below are run by other providers and are included only for capacity context. The `linux.aws.h100*`, `linux.aws.a100`, and `linux.dgx.b200*` rows in "Other providers" are non-OSDC labels; the OSDC equivalents use the `a.linux.h100*` / `a.linux.a100*` namespace (see `scripts/python/pytorch_workload_data.py` and `docs/runner_naming_convention.md`). At the 2026-03-18 snapshot these OSDC GPU labels saw negligible traffic; with H100/A100 in production they are now significant but not yet re-queried.
 
 ## Self-hosted Linux runners (old labels)
 
@@ -134,11 +134,10 @@ Job counts and peak concurrency by runner type over the last 30 days. Source: `d
 | linux.aws.h100.4 | 244 | 9 |
 | linux.client.xpu | 97 | 8 |
 | linux.aws.h100.8 | 36 | 1 |
-| a.linux.b200.2 | 9 | 2 |
 
 ## OSDC runners (new labels)
 
-> **Snapshot only — staging traffic from 2026-03-18.** At the time of the snapshot the OSDC migration was in its early phase and only a handful of runners had received jobs. The OSDC fleet is now production-scale: ~42 runner defs in `modules/arc-runners/defs/` (including A100 GPU runners and release runners), 4 in `modules/arc-runners-h100/defs/`, and 4 in `modules/arc-runners-b200/defs/`. The numbers below should not be read as current OSDC load.
+> **Snapshot only — staging traffic from 2026-03-18.** At the time of the snapshot the OSDC migration was in its early phase and only a handful of runners had received jobs. The OSDC fleet is now production-scale: ~42 runner defs in `modules/arc-runners/defs/` (including A100 GPU runners and release runners), and 4 in `modules/arc-runners-h100/defs/`. The numbers below should not be read as current OSDC load.
 
 | Runner Type | Jobs (30d) | Peak Concurrent |
 |---|---|---|
@@ -245,7 +244,7 @@ The fleet estimates above are derived from three `just` recipes. Re-run them whe
 ### Data sources
 
 - **Peak concurrency targets**: from the "Self-hosted Linux runners" table above (Peak Concurrent column), mapped through the old→new label table in `docs/runner_naming_convention.md`
-- **Runner definitions**: `modules/arc-runners/defs/` (vCPU, memory, GPU requests per runner type), plus `modules/arc-runners-h100/defs/` and `modules/arc-runners-b200/defs/` for the dedicated GPU modules
+- **Runner definitions**: `modules/arc-runners/defs/` (vCPU, memory, GPU requests per runner type), plus `modules/arc-runners-h100/defs/` for the dedicated GPU module
 - **NodePool definitions**: `modules/nodepools/defs/` (Karpenter NodePool fleets — instance types, allocatable resources, taints; includes the `c7i-runner` pool for the proactive-capacity PoC), plus `modules/nodepools-h100/defs/p5-48xlarge.yaml` for the H100 reserved-capacity pool
 
 ### Commands
@@ -266,7 +265,7 @@ just simulate-cluster --rounds 200
 
 ### When to re-run
 
-- After adding, removing, or resizing runner definitions in `modules/arc-runners/defs/`, `modules/arc-runners-h100/defs/`, or `modules/arc-runners-b200/defs/`
+- After adding, removing, or resizing runner definitions in `modules/arc-runners/defs/` or `modules/arc-runners-h100/defs/`
 - After changing nodepool instance types in `modules/nodepools/defs/` or `modules/nodepools-h100/defs/`
 - After updating the peak concurrency data in the load distribution tables above — when refreshing those tables, also update `PEAK_CONCURRENT` and `OLD_TO_NEW_LABEL` in `scripts/python/pytorch_workload_data.py` in the same change
 - After changing DaemonSet resource requests (affects per-node overhead)

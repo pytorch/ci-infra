@@ -85,7 +85,7 @@ def resolve(cfg: dict, dotpath: str, default=None):
 def normalize_modules(modules: list[str]) -> set[str]:
     """Expand a module list so an `-opt` shim variant also satisfies a base-module
     requirement (arc-runners-opt also counts as arc-runners, nodepools-opt as nodepools).
-    GPU variants (-h100/-b200) are intentionally NOT aliased — they are distinct capabilities
+    GPU variants (-h100) are intentionally NOT aliased — they are distinct capabilities
     with their own test gating."""
     result = set(modules)
     for m in modules:

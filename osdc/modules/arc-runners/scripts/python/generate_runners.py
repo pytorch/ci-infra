@@ -243,7 +243,7 @@ def generate_runner(
     disk_size = runner.get("disk_size", 100)
     runner_group = runner.get("runner_group", "default")
     runner_class = runner.get("runner_class", "")
-    # Optional concurrency cap for fixed-capacity pools (e.g. B200 Capacity Blocks).
+    # Optional concurrency cap for fixed-capacity pools (e.g. Capacity Blocks).
     # Omit to leave the RSS unbounded, which is correct for Karpenter-managed pools
     # that can scale out on demand.
     max_runners = runner.get("max_runners")

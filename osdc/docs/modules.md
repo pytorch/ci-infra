@@ -152,11 +152,11 @@ Per-module Alloy pipeline contributions have been removed. The `logging` module 
 
 ## Tests
 
-Most non-delegate modules have a `tests/` directory; pytest tests are auto-collected by `just test`. Exceptions: the four delegate modules (`arc-runners-h100`, `arc-runners-b200`, `nodepools-h100`, `nodepools-b200`) have no `tests/` of their own, and `zombie-cleanup` keeps its tests alongside the script under `scripts/python/test_*.py`. Modules that own deployable behaviour can additionally provide a `tests/smoke/` directory — `just smoke <cluster>` walks every enabled module and runs whichever `tests/smoke` it finds. Every non-delegate module currently has one.
+Most non-delegate modules have a `tests/` directory; pytest tests are auto-collected by `just test`. Exceptions: the two delegate modules (`arc-runners-h100`, `nodepools-h100`) have no `tests/` of their own, and `zombie-cleanup` keeps its tests alongside the script under `scripts/python/test_*.py`. Modules that own deployable behaviour can additionally provide a `tests/smoke/` directory — `just smoke <cluster>` walks every enabled module and runs whichever `tests/smoke` it finds. Every non-delegate module currently has one.
 
 ## Delegate modules (GPU variants)
 
-GPU SKUs (`arc-runners-h100`, `arc-runners-b200`, `nodepools-h100`, `nodepools-b200`) are pure delegate modules: they ship only their own `defs/` (and `generated/`), optionally a `scripts/` directory (the `nodepools-*` delegates carry a per-SKU node-setup script), and a 13-line `deploy.sh` that `exec`s the parent module's deploy script after exporting a few env vars:
+GPU SKUs (`arc-runners-h100`, `nodepools-h100`) are pure delegate modules: they ship only their own `defs/` (and `generated/`), optionally a `scripts/` directory (the `nodepools-*` delegates carry a per-SKU node-setup script), and a 13-line `deploy.sh` that `exec`s the parent module's deploy script after exporting a few env vars:
 
 ```bash
 #!/usr/bin/env bash
@@ -277,10 +277,10 @@ CronJob that reaps orphaned ARC runner pods left behind by aborted GitHub Action
 - **kubernetes/**: RBAC + CronJob (no `kustomization.yaml` — `deploy.sh` applies the manifests imperatively after `sed` placeholder substitution)
 - **deploy.sh**: Image build/push and manifest apply
 
-### arc-runners-h100, arc-runners-b200
+### arc-runners-h100
 
-Delegate modules for H100 / B200 GPU runner scale sets. Ship only `defs/`, `generated/`, and a 13-line `deploy.sh` that exports `ARC_RUNNERS_DEFS_DIR` / `ARC_RUNNERS_OUTPUT_DIR` / `ARC_RUNNERS_MODULE_NAME` then `exec`s the parent `arc-runners/deploy.sh`. See "Delegate modules" above.
+Delegate module for H100 GPU runner scale sets. Ships only `defs/`, `generated/`, and a 13-line `deploy.sh` that exports `ARC_RUNNERS_DEFS_DIR` / `ARC_RUNNERS_OUTPUT_DIR` / `ARC_RUNNERS_MODULE_NAME` then `exec`s the parent `arc-runners/deploy.sh`. See "Delegate modules" above.
 
-### nodepools-h100, nodepools-b200
+### nodepools-h100
 
-Delegate modules for H100 / B200 GPU NodePools. Same pattern as the arc-runners delegates but with an extra `scripts/` directory holding a per-SKU node-setup script, exporting `NODEPOOLS_*` env vars and delegating to `nodepools/deploy.sh`.
+Delegate module for H100 GPU NodePools. Same pattern as the arc-runners delegate but with an extra `scripts/` directory holding a per-SKU node-setup script, exporting `NODEPOOLS_*` env vars and delegating to `nodepools/deploy.sh`.
