@@ -21,7 +21,7 @@
     }
   ],
   "cursorSync": "Crosshair",
-  "description": "Monthly total CI-hours for the pytorch GitHub org, broken down by runner category, from default.workflow_job. CI-hours = completed job wall-clock (started_at -> completed_at), filtered and bucketed by started_at. Staging/canary runners (c-mt-*/c-lf-*/c.*/lf.c.*/canary) are excluded from all panels. Each panel sits in its own collapsed row so its query only runs when the row is expanded.",
+  "description": "Monthly total CI-hours for the pytorch and meta-pytorch GitHub orgs, broken down by runner category, from default.workflow_job. CI-hours = completed job wall-clock (started_at -> completed_at), filtered and bucketed by started_at. Staging/canary runners (c-mt-*/c-lf-*/c.*/lf.c.*/canary) are excluded from all panels. Each panel sits in its own collapsed row so its query only runs when the row is expanded.",
   "editable": true,
   "elements": {
     "panel-2": {
@@ -43,7 +43,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "format": 2,
-                      "rawSql": "SELECT toDateTime(toStartOfMonth(started_at)) AS time, multiIf(runner_group_name = 'GitHub Actions' OR arrayExists(x -> position(x,'ubuntu') > 0 OR (x LIKE 'macos%' AND NOT x LIKE 'macos-m%') OR x LIKE 'windows-%' OR x LIKE 'windows.2022%' OR position(x,'-core-windows') > 0, labels), 'GitHub-hosted', arrayExists(x -> x LIKE 'macos-m%', labels), 'MacOS', arrayExists(x -> position(x,'h100') > 0, labels), 'H100', arrayExists(x -> position(x,'b200') > 0 OR position(x,'h200') > 0, labels), 'B200/H200', arrayExists(x -> x LIKE 'windows.%' OR x LIKE 'lf.windows.%' OR x LIKE 'mt-windows.%' OR x LIKE 'lf-windows.%', labels), 'Windows', arrayExists(x -> (x LIKE 'linux.%' OR x LIKE 'lf.linux.%' OR x LIKE 'mt-linux.%' OR x LIKE 'lf-linux.%' OR match(x,'^(mt|lf)-(rel-)?l-') OR x LIKE 'lf.l-%' OR match(x,'^(rel-)?l-') OR x LIKE 'arc.%' OR x LIKE 'lf.arc.%' OR x LIKE 'mt.arc.%') AND NOT position(x,'rocm')>0 AND NOT position(x,'xpu')>0 AND NOT position(x,'s390x')>0 AND NOT position(x,'gaudi')>0 AND NOT position(x,'hpu')>0 AND NOT position(x,'google')>0 AND NOT position(x,'tpu')>0, labels), 'Linux autoscaled', 'Partner (donated)') AS category, round(sum(dateDiff('second', started_at, completed_at))/3600.0, 2) AS ci_hours FROM default.workflow_job WHERE started_at >= $__fromTime AND started_at <= $__toTime AND started_at > toDateTime64('2020-01-01', 9) AND status = 'completed' AND completed_at >= started_at AND url LIKE 'https://api.github.com/repos/pytorch/%' AND NOT arrayExists(x -> x LIKE 'c-mt-%' OR x LIKE 'c-lf-%' OR x LIKE 'c.%' OR x LIKE 'lf.c.%' OR position(x,'canary')>0, labels) GROUP BY time, category ORDER BY time ASC"
+                      "rawSql": "SELECT time, if(grouping(cat) = 1, 'Total', cat) AS category, round(sum(secs)/3600.0, 2) AS ci_hours FROM (SELECT toDateTime(toStartOfMonth(started_at)) AS time, multiIf(runner_group_name = 'GitHub Actions' OR arrayExists(x -> position(x,'ubuntu') > 0 OR (x LIKE 'macos%' AND NOT x LIKE 'macos-m%') OR x LIKE 'windows-%' OR x LIKE 'windows.2022%' OR position(x,'-core-windows') > 0, labels), 'GitHub-hosted', arrayExists(x -> x LIKE 'macos-m%', labels), 'MacOS', arrayExists(x -> position(x,'h100') > 0, labels), 'H100', arrayExists(x -> position(x,'b200') > 0 OR position(x,'h200') > 0, labels), 'B200/H200', arrayExists(x -> x LIKE 'windows.%' OR x LIKE 'lf.windows.%' OR x LIKE 'mt-windows.%' OR x LIKE 'lf-windows.%', labels), 'Windows', arrayExists(x -> (x LIKE 'linux.%' OR x LIKE 'lf.linux.%' OR x LIKE 'mt-linux.%' OR x LIKE 'lf-linux.%' OR match(x,'^(mt|lf)-(rel-)?l-') OR x LIKE 'lf.l-%' OR match(x,'^(rel-)?l-') OR x LIKE 'arc.%' OR x LIKE 'lf.arc.%' OR x LIKE 'mt.arc.%') AND NOT position(x,'rocm')>0 AND NOT position(x,'xpu')>0 AND NOT position(x,'s390x')>0 AND NOT position(x,'gaudi')>0 AND NOT position(x,'hpu')>0 AND NOT position(x,'google')>0 AND NOT position(x,'tpu')>0, labels), 'Linux autoscaled', 'Partner (donated)') AS cat, dateDiff('second', started_at, completed_at) AS secs FROM default.workflow_job WHERE started_at >= $__fromTime AND started_at <= $__toTime AND started_at > toDateTime64('2020-01-01', 9) AND status = 'completed' AND completed_at >= started_at AND (url LIKE 'https://api.github.com/repos/pytorch/%' OR url LIKE 'https://api.github.com/repos/meta-pytorch/%') AND NOT arrayExists(x -> x LIKE 'c-mt-%' OR x LIKE 'c-lf-%' OR x LIKE 'c.%' OR x LIKE 'lf.c.%' OR position(x,'canary')>0, labels)) GROUP BY GROUPING SETS ((time, cat), (time)) ORDER BY time ASC"
                     },
                     "version": "v0"
                   },
@@ -92,7 +92,35 @@
                 },
                 "unit": "h"
               },
-              "overrides": []
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Total"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.stacking",
+                      "value": {
+                        "group": "B",
+                        "mode": "none"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
             },
             "options": {
               "legend": {
@@ -129,7 +157,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "format": 2,
-                      "rawSql": "SELECT toDateTime(toStartOfMonth(started_at)) AS time, multiIf(runner_group_name = 'GitHub Actions' OR arrayExists(x -> position(x,'ubuntu') > 0 OR (x LIKE 'macos%' AND NOT x LIKE 'macos-m%') OR x LIKE 'windows-%' OR x LIKE 'windows.2022%' OR position(x,'-core-windows') > 0, labels), '3rd-party', arrayExists(x -> x LIKE 'macos-m%', labels), 'Static', arrayExists(x -> position(x,'h100') > 0, labels), 'Static', arrayExists(x -> position(x,'b200') > 0 OR position(x,'h200') > 0, labels), 'Static', arrayExists(x -> x LIKE 'windows.%' OR x LIKE 'lf.windows.%' OR x LIKE 'mt-windows.%' OR x LIKE 'lf-windows.%', labels), 'Dynamic', arrayExists(x -> (x LIKE 'linux.%' OR x LIKE 'lf.linux.%' OR x LIKE 'mt-linux.%' OR x LIKE 'lf-linux.%' OR match(x,'^(mt|lf)-(rel-)?l-') OR x LIKE 'lf.l-%' OR match(x,'^(rel-)?l-') OR x LIKE 'arc.%' OR x LIKE 'lf.arc.%' OR x LIKE 'mt.arc.%') AND NOT position(x,'rocm')>0 AND NOT position(x,'xpu')>0 AND NOT position(x,'s390x')>0 AND NOT position(x,'gaudi')>0 AND NOT position(x,'hpu')>0 AND NOT position(x,'google')>0 AND NOT position(x,'tpu')>0, labels), 'Dynamic', '3rd-party') AS bucket, round(sum(dateDiff('second', started_at, completed_at))/3600.0, 2) AS ci_hours FROM default.workflow_job WHERE started_at >= $__fromTime AND started_at <= $__toTime AND started_at > toDateTime64('2020-01-01', 9) AND status = 'completed' AND completed_at >= started_at AND url LIKE 'https://api.github.com/repos/pytorch/%' AND NOT arrayExists(x -> x LIKE 'c-mt-%' OR x LIKE 'c-lf-%' OR x LIKE 'c.%' OR x LIKE 'lf.c.%' OR position(x,'canary')>0, labels) GROUP BY time, bucket ORDER BY time ASC"
+                      "rawSql": "SELECT time, if(grouping(bkt) = 1, 'Total', bkt) AS bucket, round(sum(secs)/3600.0, 2) AS ci_hours FROM (SELECT toDateTime(toStartOfMonth(started_at)) AS time, multiIf(runner_group_name = 'GitHub Actions' OR arrayExists(x -> position(x,'ubuntu') > 0 OR (x LIKE 'macos%' AND NOT x LIKE 'macos-m%') OR x LIKE 'windows-%' OR x LIKE 'windows.2022%' OR position(x,'-core-windows') > 0, labels), '3rd-party', arrayExists(x -> x LIKE 'macos-m%', labels), 'Static', arrayExists(x -> position(x,'h100') > 0, labels), 'Static', arrayExists(x -> position(x,'b200') > 0 OR position(x,'h200') > 0, labels), 'Static', arrayExists(x -> x LIKE 'windows.%' OR x LIKE 'lf.windows.%' OR x LIKE 'mt-windows.%' OR x LIKE 'lf-windows.%', labels), 'Dynamic', arrayExists(x -> (x LIKE 'linux.%' OR x LIKE 'lf.linux.%' OR x LIKE 'mt-linux.%' OR x LIKE 'lf-linux.%' OR match(x,'^(mt|lf)-(rel-)?l-') OR x LIKE 'lf.l-%' OR match(x,'^(rel-)?l-') OR x LIKE 'arc.%' OR x LIKE 'lf.arc.%' OR x LIKE 'mt.arc.%') AND NOT position(x,'rocm')>0 AND NOT position(x,'xpu')>0 AND NOT position(x,'s390x')>0 AND NOT position(x,'gaudi')>0 AND NOT position(x,'hpu')>0 AND NOT position(x,'google')>0 AND NOT position(x,'tpu')>0, labels), 'Dynamic', '3rd-party') AS bkt, dateDiff('second', started_at, completed_at) AS secs FROM default.workflow_job WHERE started_at >= $__fromTime AND started_at <= $__toTime AND started_at > toDateTime64('2020-01-01', 9) AND status = 'completed' AND completed_at >= started_at AND (url LIKE 'https://api.github.com/repos/pytorch/%' OR url LIKE 'https://api.github.com/repos/meta-pytorch/%') AND NOT arrayExists(x -> x LIKE 'c-mt-%' OR x LIKE 'c-lf-%' OR x LIKE 'c.%' OR x LIKE 'lf.c.%' OR position(x,'canary')>0, labels)) GROUP BY GROUPING SETS ((time, bkt), (time)) ORDER BY time ASC"
                     },
                     "version": "v0"
                   },
@@ -178,7 +206,35 @@
                 },
                 "unit": "h"
               },
-              "overrides": []
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Total"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.stacking",
+                      "value": {
+                        "group": "B",
+                        "mode": "none"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
             },
             "options": {
               "legend": {
@@ -215,7 +271,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "format": 1,
-                      "rawSql": "SELECT category, round(hours, 1) AS ci_hours, round(100.0 * hours / sum(hours) OVER (), 2) AS pct FROM (SELECT multiIf(runner_group_name = 'GitHub Actions' OR arrayExists(x -> position(x,'ubuntu') > 0 OR (x LIKE 'macos%' AND NOT x LIKE 'macos-m%') OR x LIKE 'windows-%' OR x LIKE 'windows.2022%' OR position(x,'-core-windows') > 0, labels), 'GitHub-hosted', arrayExists(x -> x LIKE 'macos-m%', labels), 'MacOS', arrayExists(x -> position(x,'h100') > 0, labels), 'H100', arrayExists(x -> position(x,'b200') > 0 OR position(x,'h200') > 0, labels), 'B200/H200', arrayExists(x -> x LIKE 'windows.%' OR x LIKE 'lf.windows.%' OR x LIKE 'mt-windows.%' OR x LIKE 'lf-windows.%', labels), 'Windows', arrayExists(x -> (x LIKE 'linux.%' OR x LIKE 'lf.linux.%' OR x LIKE 'mt-linux.%' OR x LIKE 'lf-linux.%' OR match(x,'^(mt|lf)-(rel-)?l-') OR x LIKE 'lf.l-%' OR match(x,'^(rel-)?l-') OR x LIKE 'arc.%' OR x LIKE 'lf.arc.%' OR x LIKE 'mt.arc.%') AND NOT position(x,'rocm')>0 AND NOT position(x,'xpu')>0 AND NOT position(x,'s390x')>0 AND NOT position(x,'gaudi')>0 AND NOT position(x,'hpu')>0 AND NOT position(x,'google')>0 AND NOT position(x,'tpu')>0, labels), 'Linux autoscaled', 'Partner (donated)') AS category, sum(dateDiff('second', started_at, completed_at))/3600.0 AS hours FROM default.workflow_job WHERE started_at >= $__fromTime AND started_at <= $__toTime AND started_at > toDateTime64('2020-01-01', 9) AND status = 'completed' AND completed_at >= started_at AND url LIKE 'https://api.github.com/repos/pytorch/%' AND NOT arrayExists(x -> x LIKE 'c-mt-%' OR x LIKE 'c-lf-%' OR x LIKE 'c.%' OR x LIKE 'lf.c.%' OR position(x,'canary')>0, labels) GROUP BY category) ORDER BY hours DESC"
+                      "rawSql": "SELECT category, round(hours, 1) AS ci_hours, round(100.0 * hours / sum(hours) OVER (), 2) AS pct FROM (SELECT multiIf(runner_group_name = 'GitHub Actions' OR arrayExists(x -> position(x,'ubuntu') > 0 OR (x LIKE 'macos%' AND NOT x LIKE 'macos-m%') OR x LIKE 'windows-%' OR x LIKE 'windows.2022%' OR position(x,'-core-windows') > 0, labels), 'GitHub-hosted', arrayExists(x -> x LIKE 'macos-m%', labels), 'MacOS', arrayExists(x -> position(x,'h100') > 0, labels), 'H100', arrayExists(x -> position(x,'b200') > 0 OR position(x,'h200') > 0, labels), 'B200/H200', arrayExists(x -> x LIKE 'windows.%' OR x LIKE 'lf.windows.%' OR x LIKE 'mt-windows.%' OR x LIKE 'lf-windows.%', labels), 'Windows', arrayExists(x -> (x LIKE 'linux.%' OR x LIKE 'lf.linux.%' OR x LIKE 'mt-linux.%' OR x LIKE 'lf-linux.%' OR match(x,'^(mt|lf)-(rel-)?l-') OR x LIKE 'lf.l-%' OR match(x,'^(rel-)?l-') OR x LIKE 'arc.%' OR x LIKE 'lf.arc.%' OR x LIKE 'mt.arc.%') AND NOT position(x,'rocm')>0 AND NOT position(x,'xpu')>0 AND NOT position(x,'s390x')>0 AND NOT position(x,'gaudi')>0 AND NOT position(x,'hpu')>0 AND NOT position(x,'google')>0 AND NOT position(x,'tpu')>0, labels), 'Linux autoscaled', 'Partner (donated)') AS category, sum(dateDiff('second', started_at, completed_at))/3600.0 AS hours FROM default.workflow_job WHERE started_at >= $__fromTime AND started_at <= $__toTime AND started_at > toDateTime64('2020-01-01', 9) AND status = 'completed' AND completed_at >= started_at AND (url LIKE 'https://api.github.com/repos/pytorch/%' OR url LIKE 'https://api.github.com/repos/meta-pytorch/%') AND NOT arrayExists(x -> x LIKE 'c-mt-%' OR x LIKE 'c-lf-%' OR x LIKE 'c.%' OR x LIKE 'lf.c.%' OR position(x,'canary')>0, labels) GROUP BY category) ORDER BY hours DESC"
                     },
                     "version": "v0"
                   },
