@@ -54,3 +54,17 @@ tolerations:
 
 # Node selector (optional - can specify if base nodes have specific labels)
 nodeSelector: {}
+
+# Hard-spread controller replicas one-per-node. Without this, a rolling base
+# node replacement (nodes become Ready one at a time) can pile every replica
+# onto whichever node comes up first, starving other pods on that node of
+# CPU. maxUnavailable on the base node group never exceeds replicas-1 nodes,
+# so DoNotSchedule can't wedge this pending.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: gha-rs-controller
+        app.kubernetes.io/instance: arc

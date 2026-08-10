@@ -27,6 +27,17 @@ x-base-affinity: &base-affinity
               values:
                 - base-infrastructure
 
+# Hard-spread each component's replicas one-per-node. Without this, a
+# rolling base node replacement (nodes become Ready one at a time) can pile
+# every replica of core/registry/etc. onto whichever node comes up first,
+# starving other pods on that node of CPU — including harbor-database,
+# whose EBS volume pins it to one specific AZ/node. Component name is
+# templated in per-component below since each has a distinct label.
+x-spread-template: &spread-template
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: DoNotSchedule
+
 # ============================================================================
 # Expose configuration (NodePort for containerd access)
 # ============================================================================
@@ -83,7 +94,15 @@ cache:
 core:
   tolerations: *base-tolerations
   affinity: *base-affinity
+  topologySpreadConstraints:
+    - <<: *spread-template
+      labelSelector:
+        matchLabels: {app: harbor, component: core}
 
+# registry and jobservice are NOT given topologySpreadConstraints: both use
+# an RWO PVC (see updateStrategy note below), so their replicas are already
+# constrained to land together on whatever node holds that volume — a hard
+# per-node spread would conflict with that and leave pods Pending.
 registry:
   tolerations: *base-tolerations
   affinity: *base-affinity
@@ -102,6 +121,10 @@ updateStrategy:
 portal:
   tolerations: *base-tolerations
   affinity: *base-affinity
+  topologySpreadConstraints:
+    - <<: *spread-template
+      labelSelector:
+        matchLabels: {app: harbor, component: portal}
 
 nginx:
   replicas: 3
@@ -114,6 +137,10 @@ nginx:
       memory: 1Gi
   tolerations: *base-tolerations
   affinity: *base-affinity
+  topologySpreadConstraints:
+    - <<: *spread-template
+      labelSelector:
+        matchLabels: {app: harbor, component: nginx}
 
 database:
   internal:
