@@ -27,12 +27,13 @@ actually claim. Capacity reservation silently degrades.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 from helpers import filter_pods, run_kubectl
-from runner_defs import GeneratedScaleSet, scale_set_label_of_pod
+from runner_defs import def_for_listener_pod, load_defs_by_name
 
 pytestmark = [pytest.mark.live]
 
@@ -77,6 +78,10 @@ IGNORED_PLACEHOLDER_TOLERATIONS: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+def _normalize_name(name: str) -> str:
+    return name.replace(".", "-").replace("_", "-")
+
+
 def _proactive_capacity_from_generated(generated_doc: dict) -> int:
     """Return the CAPACITY_AWARE_PROACTIVE_CAPACITY env value from a generated YAML.
 
@@ -102,8 +107,8 @@ def _proactive_capacity_from_generated(generated_doc: dict) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _load_workflow_pod_template(cm_name: str) -> dict[str, Any] | None:
-    """Load the workflow pod template from the named hook ConfigMap.
+def _load_workflow_pod_template(runner_name: str) -> dict[str, Any] | None:
+    """Load the workflow pod template from the hook ConfigMap.
 
     The ConfigMap's job-pod.yaml uses ``$job`` as the container name (a hook
     DSL placeholder), so we cannot validate it as a Pod object — just navigate
@@ -116,6 +121,7 @@ def _load_workflow_pod_template(cm_name: str) -> dict[str, Any] | None:
     (timeouts, network issues, malformed JSON from kubectl) propagate so the
     test fails loudly instead of silently degrading to a misleading None.
     """
+    cm_name = f"arc-runner-hook-{_normalize_name(runner_name)}"
     try:
         cm = run_kubectl(["get", "configmap", cm_name], namespace=NAMESPACE)
     except subprocess.CalledProcessError:
@@ -271,69 +277,79 @@ class TestPlaceholderSchedulingParity:
     def test_workflow_placeholder_parity(
         self,
         all_pods: dict,
+        upstream_dir: Path,
         enabled_modules: list[str],
-        generated_scale_sets: list[GeneratedScaleSet],
+        resolve_config,
+        generated_arc_runners: dict[str, dict],
     ) -> None:
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        # Only scale sets that opted into proactive capacity run placeholders.
-        # Use the GENERATED YAML's CAPACITY_AWARE_PROACTIVE_CAPACITY env value
-        # (post-override) — not the raw def — so cluster-specific overrides like
-        # `proactive_capacity_max` on staging correctly skip all scale sets.
-        # Key by the org-unique scale-set-name label: per-org fan-out gives each
-        # org its own scale set (and its own hook ConfigMap) sharing a def, so a
-        # def-keyed grouping would conflate the two orgs' placeholders.
-        proactive = {
-            s.scale_set_label: s for s in generated_scale_sets if _proactive_capacity_from_generated(s.values) > 0
+        defs_by_name = load_defs_by_name(upstream_dir)
+        # Only scale sets that opted into proactive capacity will have
+        # placeholders running. Use the GENERATED YAML's
+        # CAPACITY_AWARE_PROACTIVE_CAPACITY env value (post-override) — not
+        # the raw def — so cluster-specific overrides like
+        # `proactive_capacity_max` on staging correctly skip all defs.
+        proactive_defs = {
+            name: d
+            for name, d in defs_by_name.items()
+            if name in generated_arc_runners and _proactive_capacity_from_generated(generated_arc_runners[name]) > 0
         }
-        if not proactive:
+        if not proactive_defs:
             pytest.skip("no scale sets with proactive_capacity > 0")
 
-        # Group live placeholder pods by their owning scale set via the
-        # scale-set-name label (org-unique — resourceName for additional orgs,
-        # runnerScaleSetName for the primary). ARC's capacity monitor stamps this
-        # label from the AutoscalingRunnerSet's Kubernetes name, so it matches the
-        # generated scale_set_label exactly (no prefix stripping needed).
+        # Per-cluster prefix that ARC strips off the scale-set-name label
+        # (e.g. "c-mt-" → label "c-mt-l-arm64g3-61-463" maps to def
+        # "l-arm64g3-61-463"). We MUST use exact match against the stripped
+        # name — endswith() would collide if a rel-* def's name shared a
+        # suffix with a non-rel def (rel-X ↔ X), causing placeholders to be
+        # attributed to the
+        # wrong def and silently breaking parity attribution.
+        runner_name_prefix = resolve_config("arc-runners.runner_name_prefix", "")
+
+        # Group live placeholder pods by their owning runner def via the
+        # scale-set-name label + exact-match lookup (not suffix-match).
         all_ph_pods = filter_pods(all_pods, namespace=NAMESPACE, labels=WORKFLOW_PLACEHOLDER_LABELS)
-        ph_pods_by_label: dict[str, list[dict]] = {label: [] for label in proactive}
+        ph_pods_by_def: dict[str, list[dict]] = {name: [] for name in proactive_defs}
         unattributed: list[str] = []
         for pod in all_ph_pods:
+            def_name, _runner = def_for_listener_pod(pod, defs_by_name, runner_name_prefix)
             pod_name = pod.get("metadata", {}).get("name", "?")
-            label = scale_set_label_of_pod(pod)
-            if not label:
-                unattributed.append(f"{pod_name}: placeholder missing {LABEL_SCALE_SET!r} label")
+            if def_name is None:
+                # Missing/invalid scale-set-name label or wrong cluster prefix.
+                label_val = pod.get("metadata", {}).get("labels", {}).get(LABEL_SCALE_SET, "<missing>")
+                unattributed.append(
+                    f"{pod_name}: cannot map placeholder to def "
+                    f"({LABEL_SCALE_SET}={label_val!r}, prefix={runner_name_prefix!r})"
+                )
                 continue
-            if label not in proactive:
-                # Placeholder for a scale set without proactive_capacity > 0
-                # locally — likely a stale scale-set or a def/org removed without
+            if def_name not in proactive_defs:
+                # Placeholder exists but its def doesn't have proactive_capacity > 0
+                # locally — likely a stale scale-set or a def removed without
                 # the corresponding placeholders being cleaned up. Skip silently;
                 # the env-var coherence test in test_runners.py catches stale
                 # scale-sets directly.
                 continue
-            ph_pods_by_label[label].append(pod)
+            ph_pods_by_def[def_name].append(pod)
 
         problems: list[str] = list(unattributed)
         info: list[str] = []
 
-        for label, scale_set in proactive.items():
-            ph_pods = ph_pods_by_label[label]
+        for runner_name, _runner in proactive_defs.items():
+            ph_pods = ph_pods_by_def[runner_name]
             if not ph_pods:
                 # Informational, not a failure — placeholders may be in
                 # between cycles or all preempted/Pending right now. Report
                 # the effective (post-override) proactive_capacity from the
                 # generated YAML, not the raw def value.
-                effective = _proactive_capacity_from_generated(scale_set.values)
-                info.append(f"{label}: no live workflow placeholders (proactive={effective})")
+                effective = _proactive_capacity_from_generated(generated_arc_runners[runner_name])
+                info.append(f"{runner_name}: no live workflow placeholders (proactive={effective})")
                 continue
 
-            # Load the workflow template from THIS scale set's own hook ConfigMap
-            # (org-specific: arc-runner-hook-<slug>-<def> for an additional org).
-            workflow_spec = _load_workflow_pod_template(scale_set.configmap_name)
+            workflow_spec = _load_workflow_pod_template(runner_name)
             if workflow_spec is None:
-                problems.append(
-                    f"{label}: workflow pod template (hook ConfigMap {scale_set.configmap_name}) missing or empty"
-                )
+                problems.append(f"{runner_name}: workflow pod template (hook ConfigMap) missing or empty")
                 continue
 
             for pod in ph_pods:
@@ -343,14 +359,14 @@ class TestPlaceholderSchedulingParity:
                 missing = _missing_required_terms(ph_spec, workflow_spec)
                 for term in missing:
                     problems.append(
-                        f"[{label}] {pod_name}: workflow requires affinity term not present on "
+                        f"[{runner_name}] {pod_name}: workflow requires affinity term not present on "
                         f"placeholder — expected {term}"
                     )
 
                 excess = _excess_tolerations(ph_spec, workflow_spec)
                 for tol in excess:
                     problems.append(
-                        f"[{label}] {pod_name}: placeholder tolerates {tol} which the workflow "
+                        f"[{runner_name}] {pod_name}: placeholder tolerates {tol} which the workflow "
                         f"pod does not — placeholder could land where workflow cannot"
                     )
 
