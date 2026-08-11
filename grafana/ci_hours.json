@@ -21,7 +21,7 @@
     }
   ],
   "cursorSync": "Crosshair",
-  "description": "Monthly total CI-hours for the pytorch and meta-pytorch GitHub orgs, broken down by runner category, from default.workflow_job. CI-hours = completed job wall-clock (started_at -> completed_at), filtered and bucketed by started_at. Staging/canary runners (c-mt-*/c-lf-*/c.*/lf.c.*/canary) are excluded from all panels. Each panel sits in its own collapsed row so its query only runs when the row is expanded.",
+  "description": "Monthly total CI-hours for the pytorch and meta-pytorch GitHub orgs, broken down by runner category, from default.workflow_job. CI-hours = completed job wall-clock (started_at -> completed_at), filtered and bucketed by started_at. Staging/canary runners (c-mt-*/c-lf-*/c.*/lf.c.*/canary) are excluded from all CI-hours panels. The dashboard also tracks monthly PR and commit activity for the same orgs. Panels are grouped into collapsed rows so their queries only run when the row is expanded.",
   "editable": true,
   "elements": {
     "panel-2": {
@@ -333,6 +333,351 @@
           "version": ""
         }
       }
+    },
+    "panel-5": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "format": 2,
+                      "rawSql": "SELECT time, if(grouping(owner) = 1, 'Total', owner) AS org, uniqExact(id) AS prs_opened FROM (SELECT toDateTime(toStartOfMonth(parseDateTimeBestEffortOrNull(created_at))) AS time, base.repo.owner.login AS owner, id FROM default.pull_request WHERE parseDateTimeBestEffortOrNull(created_at) >= $__fromTime AND parseDateTimeBestEffortOrNull(created_at) <= $__toTime AND base.repo.owner.login IN ('pytorch', 'meta-pytorch')) GROUP BY GROUPING SETS ((time, owner), (time)) ORDER BY time ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "kind": "partitionByValues",
+                "spec": {
+                  "id": "partitionByValues",
+                  "options": {
+                    "fields": [
+                      "org"
+                    ],
+                    "keepFields": false
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "Distinct pull requests opened per month across all pytorch and meta-pytorch repositories, by PR creation date. Split by org with a combined Total. Latest bar is the current month-to-date (partial). meta-pytorch repos appear from ~2025.",
+        "id": 5,
+        "links": [],
+        "title": "PRs Opened per Month",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic-by-name"
+                },
+                "custom": {
+                  "drawStyle": "bars",
+                  "fillOpacity": 80,
+                  "lineWidth": 1,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "normal"
+                  }
+                },
+                "decimals": 0,
+                "unit": "short"
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Total"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.stacking",
+                      "value": {
+                        "group": "B",
+                        "mode": "none"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "legend": {
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "mode": "multi",
+                "sort": "desc"
+              }
+            }
+          },
+          "version": ""
+        }
+      }
+    },
+    "panel-6": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "format": 2,
+                      "rawSql": "SELECT time, if(grouping(owner) = 1, 'Total', owner) AS org, sum(commit_count) AS commits FROM (SELECT toDateTime(toStartOfMonth(tupleElement(head_commit, 'timestamp'))) AS time, tupleElement(tupleElement(repository, 'owner'), 'login') AS owner, length(commits) AS commit_count, dynamoKey FROM default.push WHERE tupleElement(head_commit, 'timestamp') >= $__fromTime AND tupleElement(head_commit, 'timestamp') <= $__toTime AND tupleElement(tupleElement(repository, 'owner'), 'login') IN ('pytorch', 'meta-pytorch') AND ref = concat('refs/heads/', tupleElement(repository, 'default_branch')) LIMIT 1 BY dynamoKey) GROUP BY GROUPING SETS ((time, owner), (time)) ORDER BY time ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "kind": "partitionByValues",
+                "spec": {
+                  "id": "partitionByValues",
+                  "options": {
+                    "fields": [
+                      "org"
+                    ],
+                    "keepFields": false
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "Commits landed on each repository's default branch (main/master) per month, across pytorch and meta-pytorch — a proxy for meaningful, merged work. Split by org with a combined Total. Latest bar is month-to-date (partial); commit history begins ~2022, meta-pytorch ~2025.",
+        "id": 6,
+        "links": [],
+        "title": "Commits on Default Branch per Month",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic-by-name"
+                },
+                "custom": {
+                  "drawStyle": "bars",
+                  "fillOpacity": 80,
+                  "lineWidth": 1,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "normal"
+                  }
+                },
+                "decimals": 0,
+                "unit": "short"
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Total"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.stacking",
+                      "value": {
+                        "group": "B",
+                        "mode": "none"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "legend": {
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "mode": "multi",
+                "sort": "desc"
+              }
+            }
+          },
+          "version": ""
+        }
+      }
+    },
+    "panel-7": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "format": 2,
+                      "rawSql": "SELECT time, if(grouping(owner) = 1, 'Total', owner) AS org, uniqExact(head_sha) AS commits_ran_ci FROM (SELECT toDateTime(toStartOfMonth(created_at)) AS time, tupleElement(tupleElement(repository, 'owner'), 'login') AS owner, head_sha FROM default.workflow_run WHERE created_at >= $__fromTime AND created_at <= $__toTime AND tupleElement(tupleElement(repository, 'owner'), 'login') IN ('pytorch', 'meta-pytorch')) GROUP BY GROUPING SETS ((time, owner), (time)) ORDER BY time ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "kind": "partitionByValues",
+                "spec": {
+                  "id": "partitionByValues",
+                  "options": {
+                    "fields": [
+                      "org"
+                    ],
+                    "keepFields": false
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "Distinct commits that triggered CI on any branch per month — a proxy for total development activity/churn across all branches, including fork-PR commits — for pytorch and meta-pytorch. Split by org with a combined Total. Latest bar is month-to-date (partial); CI history begins ~2022, meta-pytorch ~2025.",
+        "id": 7,
+        "links": [],
+        "title": "Commits Across All Branches per Month (ran CI)",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic-by-name"
+                },
+                "custom": {
+                  "drawStyle": "bars",
+                  "fillOpacity": 80,
+                  "lineWidth": 1,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "normal"
+                  }
+                },
+                "decimals": 0,
+                "unit": "short"
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Total"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.stacking",
+                      "value": {
+                        "group": "B",
+                        "mode": "none"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "legend": {
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "mode": "multi",
+                "sort": "desc"
+              }
+            }
+          },
+          "version": ""
+        }
+      }
     }
   },
   "layout": {
@@ -413,6 +758,59 @@
                       "y": 0,
                       "width": 24,
                       "height": 10
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "kind": "RowsLayoutRow",
+          "spec": {
+            "title": "PR & Commit Activity",
+            "collapse": true,
+            "layout": {
+              "kind": "GridLayout",
+              "spec": {
+                "items": [
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-5"
+                      },
+                      "x": 0,
+                      "y": 0,
+                      "width": 24,
+                      "height": 8
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-6"
+                      },
+                      "x": 0,
+                      "y": 8,
+                      "width": 24,
+                      "height": 8
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-7"
+                      },
+                      "x": 0,
+                      "y": 16,
+                      "width": 24,
+                      "height": 8
                     }
                   }
                 ]
