@@ -1,0 +1,39 @@
+# Cluster-scoped RBAC for the capacity monitor running in listener pods.
+# Grants read-only access to Node objects so the capacity monitor's placeholder
+# schedulability check can read Spec.Unschedulable (cordon) and Spec.Taints to
+# decide whether a placeholder still holds a node a replacement runner could be
+# scheduled onto.
+#
+# Scope: cluster-wide because Node is a cluster-scoped resource. The namespaced
+# pod/configmap grants for the same capacity monitor live in
+# capacity-monitor-rbac.yaml.
+#
+# We bind to the system:serviceaccounts:arc-systems group rather than a specific
+# SA because there is one listener SA per scale set, dynamically named
+# (<scale-set>-<hash>-listener) and created by the ARC controller — the same
+# reason capacity-monitor-rbac.yaml binds the group.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: arc-listener-node-reader
+  labels:
+    app.kubernetes.io/part-of: actions-runner-controller
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: arc-listener-node-reader
+  labels:
+    app.kubernetes.io/part-of: actions-runner-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: arc-listener-node-reader
+subjects:
+  - kind: Group
+    name: system:serviceaccounts:arc-systems
+    apiGroup: rbac.authorization.k8s.io
