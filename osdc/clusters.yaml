@@ -367,6 +367,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.8.0.0/16"
+    arc:
+      chart_version: "0.14.1-jeanschmidt.19"
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
@@ -375,6 +377,12 @@ clusters:
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-uw1"   # distinct from us-east-2's "default" — see doc
       scheduler_name: bin-pack-scheduler
+      additional_orgs:
+        - github_config_url: "https://github.com/meta-pytorch"
+          github_secret_name: meta-prod-aws-uw1-meta-pytorch
+          runner_group: "default"
+          resource_slug: mp
+          max_runners: 1
     arc-runners-h100:
       capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
