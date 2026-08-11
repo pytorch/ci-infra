@@ -56,19 +56,32 @@ class TestSandboxWorker:
         assert rc == "gvisor", f"sandbox-agent must set runtimeClassName: gvisor, got {rc!r}."
 
     def test_worker_has_invokable_bedrock_model(self, all_deployments: dict) -> None:
-        """BEDROCK_MODEL_ID must be set to a cross-region inference profile.
+        """BEDROCK_DEFAULT_MODEL_ID must be set to a cross-region inference profile.
 
-        Without it every /run returns errors.bedrock="no model configured". A bare
-        foundation-model ID is also wrong: Anthropic models on Bedrock are
-        INFERENCE_PROFILE-only (the ON_DEMAND Claude 3 is refused as
-        provider-legacy), so the ID needs a `us.`/`global.` routing prefix.
+        Without it every /run that doesn't pass "model" returns
+        errors.bedrock="no model configured". A bare foundation-model ID is also
+        wrong: Anthropic models on Bedrock are INFERENCE_PROFILE-only (the
+        ON_DEMAND Claude 3 is refused as provider-legacy), so the ID needs a
+        `us.`/`global.` routing prefix.
         """
         dep = next(d for d in all_deployments["items"] if d["metadata"]["name"] == "sandbox-agent")
         env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
-        model = env.get("BEDROCK_MODEL_ID", "")
-        assert model, "sandbox-agent must set BEDROCK_MODEL_ID — set agent_sandbox.model_id in clusters.yaml."
+        model = env.get("BEDROCK_DEFAULT_MODEL_ID", "")
+        assert model, (
+            "sandbox-agent must set BEDROCK_DEFAULT_MODEL_ID — set agent_sandbox.default_model_id in clusters.yaml."
+        )
         assert model.startswith(("us.", "global.", "eu.", "apac.")), (
-            f"BEDROCK_MODEL_ID must be a cross-region inference profile ID, got {model!r}."
+            f"BEDROCK_DEFAULT_MODEL_ID must be a cross-region inference profile ID, got {model!r}."
+        )
+
+    def test_requests_equal_limits(self, all_deployments: dict) -> None:
+        """Guaranteed QoS: capacity per node must stay a division, not a guess.
+        Requests below limits would let sandboxes overcommit the fleet node and
+        burst into each other's CPU."""
+        dep = next(d for d in all_deployments["items"] if d["metadata"]["name"] == "sandbox-agent")
+        resources = dep["spec"]["template"]["spec"]["containers"][0]["resources"]
+        assert resources["requests"] == resources["limits"], (
+            f"sandbox-agent requests must equal limits; got {resources!r}."
         )
 
     def test_callable_from_arc_runners(self) -> None:

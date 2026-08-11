@@ -32,7 +32,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 PORT = int(os.environ.get("PORT", "8080"))
 REGION = os.environ.get("AWS_REGION", "us-east-1")
-DEFAULT_MODEL = os.environ.get("BEDROCK_MODEL_ID", "")
+DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 
 
@@ -126,7 +126,7 @@ def run_task(spec: dict) -> dict:
             return result
 
         if not model:
-            result["errors"]["bedrock"] = "no model configured (set BEDROCK_MODEL_ID or pass 'model')"
+            result["errors"]["bedrock"] = "no model configured (set BEDROCK_DEFAULT_MODEL_ID or pass 'model')"
             return result
 
         try:
