@@ -81,8 +81,16 @@ def region_excluded_blocks(upstream_dir: Path, region: str) -> set[str]:
     return excluded
 
 
-def ensure_canary_repo(upstream_dir: Path) -> Path:
-    """Clone or update pytorch-canary into .scratch/ and return its path."""
+def ensure_canary_repo(
+    upstream_dir: Path,
+    canary_repo: str = CANARY_REPO,
+    commit_email: str = "osdc-integration-test@pytorch.org",
+) -> Path:
+    """Clone or update the canary repo into .scratch/ and return its path.
+
+    ``canary_repo`` and ``commit_email`` default to the pytorch path; a
+    non-primary org supplies its own repo and a generic no-reply author.
+    """
     # Register gh as git's credential helper so raw git commands (fetch, push)
     # can authenticate using GH_TOKEN — gh repo clone alone doesn't set this up.
     auth_result = run_cmd(["gh", "auth", "setup-git"], check=False)
@@ -96,7 +104,9 @@ def ensure_canary_repo(upstream_dir: Path) -> Path:
     scratch = upstream_dir / SCRATCH_DIR_NAME
     scratch.mkdir(parents=True, exist_ok=True)
 
-    canary_path = scratch / "pytorch-canary"
+    # Per-repo scratch dir keeps a second org's clone (and its origin remote)
+    # from colliding with the pytorch-canary checkout when both are exercised.
+    canary_path = scratch / canary_repo.split("/")[-1]
     if canary_path.exists():
         # Verify repo integrity before fetching
         check = run_cmd(["git", "rev-parse", "--git-dir"], cwd=canary_path, check=False)
@@ -115,13 +125,13 @@ def ensure_canary_repo(upstream_dir: Path) -> Path:
             run_cmd(["git", "fetch", "origin"], capture=False, cwd=canary_path)
 
     if not canary_path.exists():
-        log.info("  Cloning %s into %s...", CANARY_REPO, canary_path)
+        log.info("  Cloning %s into %s...", canary_repo, canary_path)
         run_cmd(
             [
                 "gh",
                 "repo",
                 "clone",
-                CANARY_REPO,
+                canary_repo,
                 str(canary_path),
                 "--",
                 "--filter=blob:none",
@@ -132,7 +142,7 @@ def ensure_canary_repo(upstream_dir: Path) -> Path:
     # Configure git identity for commits made by the test orchestrator
     run_cmd(["git", "config", "user.name", "OSDC Integration Test"], cwd=canary_path, capture=False, check=False)
     run_cmd(
-        ["git", "config", "user.email", "osdc-integration-test@pytorch.org"],
+        ["git", "config", "user.email", commit_email],
         cwd=canary_path,
         capture=False,
         check=False,
@@ -144,13 +154,13 @@ def ensure_canary_repo(upstream_dir: Path) -> Path:
 # ── Phase 0: Cleanup ───────────────────────────────────────────────────
 
 
-def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
+def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX, canary_repo: str = CANARY_REPO):
     """Close any stale integration test PRs and cancel running workflows."""
     log.info("Phase 0: Cleaning up stale PRs...")
 
     # Find open PRs matching our title pattern
     result = run_cmd(
-        ["gh", "pr", "list", "--repo", CANARY_REPO, "--state", "open", "--json", "number,title"],
+        ["gh", "pr", "list", "--repo", canary_repo, "--state", "open", "--json", "number,title"],
         check=False,
     )
     if result.returncode != 0:
@@ -162,20 +172,20 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
         if pr_title_prefix in pr.get("title", ""):
             log.info("  Closing stale PR #%d: %s", pr["number"], pr["title"])
             run_cmd(
-                ["gh", "pr", "close", str(pr["number"]), "--repo", CANARY_REPO, "--delete-branch"],
+                ["gh", "pr", "close", str(pr["number"]), "--repo", canary_repo, "--delete-branch"],
                 check=False,
             )
 
     # Cancel any running workflows on our branch
     result = run_cmd(
-        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch, "--status", "queued", "--json", "databaseId"],
+        ["gh", "run", "list", "--repo", canary_repo, "--branch", branch, "--status", "queued", "--json", "databaseId"],
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
         runs = safe_json_loads(result.stdout, "list queued runs") or []
         for r in runs:
             log.info("  Cancelling queued run %s", r["databaseId"])
-            run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO], check=False)
+            run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", canary_repo], check=False)
 
     result = run_cmd(
         [
@@ -183,7 +193,7 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
             "run",
             "list",
             "--repo",
-            CANARY_REPO,
+            canary_repo,
             "--branch",
             branch,
             "--status",
@@ -197,7 +207,7 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
         runs = safe_json_loads(result.stdout, "list in-progress runs") or []
         for r in runs:
             log.info("  Cancelling in-progress run %s", r["databaseId"])
-            run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO], check=False)
+            run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", canary_repo], check=False)
 
 
 # ── Phase 1: Staging pool clear (meta-staging-aws-uw1 only) ─────────────────────
@@ -399,6 +409,7 @@ def prepare_pr(
     workflow_content: str,
     dry_run: bool = False,
     branch: str = "osdc-integration-test",
+    canary_repo: str = CANARY_REPO,
 ) -> int | None:
     """Create a branch, add workflow files, push, and open a PR. Returns PR number."""
     log.info("Phase 2: Preparing PR...")
@@ -457,7 +468,7 @@ def prepare_pr(
             "pr",
             "create",
             "--repo",
-            CANARY_REPO,
+            canary_repo,
             "--title",
             f"{PR_TITLE_PREFIX} {now}",
             "--body",

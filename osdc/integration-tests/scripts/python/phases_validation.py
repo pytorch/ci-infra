@@ -136,6 +136,7 @@ def wait_for_workflows(
     branch: str,
     pr_created_at: datetime,
     workflow_name: str | None = None,
+    canary_repo: str = CANARY_REPO,
 ) -> list[dict]:
     """Poll for workflow run completion. Returns list of run results.
 
@@ -171,7 +172,7 @@ def wait_for_workflows(
                     "run",
                     "list",
                     "--repo",
-                    CANARY_REPO,
+                    canary_repo,
                     "--branch",
                     branch,
                     "--json",
@@ -198,7 +199,7 @@ def wait_for_workflows(
                 run_id = r.get("databaseId")
                 if run_id and run_id not in logged_run_ids:
                     logged_run_ids.add(run_id)
-                    run_url = f"https://github.com/{CANARY_REPO}/actions/runs/{run_id}"
+                    run_url = f"https://github.com/{canary_repo}/actions/runs/{run_id}"
                     log.info("  Run: %s — %s", r.get("name", "?"), run_url)
 
             all_done = all(r.get("status") == "completed" for r in runs)
@@ -213,16 +214,16 @@ def wait_for_workflows(
             time.sleep(POLL_INTERVAL_SECONDS)
         else:
             log.warning("  Timeout reached! Collecting partial results.")
-            completed_runs = _fetch_latest_runs(branch, pr_created_at)
+            completed_runs = _fetch_latest_runs(branch, pr_created_at, canary_repo=canary_repo)
     except KeyboardInterrupt:
         log.warning("  Interrupted during workflow polling")
         raise  # Let main() handle cleanup and partial result collection
 
     # Get job details for each run
-    return _collect_run_details(completed_runs)
+    return _collect_run_details(completed_runs, canary_repo=canary_repo)
 
 
-def _fetch_latest_runs(branch: str, pr_created_at: datetime) -> list[dict]:
+def _fetch_latest_runs(branch: str, pr_created_at: datetime, canary_repo: str = CANARY_REPO) -> list[dict]:
     """Fetch the latest run list from GitHub (used on timeout and interrupt)."""
     result = run_cmd(
         [
@@ -230,7 +231,7 @@ def _fetch_latest_runs(branch: str, pr_created_at: datetime) -> list[dict]:
             "run",
             "list",
             "--repo",
-            CANARY_REPO,
+            canary_repo,
             "--branch",
             branch,
             "--json",
@@ -245,14 +246,14 @@ def _fetch_latest_runs(branch: str, pr_created_at: datetime) -> list[dict]:
     return []
 
 
-def _collect_run_details(runs: list[dict]) -> list[dict]:
+def _collect_run_details(runs: list[dict], canary_repo: str = CANARY_REPO) -> list[dict]:
     """Fetch job details and failure logs for a list of workflow runs."""
     results = []
     for run in runs:
         run_id = run["databaseId"]
         conclusion = run.get("conclusion") or "in_progress"
         result = run_cmd(
-            ["gh", "run", "view", str(run_id), "--repo", CANARY_REPO, "--json", "jobs"],
+            ["gh", "run", "view", str(run_id), "--repo", canary_repo, "--json", "jobs"],
             check=False,
         )
         jobs = []
@@ -265,7 +266,7 @@ def _collect_run_details(runs: list[dict]) -> list[dict]:
         failure_log = ""
         if conclusion == "failure":
             log_result = run_cmd(
-                ["gh", "run", "view", str(run_id), "--repo", CANARY_REPO, "--log-failed"],
+                ["gh", "run", "view", str(run_id), "--repo", canary_repo, "--log-failed"],
                 check=False,
             )
             if log_result.returncode == 0:
@@ -288,7 +289,7 @@ def _collect_run_details(runs: list[dict]) -> list[dict]:
 # ── Phase 5: Cleanup + Report ───────────────────────────────────────────
 
 
-def close_pr(pr_number: int, branch: str | None = None):
+def close_pr(pr_number: int, branch: str | None = None, canary_repo: str = CANARY_REPO):
     """Close the integration test PR and cancel associated workflows.
 
     Args:
@@ -303,7 +304,7 @@ def close_pr(pr_number: int, branch: str | None = None):
                     "run",
                     "list",
                     "--repo",
-                    CANARY_REPO,
+                    canary_repo,
                     "--branch",
                     branch,
                     "--status",
@@ -321,13 +322,13 @@ def close_pr(pr_number: int, branch: str | None = None):
             for r in runs:
                 log.info("  Cancelling %s run %s", status, r["databaseId"])
                 run_cmd(
-                    ["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO],
+                    ["gh", "run", "cancel", str(r["databaseId"]), "--repo", canary_repo],
                     check=False,
                 )
 
     log.info("Phase 5: Closing PR #%d...", pr_number)
     run_cmd(
-        ["gh", "pr", "close", str(pr_number), "--repo", CANARY_REPO, "--delete-branch"],
+        ["gh", "pr", "close", str(pr_number), "--repo", canary_repo, "--delete-branch"],
         check=False,
     )
 
