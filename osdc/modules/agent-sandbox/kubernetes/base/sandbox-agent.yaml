@@ -1,7 +1,7 @@
 # The sandbox worker: a long-running HTTP service on the gVisor fleet, callable
 # over the network like buildkitd. __AGENT_IMAGE__ / __AWS_REGION__ /
-# __BEDROCK_MODEL_ID__ are substituted by deploy.sh (from clusters.yaml
-# agent_sandbox.agent_image and agent_sandbox.model_id).
+# __BEDROCK_DEFAULT_MODEL_ID__ are substituted by deploy.sh (from clusters.yaml
+# agent_sandbox.agent_image and agent_sandbox.default_model_id).
 #
 # runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under runsc.
 # The only credential it holds is the read-only Bedrock IRSA role bound to the
@@ -46,10 +46,10 @@ spec:
             # AWS_WEB_IDENTITY_TOKEN_FILE automatically (from the SA annotation).
             - name: AWS_REGION
               value: "__AWS_REGION__"
-            # Default model for /run when the caller doesn't pass "model".
-            # A cross-region inference profile ID — see clusters.yaml.
-            - name: BEDROCK_MODEL_ID
-              value: "__BEDROCK_MODEL_ID__"
+            # Default model for /run — a caller can override it per request with
+            # "model". A cross-region inference profile ID; see clusters.yaml.
+            - name: BEDROCK_DEFAULT_MODEL_ID
+              value: "__BEDROCK_DEFAULT_MODEL_ID__"
           readinessProbe:
             httpGet:
               path: /healthz
@@ -60,13 +60,23 @@ spec:
             runAsNonRoot: true
             runAsUser: 1000
             allowPrivilegeEscalation: false
+          # requests == limits (Guaranteed QoS) so sandbox capacity per node is a
+          # division, not a guess — and so one untrusted sandbox can't burst into
+          # another's CPU.
+          #
+          # A 2 vCPU / 4 GiB slot fills both dimensions of the c7i.2xlarge fleet
+          # node at the same rate, landing on 3 sandboxes per node: 7.00 vCPU /
+          # 12568 MiB are free for sandboxes (7.91 vCPU / 14710 MiB allocatable
+          # less the 0.92 vCPU / 2142 MiB the fleet's daemonsets request — both
+          # measured on a live node), and 7.00/2 = 3, 12568/4096 = 3.
+          # See modules/nodepools-agent-sandbox/defs/ai-sandbox.yaml.
           resources:
             requests:
-              cpu: "500m"
-              memory: "1Gi"
+              cpu: "2"
+              memory: "4Gi"
             limits:
               cpu: "2"
-              memory: "2Gi"
+              memory: "4Gi"
 ---
 apiVersion: v1
 kind: Service

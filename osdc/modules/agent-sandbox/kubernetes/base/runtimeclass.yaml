@@ -20,7 +20,10 @@ scheduling:
       operator: Equal
       value: ai-sandbox
       effect: NoSchedule
+    # Exists, not a pinned value: the nodepool generator taints nodes with their
+    # instance type, so pinning one here silently strands every sandbox pod the
+    # moment the fleet is resized. Placement is already confined by the
+    # node-fleet nodeSelector above. Same pattern as arc-runners.
     - key: instance-type
-      operator: Equal
-      value: c7i.8xlarge
+      operator: Exists
       effect: NoSchedule
