@@ -35,6 +35,7 @@ INSTANCE_SPECS: dict[str, dict] = {
     "c7a.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "amd64"},
     "c7a.24xlarge": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
     "c7a.48xlarge": {"vcpu": 192, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "c7i.2xlarge": {"vcpu": 8, "memory_gib": 16, "memory_mi": 15703, "gpu": 0, "arch": "amd64"},
     "c7i.8xlarge": {"vcpu": 32, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
     "c7i.12xlarge": {"vcpu": 48, "memory_gib": 96, "memory_mi": 90931, "gpu": 0, "arch": "amd64"},
     "c7i.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "amd64"},
@@ -132,6 +133,7 @@ ENI_MAX_PODS: dict[str, int] = {
     "c7a.24xlarge": 737,
     "c7a.48xlarge": 737,
     # Fleet fallback sizes — c7i
+    "c7i.2xlarge": 58,
     "c7i.8xlarge": 234,
     "c7i.12xlarge": 234,
     "c7i.16xlarge": 737,
