@@ -60,6 +60,13 @@ nodeSelector: {}
 # onto whichever node comes up first, starving other pods on that node of
 # CPU. maxUnavailable on the base node group never exceeds replicas-1 nodes,
 # so DoNotSchedule can't wedge this pending.
+#
+# matchLabelKeys: [pod-template-hash] scopes the skew calculation to the
+# current ReplicaSet generation only, so a Deployment rollout doesn't count
+# old-generation pods still awaiting termination against new pods'
+# placement — replicaCount currently sits under node count so this hasn't
+# deadlocked yet, but see base/helm/harbor/values.yaml for the rollout
+# deadlock this avoids once that margin disappears.
 topologySpreadConstraints:
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
@@ -68,3 +75,5 @@ topologySpreadConstraints:
       matchLabels:
         app.kubernetes.io/name: gha-rs-controller
         app.kubernetes.io/instance: arc
+    matchLabelKeys:
+      - pod-template-hash
