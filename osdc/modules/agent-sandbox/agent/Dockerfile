@@ -4,10 +4,8 @@
 # It clones PUBLIC repos anonymously (no token) and calls Bedrock directly via
 # boto3 (which picks up the pod's IRSA web-identity credentials). No proxies.
 #
-# Build + push once to the in-cluster Harbor osdc project (see README):
-#   docker buildx build --platform linux/amd64 -t ci-agent-sandbox:prototype \
-#     -o type=docker,dest=/tmp/agent.tar modules/agent-sandbox/agent
-#   crane push /tmp/agent.tar <harbor>/osdc/ci-agent-sandbox:prototype
+# Built and pushed to the in-cluster Harbor osdc project by the module's deploy.sh
+# under a content-hash tag — not built by hand. See the module README.
 FROM public.ecr.aws/docker/library/debian:12-slim
 
 RUN apt-get update \

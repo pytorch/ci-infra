@@ -1,7 +1,7 @@
 # The sandbox worker: a long-running HTTP service on the gVisor fleet, callable
 # over the network like buildkitd. __AGENT_IMAGE__ / __AWS_REGION__ /
-# __BEDROCK_MODEL_ID__ are substituted by deploy.sh (from clusters.yaml
-# agent_sandbox.agent_image and agent_sandbox.model_id).
+# __BEDROCK_MODEL_ID__ are substituted by deploy.sh (the image it built and pushed
+# to Harbor; the model from clusters.yaml agent_sandbox.model_id).
 #
 # runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under runsc.
 # The only credential it holds is the read-only Bedrock IRSA role bound to the
@@ -32,10 +32,9 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: agent
+          # Content-hash tag from deploy.sh — immutable, so the default
+          # IfNotPresent pull policy is correct.
           image: __AGENT_IMAGE__
-          # Prototype uses a mutable :prototype tag; re-pull on every start so a
-          # fresh push is picked up.
-          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
