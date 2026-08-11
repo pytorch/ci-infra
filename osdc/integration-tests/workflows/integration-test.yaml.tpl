@@ -1995,7 +1995,7 @@ jobs:
           fi
           echo "PASS: sandbox cloned a public repo anonymously — no token on the runner or agent"
           # Bedrock is a hard assertion: a model is configured (clusters.yaml
-          # agent_sandbox.model_id) and the agent's IRSA role is the only
+          # agent_sandbox.default_model_id) and the agent's IRSA role is the only
           # credential it holds, so a non-empty report proves the whole
           # credential path works. errors.bedrock means it did not.
           if echo "$RESP" | grep -q '"bedrock"'; then
