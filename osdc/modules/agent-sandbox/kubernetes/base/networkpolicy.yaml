@@ -1,0 +1,49 @@
+# Network policy for the ai-sandbox namespace.
+#
+# PROTOTYPE: egress is OPEN — the agent has internet access (clones public GitHub
+# and calls Bedrock directly). Egress lockdown (a dedicated egress-restricted
+# subnet / Security-Groups-for-Pods) is deferred Phase-2 hardening; see the module
+# README and the design doc §6. So this file only restricts INGRESS: the worker is
+# reachable from the arc-runners namespace (BuildKit parity), nothing else.
+#
+# Note: under IPv6-only AWS VPC CNI, NetworkPolicy is best-effort (it doesn't apply
+# to the IPv4-egress interface), so it is defense-in-depth, not a hard boundary.
+
+# Deny all ingress by default; the allow below re-opens the worker to arc-runners.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Agent ingress: callable from arc-runners over the network, like buildkitd
+# (mirrors buildkit's buildkitd-lb-ingress). The runner needs NO K8s RBAC — just
+# this network allow.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-agent-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: arc-runners
+      ports:
+        - protocol: TCP
+          port: 8080
