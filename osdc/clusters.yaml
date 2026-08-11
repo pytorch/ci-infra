@@ -268,7 +268,7 @@ clusters:
       # in us-east-1 is INFERENCE_PROFILE-only, and the Claude 3 generation that
       # still advertises ON_DEMAND is refused as provider-legacy. Haiku 4.5 is
       # the cheapest active model.
-      model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+      default_model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     modules:
       - karpenter
       - arc
