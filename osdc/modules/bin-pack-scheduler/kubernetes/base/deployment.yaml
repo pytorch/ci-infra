@@ -36,6 +36,13 @@ spec:
       # onto whichever node is up first) — that starved other pods on that
       # node of CPU. maxUnavailable on the base node group never exceeds
       # replicas-1 nodes, so a required constraint can't wedge this pending.
+      #
+      # matchLabelKeys: [pod-template-hash] scopes the anti-affinity to the
+      # current ReplicaSet generation only, so a Deployment rollout doesn't
+      # count old-generation pods still awaiting termination against new
+      # pods' placement — replicas currently sit under node count so this
+      # hasn't deadlocked yet, but see base/helm/harbor/values.yaml for the
+      # rollout deadlock this avoids once that margin disappears.
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -43,6 +50,8 @@ spec:
               labelSelector:
                 matchLabels:
                   app: bin-pack-scheduler
+              matchLabelKeys:
+                - pod-template-hash
       containers:
         - name: kube-scheduler
           image: registry.k8s.io/kube-scheduler:v1.35.0
