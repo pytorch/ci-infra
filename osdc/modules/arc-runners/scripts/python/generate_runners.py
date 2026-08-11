@@ -17,6 +17,7 @@ comes from clusters.yaml — no separate env-values.yaml.
 """
 
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -57,6 +58,38 @@ def log_error(msg):
 def normalize_name(name):
     """Normalize runner name for K8s resources (replace dots and underscores with dashes)."""
     return name.replace(".", "-").replace("_", "-")
+
+
+def org_key_of(url):
+    """Lowercased GitHub owner (org/user) from a github.com URL, or "" if none.
+
+    Mirrors the ARC fork's HUD-org inference: the owner is the first path
+    segment after ``github.com/``, lowercased (GitHub owners are
+    case-insensitive and the fork lowercases before matching).
+    """
+    if not url:
+        return ""
+    trimmed = url.rstrip("/")
+    if "github.com/" not in trimmed:
+        return ""
+    path = trimmed.split("github.com/", 1)[-1]
+    return path.split("/", 1)[0].lower()
+
+
+def _cluster_serves_org(cfg, org_key):
+    """True when a cluster's arc-runners block advertises runners for ``org_key``.
+
+    A cluster serves an org if the org is its primary (``github_config_url``) or
+    appears in ``additional_orgs``. HUD-queue sharding is scoped to the peers
+    that actually serve the same org so honest advertisers don't shard against
+    clusters pointed at a different org.
+    """
+    arc = cfg.get("arc-runners") or {}
+    if org_key == org_key_of(arc.get("github_config_url")):
+        return True
+    return any(
+        org_key == org_key_of((org or {}).get("github_config_url")) for org in (arc.get("additional_orgs") or [])
+    )
 
 
 # Kubernetes resource quantity suffixes → multiplier (bytes)
@@ -114,7 +147,7 @@ def get_cluster_config(clusters_yaml, cluster_id):
     return cluster_cfg, defaults
 
 
-def compute_cluster_sharding(clusters_yaml, cluster_id, module_name, runner_name_prefix):
+def compute_cluster_sharding(clusters_yaml, cluster_id, module_name, runner_name_prefix, org_key=None):
     """Return (cluster_index, cluster_count) for sharding HUD queue across peer clusters.
 
     Peers are clusters that deploy the same module AND use the same
@@ -125,6 +158,11 @@ def compute_cluster_sharding(clusters_yaml, cluster_id, module_name, runner_name
     An "-opt" module variant shards together with its base module (its "-opt"
     suffix is stripped on both sides of the comparison), so a pilot cluster
     shares the base cluster's HUD queue split rather than forming its own group.
+
+    When ``org_key`` is given, the peer set is further restricted to clusters
+    that serve that org (see :func:`_cluster_serves_org`) so per-org fan-out
+    shards each org's queue only against the peers advertising for it.
+    ``org_key=None`` reproduces the org-agnostic peer set exactly.
 
     A cluster that is not its own peer (configuration drift, called with a
     module/prefix combination it does not actually deploy) returns (0, 1) so
@@ -137,6 +175,7 @@ def compute_cluster_sharding(clusters_yaml, cluster_id, module_name, runner_name
         for cid, cfg in (clusters_yaml.get("clusters") or {}).items()
         if any(m.removesuffix("-opt") == base_module for m in (cfg.get("modules") or []))
         and (((cfg.get("arc-runners") or {}).get("runner_name_prefix")) or "") == target_prefix
+        and (org_key is None or _cluster_serves_org(cfg, org_key))
     )
     if cluster_id not in peers:
         return 0, 1
@@ -212,6 +251,7 @@ def generate_runner(
     hf_cache_enabled=False,
     available_modules=None,
     cluster_cfg=None,
+    org_override=None,
 ):
     """Generate a single runner config from its definition.
 
@@ -229,6 +269,13 @@ def generate_runner(
     scheduler_name that does not name an available module is silently dropped,
     so workflow pods don't get stamped with a schedulerName that has no
     scheduler running (they would pend forever).
+
+    org_override, when set, is an ``additional_orgs`` entry (github_config_url,
+    github_secret_name, runner_group, resource_slug, optional max_runners, plus
+    precomputed _idx/_count). It produces an extra scale set pointed at that org
+    with an org-unique Kubernetes name (``{resource_slug}-{runner_name}``) but
+    the SAME GitHub runner label ({{RUNNER_NAME}}). org_override=None reproduces
+    the primary-org output unchanged.
     """
     available_modules = available_modules or set()
     with open(def_file) as f:
@@ -270,7 +317,12 @@ def generate_runner(
         log_error(f"Invalid definition file: {def_file}")
         return False
 
-    max_runners = resolve_max_runners(runner.get("max_runners"), def_file, cluster_config.get("cluster_id"))
+    max_runners_source = (
+        org_override["max_runners"]
+        if (org_override is not None and "max_runners" in org_override)
+        else runner.get("max_runners")
+    )
+    max_runners = resolve_max_runners(max_runners_source, def_file, cluster_config.get("cluster_id"))
 
     if cluster_config.get("pause_runners"):
         max_runners = 0
@@ -318,14 +370,22 @@ def generate_runner(
         log_error(f"Invalid definition file {def_file}: {e}")
         return False
 
-    # Cluster-specific values
-    github_url = cluster_config.get("github_config_url", "")
+    # Cluster-specific values. An additional-org override supplies its own
+    # GitHub URL, secret, runner group, shard, and (optionally) max_runners;
+    # every other value stays cluster-wide (shared across orgs).
+    if org_override is not None:
+        github_url = org_override["github_config_url"]
+    else:
+        github_url = cluster_config.get("github_config_url", "")
 
     # Cluster-level runner_group override (e.g. multi-region prod assigns a
     # per-region runner group so two clusters can share scale-set names without
     # collision). When set, wins over the def file's value. The repo-scope
-    # guard below still applies.
-    cluster_runner_group = cluster_config.get("runner_group")
+    # guard below still applies. For an additional org the override comes from
+    # the org entry instead of the cluster config.
+    cluster_runner_group = (
+        org_override.get("runner_group") if org_override is not None else cluster_config.get("runner_group")
+    )
     if cluster_runner_group:
         runner_group = cluster_runner_group
 
@@ -343,13 +403,23 @@ def generate_runner(
         if "/" in url_path:
             log_info(f"  Repo-scoped URL — overriding runner_group '{runner_group}' → 'default'")
             runner_group = "default"
-    k8s_secret_ref = cluster_config.get(
-        "github_secret_name", ""
-    )  # lgtm[py/clear-text-storage-sensitive-data] - K8s Secret resource name, not a credential
+    if org_override is not None:
+        k8s_secret_ref = org_override[
+            "github_secret_name"
+        ]  # lgtm[py/clear-text-storage-sensitive-data] - K8s Secret resource name, not a credential
+    else:
+        k8s_secret_ref = cluster_config.get(
+            "github_secret_name", ""
+        )  # lgtm[py/clear-text-storage-sensitive-data] - K8s Secret resource name, not a credential
     runner_prefix = cluster_config.get("runner_name_prefix", "")
     runner_image = cluster_config.get("runner_image", "ghcr.io/actions/actions-runner:2.333.1")
 
-    normalized_name = normalize_name(runner_name)
+    # An additional org names all its K8s objects after {resource_slug}-{name}
+    # so it can coexist with the primary org's scale set; the primary keeps the
+    # bare runner name. The GitHub label ({{RUNNER_NAME}}) is shared regardless.
+    resource_id = f"{org_override['resource_slug']}-{runner_name}" if org_override is not None else runner_name
+    normalized_name = normalize_name(resource_id)
+    resource_name_line = f'resourceName: "{resource_id}"' if org_override is not None else ""
 
     log_info(
         f"Generating {runner_prefix}{runner_name} "
@@ -411,6 +481,16 @@ def generate_runner(
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # HUD-queue shard for this scale set. An additional org shards against the
+    # peers serving that org (precomputed _idx/_count); the primary uses the
+    # cluster's org-scoped shard stamped by main().
+    if org_override is not None:
+        shard_index = org_override["_idx"]
+        shard_count = org_override["_count"]
+    else:
+        shard_index = cluster_config.get("capacity_aware_cluster_index", 0)
+        shard_count = cluster_config.get("capacity_aware_cluster_count", 1)
+
     # Optional schedulerName for workflow pods (per-def scheduler_name).
     # Empty = default scheduler. The same value feeds two places so the real
     # workflow pod and its capacity placeholder (ph-w-*) agree on the scheduler:
@@ -461,6 +541,7 @@ def generate_runner(
         "{{RUNNER_GROUP}}": runner_group,
         "{{RUNNER_CLASS_JOB_AFFINITY}}": runner_class_job_affinity,
         "{{MAX_RUNNERS_LINE}}": max_runners_line,
+        "{{RESOURCE_NAME_LINE}}": resource_name_line,
         "{{GPU_COUNT}}": str(gpu),
         "{{RUNNER_CLASS}}": runner_class,
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
@@ -468,8 +549,8 @@ def generate_runner(
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
         "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
         "{{SCHEDULER_NAME}}": scheduler_name,
-        "{{CAPACITY_AWARE_CLUSTER_INDEX}}": str(cluster_config.get("capacity_aware_cluster_index", 0)),
-        "{{CAPACITY_AWARE_CLUSTER_COUNT}}": str(cluster_config.get("capacity_aware_cluster_count", 1)),
+        "{{CAPACITY_AWARE_CLUSTER_INDEX}}": str(shard_index),
+        "{{CAPACITY_AWARE_CLUSTER_COUNT}}": str(shard_count),
         "{{CAPACITY_AWARE_AGE_THRESHOLD_SECONDS}}": str(
             cluster_config.get("capacity_aware_age_threshold_seconds", 900)
         ),
@@ -483,10 +564,100 @@ def generate_runner(
     while "\n\n\n" in output_content:
         output_content = output_content.replace("\n\n\n", "\n\n")
 
-    output_file = output_dir / f"{runner_name}.yaml"
+    output_file = output_dir / f"{resource_id}.yaml"
     output_file.write_text(output_content)  # lgtm[py/clear-text-storage-sensitive-data]
     log_info(f"  \u2713 {output_file.name}")
     return True
+
+
+# The gha-runner-scale-set chart refuses to render an AutoscalingRunnerSet whose
+# name exceeds this many characters (charts/gha-runner-scale-set/templates/
+# autoscalingrunnerset.yaml fails with "Name must have up to 45 characters").
+# An additional org names its scale set {resource_slug}-{runner_name}, so an
+# over-long combination is rejected at generate time here instead of surfacing
+# as an opaque helm-render failure at deploy.
+_MAX_RESOURCE_NAME_LEN = 45
+
+# resource_slug is prefixed onto every K8s object name for an additional org, so
+# it must be a DNS-1123 label: lowercase alphanumerics and '-', not starting or
+# ending with '-'.
+_RESOURCE_SLUG_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+
+def _load_runner_names(def_files):
+    """runner.name for each def that would actually emit output.
+
+    Mirrors generate_runner's guard \u2014 a def missing name or instance_type is
+    skipped there and writes nothing \u2014 so the collision/length preflight sees
+    exactly the set of names that will be generated.
+    """
+    names = []
+    for def_file in def_files:
+        with open(def_file) as f:
+            data = yaml.safe_load(f)
+        runner = (data or {}).get("runner") or {}
+        name = runner.get("name")
+        instance_type = runner.get("instance_type")
+        if name and instance_type:
+            names.append(name)
+    return names
+
+
+def _additional_org_errors(cluster_id, additional_orgs, runner_names):
+    """Validate a cluster's additional_orgs entries; return a list of error strings.
+
+    Empty list means valid. Runs before any output is written so a misconfigured
+    entry fails at generate time with a clear message instead of a raw KeyError
+    inside generate_runner or an opaque chart failure at helm apply. Per entry it
+    checks: required non-empty github_config_url, github_secret_name and
+    resource_slug; a DNS-1123-label resource_slug; every {resource_slug}-{name}
+    scale-set name within the chart length limit; and no output-name collision
+    with the primary org or another additional org (no silent overwrite).
+    """
+    errors = []
+    # The primary org emits one file per def keyed by the bare runner name.
+    generated = dict.fromkeys(runner_names, "the primary org")
+    seen_slugs = {}
+    for idx, entry in enumerate(additional_orgs):
+        entry = entry or {}
+        for key in ("github_config_url", "github_secret_name", "resource_slug"):
+            value = entry.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    f"cluster '{cluster_id}' additional_orgs[{idx}]: '{key}' is required and must be a non-empty string"
+                )
+        slug = entry.get("resource_slug")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+        if not _RESOURCE_SLUG_RE.match(slug):
+            errors.append(
+                f"cluster '{cluster_id}' additional_orgs[{idx}]: resource_slug '{slug}' must be a DNS-1123 label "
+                f"(lowercase alphanumeric and '-', not starting or ending with '-')"
+            )
+            continue
+        if slug in seen_slugs:
+            errors.append(
+                f"cluster '{cluster_id}' additional_orgs[{idx}]: duplicate resource_slug '{slug}' "
+                f"(already used by additional_orgs[{seen_slugs[slug]}])"
+            )
+            continue
+        seen_slugs[slug] = idx
+        for name in runner_names:
+            resource_id = f"{slug}-{name}"
+            if len(resource_id) > _MAX_RESOURCE_NAME_LEN:
+                errors.append(
+                    f"cluster '{cluster_id}' additional_orgs[{idx}]: scale-set name '{resource_id}' is "
+                    f"{len(resource_id)} chars, over the {_MAX_RESOURCE_NAME_LEN}-char chart limit "
+                    f"(resource_slug '{slug}', def '{name}')"
+                )
+            if resource_id in generated:
+                errors.append(
+                    f"cluster '{cluster_id}' additional_orgs[{idx}]: scale-set name '{resource_id}' collides with "
+                    f"{generated[resource_id]} \u2014 refusing to overwrite"
+                )
+            else:
+                generated[resource_id] = f"additional_orgs[{idx}] (resource_slug '{slug}')"
+    return errors
 
 
 def main():
@@ -574,9 +745,42 @@ def main():
     # max_runners_overrides entry from each def.
     cluster_config["cluster_id"] = cluster_id
     prefix = cluster_config.get("runner_name_prefix") or ""
-    shard_idx, shard_count = compute_cluster_sharding(clusters_yaml, cluster_id, module_name, prefix)
+    primary_org_key = org_key_of(cluster_config.get("github_config_url"))
+    shard_idx, shard_count = compute_cluster_sharding(
+        clusters_yaml, cluster_id, module_name, prefix, org_key=primary_org_key
+    )
     cluster_config["capacity_aware_cluster_index"] = shard_idx
     cluster_config["capacity_aware_cluster_count"] = shard_count
+
+    # Additional orgs (per-org fan-out): each entry produces one extra scale set
+    # per def pointed at that org, with an org-unique K8s name but the SAME
+    # GitHub runner label. Each org shards the HUD queue only against peers that
+    # serve it. Absent/empty -> no extra output, byte-identical to primary-only.
+    additional_orgs = cluster_config.get("additional_orgs") or []
+
+    # Glob the defs once, up front: the additional-orgs preflight needs the
+    # runner names to catch output-name collisions and over-long names before
+    # anything is written, and the generation loop reuses this same list.
+    def_files = sorted(defs_dir.glob("*.yaml"))
+
+    # Validate additional_orgs before they drive sharding or generation: a
+    # missing key, malformed slug, over-long name, or output-name collision
+    # fails here via the standard log_error path instead of as a raw KeyError in
+    # generate_runner or an opaque helm-render failure at deploy. Runs before the
+    # output dir is wiped so a bad config leaves the last good render intact.
+    if additional_orgs:
+        org_errors = _additional_org_errors(cluster_id, additional_orgs, _load_runner_names(def_files))
+        if org_errors:
+            for err in org_errors:
+                log_error(err)
+            return 1
+
+    for org in additional_orgs:
+        org_idx, org_count = compute_cluster_sharding(
+            clusters_yaml, cluster_id, module_name, prefix, org_key=org_key_of(org.get("github_config_url"))
+        )
+        org["_idx"] = org_idx
+        org["_count"] = org_count
     cluster_config["capacity_aware_age_threshold_seconds"] = cluster_cfg.get(
         "capacity_aware_age_threshold_seconds", 900
     )
@@ -606,7 +810,6 @@ def main():
     log_info(f"Generating ARC runner configs for: {cluster_id}")
     print()
 
-    def_files = sorted(defs_dir.glob("*.yaml"))
     if not def_files:
         log_error(f"No definition files found in {defs_dir}")
         return 1
@@ -636,6 +839,20 @@ def main():
             cluster_cfg=cluster_cfg,
         ):
             count += 1
+        for org in additional_orgs:
+            if generate_runner(
+                def_file,
+                template_content,
+                cluster_config,
+                output_dir,
+                module_name,
+                pypi_cache_enabled,
+                hf_cache_enabled,
+                available_modules,
+                cluster_cfg=cluster_cfg,
+                org_override=org,
+            ):
+                count += 1
 
     print()
     log_info(f"Generated {count} ARC runner config(s) in {output_dir}")
