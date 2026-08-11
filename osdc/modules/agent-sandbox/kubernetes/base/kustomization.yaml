@@ -1,0 +1,12 @@
+# Agent-sandbox Kubernetes resources (namespace-scoped + the cluster-scoped
+# gvisor RuntimeClass). deploy.sh substitutes __AGENT_IMAGE__ / __AWS_REGION__ in
+# sandbox-agent.yaml at apply time (kustomize can't read clusters.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - runtimeclass.yaml
+  - serviceaccounts.yaml
+  - sandbox-agent.yaml
+  - networkpolicy.yaml
