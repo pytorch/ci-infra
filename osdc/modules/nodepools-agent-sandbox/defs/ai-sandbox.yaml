@@ -8,12 +8,25 @@
 # The node-fleet=ai-sandbox taint isolates the pool; agent pods tolerate it via
 # the gvisor RuntimeClass scheduling. Deliberately a single small CPU instance
 # type for the prototype — no NVMe, no GPU.
+#
+# Sizing — 2xlarge holds exactly 3 sandboxes (all figures measured on a live node,
+# not derived from AWS-advertised specs):
+#   allocatable            7.91 vCPU / 14710 MiB  (8 vCPU / 16 GiB, maxPods 58)
+#   less fleet daemonsets  0.92 vCPU /  2142 MiB  (alloy-logging + hf-cache mount
+#                                                  dominate; see the README table)
+#   free for sandboxes     7.00 vCPU / 12568 MiB
+#   sandbox slot           2 vCPU / 4 GiB, requests == limits
+#                          -> 3 by CPU (7.00/2), 3 by memory (12568/4096)
+# The 2:4 slot matches c7i's 1:2 vCPU:GiB ratio, so neither dimension strands
+# capacity. Step up to c7i.4xlarge when the prototype needs more concurrency —
+# but redo this arithmetic rather than scaling it linearly, because kube-reserved
+# grows with maxPods (58 -> 234) and the daemonset set may differ.
 fleet:
   name: ai-sandbox
   arch: amd64
   gpu: false
   instances:
-    - type: c7i.8xlarge
+    - type: c7i.2xlarge
       weight: 100
       node_disk_size: 100
       # gVisor (runsc) install runs as a userData MIME part on these nodes only.
