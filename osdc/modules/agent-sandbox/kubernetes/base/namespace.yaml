@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
