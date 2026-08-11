@@ -27,6 +27,22 @@ x-base-affinity: &base-affinity
               values:
                 - base-infrastructure
 
+# Hard node selector for components with topologySpreadConstraints below.
+# x-base-affinity above is only a soft preference, so without this the
+# topology-spread skew calculation treats every node in the cluster as a
+# valid (zero-count) domain, not just the 4 base-infrastructure nodes.
+# That makes maxSkew: 1 mathematically unsatisfiable as soon as a
+# component's replica count exceeds the base node count — any node
+# already holding one same-generation pod would need a 2nd, giving
+# skew = 2 against an empty domain elsewhere, which always exceeds
+# maxSkew: 1 regardless of matchLabelKeys. core/portal happened to pass
+# because their replica count equals the node count exactly (4 == 4);
+# nginx at 6 replicas over 4 nodes deadlocked permanently. Restricting
+# the node set here matches the same pattern already used in
+# modules/bin-pack-scheduler/kubernetes/base/deployment.yaml.
+x-base-node-selector: &base-node-selector
+  role: base-infrastructure
+
 # Hard-spread each component's replicas one-per-node. Without this, a
 # rolling base node replacement (nodes become Ready one at a time) can pile
 # every replica of core/registry/etc. onto whichever node comes up first,
@@ -105,6 +121,7 @@ cache:
 core:
   tolerations: *base-tolerations
   affinity: *base-affinity
+  nodeSelector: *base-node-selector
   topologySpreadConstraints:
     - <<: *spread-template
       labelSelector:
@@ -132,6 +149,7 @@ updateStrategy:
 portal:
   tolerations: *base-tolerations
   affinity: *base-affinity
+  nodeSelector: *base-node-selector
   topologySpreadConstraints:
     - <<: *spread-template
       labelSelector:
@@ -148,6 +166,7 @@ nginx:
       memory: 1Gi
   tolerations: *base-tolerations
   affinity: *base-affinity
+  nodeSelector: *base-node-selector
   topologySpreadConstraints:
     - <<: *spread-template
       labelSelector:
