@@ -40,7 +40,10 @@ with its scoped IRSA role.
 
 - `GET /healthz` → `{"status":"ok"}`
 - `POST /run` body `{"repo","ref","task","model"?}` →
-  `{"cloned":bool,"file_count":int,"report":str,"errors":{…}}`
+  `{"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
+
+  `top_level` is the clone's real top-level listing, which is also fed to the
+  model — an empty one means the report was not grounded in the repo.
 
 ## One-time prerequisite: build + push the agent image
 
@@ -78,8 +81,28 @@ curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -d '{"repo":"pytorch/pytorch","ref":"main","task":"Summarize the build layout",
        "model":"<enabled-bedrock-model-or-inference-profile-id>"}'
 ```
-Omitting `model` uses `BEDROCK_MODEL_ID`, set at deploy time from
-`clusters.yaml` → `agent_sandbox.model_id`.
+Any caller can pick the model per request. Omitting `model` falls back to
+`BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
+`agent_sandbox.default_model_id`.
+
+## Capacity
+
+A sandbox slot is **2 vCPU / 4 GiB with requests == limits** (Guaranteed QoS), so
+capacity per node is a division rather than a guess — and one untrusted sandbox
+can't burst into another's CPU. **3 slots per `c7i.2xlarge`** fleet node:
+
+| | vCPU | MiB |
+|---|---|---|
+| allocatable (8 vCPU / 16 GiB, maxPods 58) | 7.91 | 14710 |
+| less fleet daemonsets (`alloy-logging` 0.51/1074, `hf-cache-mount` 0.11/672, rest ~0.30/396) | 0.92 | 2142 |
+| free for sandboxes | 7.00 | 12568 |
+| ÷ slot (2 vCPU / 4 GiB) | **3** | **3** |
+
+Both numbers are measured on a live node, not derived from AWS-advertised specs —
+`allocatable` already nets out kube-reserved, which scales with `maxPods`, so
+don't scale this table linearly when changing instance size. The 2:4 slot matches
+c7i's 1:2 vCPU:GiB ratio, so neither dimension strands capacity. The prototype
+runs one replica, so today that's 1 of 3 slots.
 
 ## Choosing the Bedrock model
 
@@ -126,10 +149,10 @@ just integration-test meta-staging-aws-ue1
 - **gVisor install is best-effort** node userData (fail-closed if runsc doesn't register).
 - **Warm worker, not per-task-ephemeral** (like buildkitd) — no per-task isolation reset yet.
 - **Output is trusted as-is** — the propose/dispose validation gate is Phase 2.
-- **Prompt is coarse** — the task prompt carries only the repo/ref and a file
-  count, so the model's "report" is largely ungrounded. Feeding real repo context
-  is the next step; today the Bedrock call proves the credential path, not agent
-  quality.
+- **Repo context is shallow** — the prompt carries the file count and the
+  top-level listing, enough to keep answers grounded, but no file contents. Real
+  tasks need reading files (and a tool loop to choose which); today the Bedrock
+  call proves the credential path, not agent capability.
 
 ## Future direction: vetted MCP services
 
