@@ -383,6 +383,7 @@ clusters:
           runner_group: "default"
           resource_slug: mp
           max_runners: 1
+          canary_repo: "meta-pytorch/pytorch-gha-infra"
     arc-runners-h100:
       capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
