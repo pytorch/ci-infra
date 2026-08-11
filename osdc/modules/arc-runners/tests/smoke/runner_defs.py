@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -102,3 +103,111 @@ def def_for_listener_pod(
     if def_name is None:
         return None, None
     return def_name, defs_by_name.get(def_name)
+
+
+def scale_set_label_from_values(values: dict) -> str:
+    """The ``actions.github.com/scale-set-name`` label ARC stamps on this scale
+    set's listener and placeholder pods, read from a generated chart-values doc.
+
+    ARC labels those pods with the AutoscalingRunnerSet's Kubernetes name, which
+    the chart derives as ``resourceName | default runnerScaleSetName``
+    (gha-runner-scale-set/templates/_helpers.tpl; the controller copies that name
+    onto the listener pod, and the capacity monitor onto placeholder pods).
+    Per-org fan-out sets ``resourceName`` (``<resource_slug>-<def>``) so each org's
+    pods carry an org-unique label; the primary org leaves it unset and the label
+    is ``runnerScaleSetName`` (``<runner_name_prefix><def>``). This asymmetry is
+    why a bare prefix-strip cannot map an additional org's pods to their def.
+    """
+    resource_name = values.get("resourceName")
+    if resource_name:
+        return str(resource_name)
+    return str(values.get("runnerScaleSetName") or "")
+
+
+def scale_set_label_of_pod(pod: dict) -> str | None:
+    """The ``actions.github.com/scale-set-name`` label on a live listener or
+    placeholder pod, or None when absent."""
+    return pod.get("metadata", {}).get("labels", {}).get(SCALE_SET_NAME_LABEL)
+
+
+@dataclass(frozen=True)
+class GeneratedScaleSet:
+    """One generated ARC scale set — the parsed contents of a single
+    ``modules/<arc-runners*>/generated/*.yaml`` file.
+
+    Generated files are the source of truth for what a cluster deploys. Per-org
+    fan-out emits one file per (def, org): the primary org keyed by the bare def
+    name and each additional org by ``<resource_slug>-<def>``, each with its own
+    org-unique hook ConfigMap and scale-set label. Reconstructing expected names
+    or the pod-to-def mapping from def names alone misses every additional-org
+    scale set — read them from here instead.
+    """
+
+    resource_id: str  # generated file stem: "<def>" (primary) or "<slug>-<def>"
+    scale_set_label: str  # actions.github.com/scale-set-name on live pods
+    def_name: str  # bare runner-def name, shared across a def's orgs
+    values: dict  # doc 1: chart values (runnerScaleSetName, listenerTemplate, ...)
+    configmap: dict  # doc 2: job-pod hook ConfigMap
+
+    @property
+    def configmap_name(self) -> str:
+        """Authoritative hook ConfigMap name (doc 2 ``metadata.name``)."""
+        return (self.configmap.get("metadata") or {}).get("name", "") or ""
+
+
+def generated_dirs(upstream_dir: Path, modules: Iterable[str] | None = None) -> list[Path]:
+    """Resolve ARC generated-config directories (mirrors :func:`defs_dirs`).
+
+    If ``modules`` is provided, returns ``modules/<m>/generated`` for each — used
+    to scope to a cluster's *enabled* arc-runners* modules. If omitted, returns
+    the union of every ``arc-runners*/generated`` in the codebase.
+    """
+    if modules is not None:
+        return [upstream_dir / "modules" / m / "generated" for m in sorted(modules)]
+    return sorted((upstream_dir / "modules").glob("arc-runners*/generated"))
+
+
+def read_generated_scale_sets(dirs: Iterable[Path], runner_name_prefix: str) -> list[GeneratedScaleSet]:
+    """Parse every generated runner YAML in ``dirs`` into GeneratedScaleSet entries.
+
+    Each generated file is a two-doc YAML: doc 1 = chart values (with the
+    identity fields ``runnerScaleSetName`` / ``resourceName``), doc 2 = the hook
+    ConfigMap. ``def_name`` is recovered by stripping ``runner_name_prefix`` from
+    ``runnerScaleSetName`` — which the generator always emits as
+    ``<prefix><def>`` for every org — so the bare def is shared across a def's
+    primary and additional-org scale sets.
+    """
+    out: list[GeneratedScaleSet] = []
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.yaml")):
+            docs = list(yaml.safe_load_all(f.read_text()))
+            values = docs[0] if docs and isinstance(docs[0], dict) else {}
+            configmap = next(
+                (doc for doc in docs if isinstance(doc, dict) and doc.get("kind") == "ConfigMap"),
+                {},
+            )
+            def_name = def_name_from_scale_set(str(values.get("runnerScaleSetName") or ""), runner_name_prefix)
+            out.append(
+                GeneratedScaleSet(
+                    resource_id=f.stem,
+                    scale_set_label=scale_set_label_from_values(values),
+                    def_name=def_name or "",
+                    values=values,
+                    configmap=configmap,
+                )
+            )
+    return out
+
+
+def load_generated_scale_sets(
+    upstream_dir: Path, runner_name_prefix: str, modules: Iterable[str] | None = None
+) -> list[GeneratedScaleSet]:
+    """GeneratedScaleSet entries across the given arc-runners* modules' generated dirs."""
+    return read_generated_scale_sets(generated_dirs(upstream_dir, modules), runner_name_prefix)
+
+
+def scale_sets_by_label(scale_sets: Iterable[GeneratedScaleSet]) -> dict[str, GeneratedScaleSet]:
+    """Index scale sets by their (org-unique) live-pod scale-set-name label."""
+    return {s.scale_set_label: s for s in scale_sets}

@@ -6,10 +6,11 @@ import pytest
 import yaml
 from helpers import filter_pods, run_kubectl
 from runner_defs import (
+    GeneratedScaleSet,
     arc_runners_module_names,
-    def_for_listener_pod,
     load_defs_by_name,
-    load_runner_defs,
+    scale_set_label_of_pod,
+    scale_sets_by_label,
 )
 
 pytestmark = [pytest.mark.live]
@@ -21,10 +22,6 @@ LISTENER_CONTAINER_NAME = "listener"
 MODULE_LABEL_KEY = "osdc.io/module"
 SCHEDULER_MODULE = "bin-pack-scheduler"
 SCHEDULER_ENV_VAR = "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME"
-
-
-def _normalize_name(name: str) -> str:
-    return name.replace(".", "-").replace("_", "-")
 
 
 def _effective_scheduler_name(runner_def: dict, cluster_default: str) -> str:
@@ -58,42 +55,35 @@ class TestSchedulerName:
         upstream_dir: Path,
         enabled_modules: list[str],
         resolve_config,
+        generated_scale_sets: list[GeneratedScaleSet],
     ) -> None:
         cluster_default = resolve_config("arc-runners.scheduler_name", "")
         _skip_unless_scheduler_configured(enabled_modules, cluster_default)
 
         enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
         defs_by_name = load_defs_by_name(upstream_dir, enabled_arc)
-
-        modules_dir = upstream_dir / "modules"
-        generated_files = []
-        for module in sorted(enabled_arc):
-            generated_files.extend(sorted((modules_dir / module / "generated").glob("*.yaml")))
-        assert generated_files, f"No generated YAMLs found for arc-runners modules: {sorted(enabled_arc)}"
+        assert generated_scale_sets, f"No generated scale sets for arc-runners modules: {sorted(enabled_arc)}"
 
         problems: list[str] = []
-        for yaml_file in generated_files:
-            def_name = yaml_file.stem
-            runner = defs_by_name.get(def_name)
+        for scale_set in generated_scale_sets:
+            # def_name is recovered from runnerScaleSetName (shared across a def's
+            # orgs), not the file stem — an additional org's stem (<slug>-<def>)
+            # is not a def key.
+            runner = defs_by_name.get(scale_set.def_name)
             if runner is None:
-                problems.append(f"{yaml_file}: no runner def matches stem {def_name!r}")
+                problems.append(f"{scale_set.resource_id}: no runner def matches def name {scale_set.def_name!r}")
                 continue
             expected = _effective_scheduler_name(runner, cluster_default)
-            docs = list(yaml.safe_load_all(yaml_file.read_text()))
-            cm_doc = next(
-                (d for d in docs if isinstance(d, dict) and d.get("kind") == "ConfigMap"),
-                None,
-            )
-            if cm_doc is None:
-                problems.append(f"{yaml_file}: no ConfigMap document in generated YAML")
+            if not scale_set.configmap:
+                problems.append(f"{scale_set.resource_id}: no ConfigMap document in generated YAML")
                 continue
-            pod = _workflow_pod_from_cm_data(cm_doc.get("data", {}) or {})
+            pod = _workflow_pod_from_cm_data(scale_set.configmap.get("data", {}) or {})
             if pod is None:
-                problems.append(f"{yaml_file}: ConfigMap has no parseable job-pod.yaml")
+                problems.append(f"{scale_set.resource_id}: ConfigMap has no parseable job-pod.yaml")
                 continue
             got = pod.get("spec", {}).get("schedulerName", "")
             if got != expected:
-                problems.append(f"{def_name}: generated schedulerName={got!r}, expected {expected!r}")
+                problems.append(f"{scale_set.resource_id}: generated schedulerName={got!r}, expected {expected!r}")
 
         assert not problems, "Generated workflow pod schedulerName mismatches:\n" + "\n".join(problems)
 
@@ -102,12 +92,13 @@ class TestSchedulerName:
         upstream_dir: Path,
         enabled_modules: list[str],
         resolve_config,
+        generated_scale_sets: list[GeneratedScaleSet],
     ) -> None:
         cluster_default = resolve_config("arc-runners.scheduler_name", "")
         _skip_unless_scheduler_configured(enabled_modules, cluster_default)
 
         enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
-        defs = load_runner_defs(upstream_dir, enabled_arc)
+        defs_by_name = load_defs_by_name(upstream_dir, enabled_arc)
 
         result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL_KEY, "-o", "json"], namespace=NAMESPACE)
         cms_by_name = {
@@ -117,19 +108,22 @@ class TestSchedulerName:
         }
 
         problems: list[str] = []
-        for runner in defs:
-            cm_name = f"arc-runner-hook-{_normalize_name(runner['name'])}"
-            cm = cms_by_name.get(cm_name)
+        for scale_set in generated_scale_sets:
+            cm = cms_by_name.get(scale_set.configmap_name)
             if cm is None:
+                continue
+            runner = defs_by_name.get(scale_set.def_name)
+            if runner is None:
+                problems.append(f"{scale_set.configmap_name}: no runner def matches def name {scale_set.def_name!r}")
                 continue
             expected = _effective_scheduler_name(runner, cluster_default)
             pod = _workflow_pod_from_cm_data(cm.get("data", {}) or {})
             if pod is None:
-                problems.append(f"{cm_name}: no parseable job-pod.yaml in deployed ConfigMap")
+                problems.append(f"{scale_set.configmap_name}: no parseable job-pod.yaml in deployed ConfigMap")
                 continue
             got = pod.get("spec", {}).get("schedulerName", "")
             if got != expected:
-                problems.append(f"{cm_name}: deployed schedulerName={got!r}, expected {expected!r}")
+                problems.append(f"{scale_set.configmap_name}: deployed schedulerName={got!r}, expected {expected!r}")
 
         assert not problems, "Deployed hook ConfigMap schedulerName mismatches:\n" + "\n".join(problems)
 
@@ -139,13 +133,16 @@ class TestSchedulerName:
         upstream_dir: Path,
         enabled_modules: list[str],
         resolve_config,
+        generated_scale_sets: list[GeneratedScaleSet],
     ) -> None:
         cluster_default = resolve_config("arc-runners.scheduler_name", "")
         _skip_unless_scheduler_configured(enabled_modules, cluster_default)
 
         enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
         defs_by_name = load_defs_by_name(upstream_dir, enabled_arc)
-        runner_name_prefix = resolve_config("arc-runners.runner_name_prefix", "")
+        # Attribute each listener pod to its scale set by the org-unique
+        # scale-set-name label, then to the shared underlying def.
+        by_label = scale_sets_by_label(generated_scale_sets)
 
         listener_pods = filter_pods(all_pods, namespace=LISTENER_NAMESPACE, labels=LISTENER_LABELS)
         assert len(listener_pods) >= 1, (
@@ -161,18 +158,22 @@ class TestSchedulerName:
                 problems.append(f"{pod_name}: no '{LISTENER_CONTAINER_NAME}' container")
                 continue
 
-            def_name, runner = def_for_listener_pod(pod, defs_by_name, runner_name_prefix)
-            if def_name is None or runner is None:
+            label = scale_set_label_of_pod(pod)
+            scale_set = by_label.get(label) if label else None
+            if scale_set is None:
+                continue
+            runner = defs_by_name.get(scale_set.def_name)
+            if runner is None:
                 continue
 
             expected = _effective_scheduler_name(runner, cluster_default)
             env_by_name = {e["name"]: e for e in listener.get("env", []) or []}
             entry = env_by_name.get(SCHEDULER_ENV_VAR)
             if entry is None:
-                problems.append(f"{pod_name} (def={def_name}): missing env var {SCHEDULER_ENV_VAR!r}")
+                problems.append(f"{pod_name} (scale-set={label}): missing env var {SCHEDULER_ENV_VAR!r}")
                 continue
             got = entry.get("value", "") or ""
             if got != expected:
-                problems.append(f"{pod_name} (def={def_name}): {SCHEDULER_ENV_VAR}={got!r}, expected {expected!r}")
+                problems.append(f"{pod_name} (scale-set={label}): {SCHEDULER_ENV_VAR}={got!r}, expected {expected!r}")
 
         assert not problems, f"Listener {SCHEDULER_ENV_VAR} mismatches:\n" + "\n".join(problems)
