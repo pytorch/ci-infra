@@ -39,9 +39,9 @@ if [[ -z "$AGENT_IMAGE" ]]; then
 fi
 # Bedrock model for /run. Required: without it the agent clones but every task
 # returns errors.bedrock="no model configured".
-BEDROCK_MODEL_ID=$(uv run "$CFG" "$CLUSTER" agent_sandbox.model_id "")
-if [[ -z "$BEDROCK_MODEL_ID" ]]; then
-  echo "[agent-sandbox] ERROR: agent_sandbox.model_id not set for $CLUSTER in clusters.yaml" >&2
+BEDROCK_DEFAULT_MODEL_ID=$(uv run "$CFG" "$CLUSTER" agent_sandbox.default_model_id "")
+if [[ -z "$BEDROCK_DEFAULT_MODEL_ID" ]]; then
+  echo "[agent-sandbox] ERROR: agent_sandbox.default_model_id not set for $CLUSTER in clusters.yaml" >&2
   exit 1
 fi
 
@@ -59,11 +59,11 @@ cd - >/dev/null
 echo "[agent-sandbox] sandbox-agent Bedrock IRSA role: ${AGENT_ROLE_ARN}"
 
 # --- Apply manifests (substitute the agent image + region + model into sandbox-agent) ---
-echo "[agent-sandbox] Applying base manifests (agent image: ${AGENT_IMAGE}, model: ${BEDROCK_MODEL_ID})..."
+echo "[agent-sandbox] Applying base manifests (agent image: ${AGENT_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
 kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
   | sed -e "s|__AGENT_IMAGE__|${AGENT_IMAGE}|g" \
     -e "s|__AWS_REGION__|${REGION}|g" \
-    -e "s|__BEDROCK_MODEL_ID__|${BEDROCK_MODEL_ID}|g" \
+    -e "s|__BEDROCK_DEFAULT_MODEL_ID__|${BEDROCK_DEFAULT_MODEL_ID}|g" \
   | kubectl_apply_if_changed -f -
 
 # --- Prune the removed credential-proxy resources (idempotent) ---
