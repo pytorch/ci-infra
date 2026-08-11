@@ -1,0 +1,20 @@
+# Karpenter NodePool fleet: ai-sandbox — dedicated pool for the AI agent sandbox.
+#
+# These nodes run gVisor (runsc) as a containerd runtime handler, installed at
+# boot by scripts/install-gvisor.sh (embedded as a userData MIME part). Only the
+# agent sandbox pods (runtimeClassName: gvisor, pinned here via the RuntimeClass
+# scheduling block in modules/agent-sandbox) schedule onto this fleet.
+#
+# The node-fleet=ai-sandbox taint isolates the pool; agent pods tolerate it via
+# the gvisor RuntimeClass scheduling. Deliberately a single small CPU instance
+# type for the prototype — no NVMe, no GPU.
+fleet:
+  name: ai-sandbox
+  arch: amd64
+  gpu: false
+  instances:
+    - type: c7i.8xlarge
+      weight: 100
+      node_disk_size: 100
+      # gVisor (runsc) install runs as a userData MIME part on these nodes only.
+      user_data_script: scripts/install-gvisor.sh
