@@ -2189,6 +2189,36 @@ smoke cluster:
     echo "Smoke tests completed in ${elapsed}"
     exit $rc
 
+# Build the ai-sandbox gVisor AMI (nodepools-agent-sandbox) in a cluster's region
+#
+# The ai-sandbox fleet selects this AMI by tag, so it must exist before the fleet
+# can launch a node. Rebuild to pick up AL2023 CVE fixes or a newer gVisor —
+# unlike the al2023@latest fleets, this one only moves when the AMI is rebuilt.
+build-agent-sandbox-ami cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    K8S_VERSION=$(uv run {{CFG}} "$CLUSTER" eks_version)
+    PACKER_DIR="{{UPSTREAM}}/modules/nodepools-agent-sandbox/packer"
+
+    echo "Building ai-sandbox gVisor AMI for $CLUSTER ($REGION, k8s $K8S_VERSION)..."
+    cd "$PACKER_DIR"
+    packer init .
+    packer build \
+        -var "aws_region=${REGION}" \
+        -var "cluster_name=${CNAME}" \
+        -var "k8s_version=${K8S_VERSION}" \
+        {{args}} .
+
+    echo ""
+    echo "Built. The ai-sandbox fleet picks it up on the next node launch;"
+    echo "existing nodes keep their current AMI until they are recycled:"
+    echo "    just recycle-nodes $CLUSTER"
+
 # Run full integration test against a cluster
 integration-test cluster *args:
     #!/usr/bin/env bash
