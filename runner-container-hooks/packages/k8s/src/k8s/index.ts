@@ -61,7 +61,14 @@ const COPY_VERIFY_RETRIES = parseInt(
 // Exec & WebSocket back-pressure constants.
 //
 // EXEC_TIMEOUT_MS              — per-attempt timeout for cp{To,From}Pod tar
-//                                streams.
+//                                streams. Sized off measured copies: the cost
+//                                scales with the workspace's file count, and a
+//                                workspace holding two full pytorch action
+//                                trees (~47k files) takes ~108s on an idle
+//                                node. The previous 120s left no headroom, so
+//                                node contention timed out every attempt —
+//                                and since each retry restarts the copy from
+//                                zero, those jobs never converged.
 // EXEC_POD_STEP_TIMEOUT_MS     — per-call timeout for execPodStep /
 //                                execPodStepOutput. Without this, a settled
 //                                WebSocket that never delivers a status
@@ -86,7 +93,7 @@ const COPY_VERIFY_RETRIES = parseInt(
 //                                misbehaving container that floods stderr
 //                                could OOM the runner.
 // ---------------------------------------------------------------------------
-const EXEC_TIMEOUT_MS = 120_000
+const EXEC_TIMEOUT_MS = 300_000
 const EXEC_POD_STEP_TIMEOUT_MS = 60_000
 const WS_BACKPRESSURE_HIGH_WATER = 200 * 1024 * 1024 // 200 MiB
 const WS_BACKPRESSURE_LOW_WATER = 50 * 1024 * 1024 // 50 MiB

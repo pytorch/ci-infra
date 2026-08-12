@@ -377,7 +377,8 @@ describe('execCpToPod cancel path uses ws.terminate()', () => {
     mockTarPackStream.current = readStream
 
     // exec resolves with the ws (so wsRef gets set), but never settles via
-    // the status callback. The 120s race timer should fire and reject.
+    // the status callback. The EXEC_TIMEOUT_MS race timer should fire and
+    // reject.
     mockExec.exec.mockImplementation(async () => fakeWs)
 
     const promise = execCpToPod('my-pod', '/tmp/source', '/dst').catch(() => {
@@ -388,8 +389,8 @@ describe('execCpToPod cancel path uses ws.terminate()', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    // Advance past the 120s exec timeout to trigger the timer.
-    await jest.advanceTimersByTimeAsync(121_000)
+    // Advance past the 300s exec timeout to trigger the timer.
+    await jest.advanceTimersByTimeAsync(301_000)
     await promise
 
     // The new code must call terminate() in the finally block, NOT close().

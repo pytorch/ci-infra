@@ -1,6 +1,6 @@
 ## Features
 
-- Drop the `stream-buffers` dependency from the k8s hook, which removes the `Buffer() is deprecated` (Node DEP0005) warning printed once per containerized step. Exec stdout/stderr is now captured by a small in-repo `BufferSink` writable that concatenates chunks lazily, with no preallocated buffer and no deprecated `Buffer()` call. Capping/truncation and encoding behavior are unchanged. See actions/runner-container-hooks#261.
+- Raise the per-attempt `cp{To,From}Pod` tar timeout from 120s to 300s. The copy cost scales with the workspace's file count: a workspace holding two full pytorch action trees (~47k files) takes ~108s on an idle node, leaving no headroom under 120s, so node contention timed out every attempt. Since each retry restarts the copy from zero, affected jobs never converged.
 
 ## SHA-256 Checksums
 
