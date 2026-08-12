@@ -64,11 +64,11 @@ spec:
           # division, not a guess — and so one untrusted sandbox can't burst into
           # another's CPU.
           #
-          # A 2 vCPU / 4 GiB slot fills both dimensions of the c7i.2xlarge fleet
+          # A 2 vCPU / 4 GiB slot fills both dimensions of the c7a.2xlarge fleet
           # node at the same rate, landing on 3 sandboxes per node: 7.00 vCPU /
-          # 12568 MiB are free for sandboxes (7.91 vCPU / 14710 MiB allocatable
+          # 12482 MiB are free for sandboxes (7.91 vCPU / 14624 MiB allocatable
           # less the 0.92 vCPU / 2142 MiB the fleet's daemonsets request — both
-          # measured on a live node), and 7.00/2 = 3, 12568/4096 = 3.
+          # measured on a live node), and 7.00/2 = 3, 12482/4096 = 3.
           # See modules/nodepools-agent-sandbox/defs/ai-sandbox.yaml.
           resources:
             requests:

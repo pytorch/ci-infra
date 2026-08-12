@@ -48,11 +48,19 @@ with its scoped IRSA role.
 
 ## The agent image
 
-`deploy.sh` builds it and pushes it to the in-cluster Harbor `osdc` project
-(public, so nodes pull anonymously via the `harbor:30002` mirror) — same pattern as
-`modules/zombie-cleanup`. The tag is a content hash of `agent/`, so an unchanged
-tree skips the build and a code change deploys a new immutable tag. Requires a
-local docker daemon. No secrets to create.
+Built and pushed by hand to the in-cluster Harbor `osdc` project (public, so nodes
+pull it anonymously via the `harbor:30002` mirror), and referenced from
+`clusters.yaml` → `agent_sandbox.agent_image`. No secrets to create.
+
+```bash
+docker buildx build --platform linux/amd64 -t ci-agent-sandbox:prototype \
+  -o type=docker,dest=/tmp/agent.tar modules/agent-sandbox/agent
+
+HARBOR_PASS=$(kubectl get secret harbor-admin-password -n harbor-system -o jsonpath='{.data.password}' | base64 -d)
+kubectl port-forward --address 127.0.0.1 svc/harbor -n harbor-system 8081:80 >/dev/null 2>&1 &
+crane auth login 127.0.0.1:8081 -u admin -p "$HARBOR_PASS"
+crane push /tmp/agent.tar 127.0.0.1:8081/osdc/ci-agent-sandbox:prototype
+```
 
 ## Deploy
 
@@ -80,20 +88,22 @@ Any caller can pick the model per request. Omitting `model` falls back to
 
 A sandbox slot is **2 vCPU / 4 GiB with requests == limits** (Guaranteed QoS), so
 capacity per node is a division rather than a guess — and one untrusted sandbox
-can't burst into another's CPU. **3 slots per `c7i.2xlarge`** fleet node:
+can't burst into another's CPU. **3 slots per `c7a.2xlarge`** fleet node:
 
 | | vCPU | MiB |
 |---|---|---|
-| allocatable (8 vCPU / 16 GiB, maxPods 58) | 7.91 | 14710 |
+| allocatable (8 vCPU / 16 GiB, maxPods 58) | 7.91 | 14624 |
 | less fleet daemonsets (`alloy-logging` 0.51/1074, `hf-cache-mount` 0.11/672, rest ~0.30/396) | 0.92 | 2142 |
-| free for sandboxes | 7.00 | 12568 |
+| free for sandboxes | 7.00 | 12482 |
 | ÷ slot (2 vCPU / 4 GiB) | **3** | **3** |
 
-Both numbers are measured on a live node, not derived from AWS-advertised specs —
-`allocatable` already nets out kube-reserved, which scales with `maxPods`, so
-don't scale this table linearly when changing instance size. The 2:4 slot matches
-c7i's 1:2 vCPU:GiB ratio, so neither dimension strands capacity. The prototype
-runs one replica, so today that's 1 of 3 slots.
+Both numbers are measured on a live node — AWS-advertised specs overstate usable
+memory, and `allocatable` already nets out kube-reserved, which scales with
+`maxPods`. Don't scale this table linearly when changing instance size.
+
+Memory is the tighter dimension: ~194 MiB spare beyond the 3rd slot, so a
+cluster-wide daemonset gaining ~200 MiB of requests silently costs a slot. The
+prototype runs one replica, so today that's 1 of 3 slots.
 
 ## Choosing the Bedrock model
 
