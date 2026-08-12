@@ -24,3 +24,7 @@ modules/*/generated/
 .DS_Store
 .env
 
+
+# Packer build artifacts (AMI IDs from the last local build)
+modules/*/packer/manifest.json
+modules/*/packer/.packer.d/
