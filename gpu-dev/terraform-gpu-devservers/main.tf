@@ -217,7 +217,7 @@ locals {
         "rtxpro6000" = {
           instance_type       = "g7e.24xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 0 # Keep unless demand changes
           gpus_per_instance   = 4 # 4x RTX PRO 6000 Blackwell GPUs
           use_placement_group = false
           architecture        = "x86_64"
@@ -464,8 +464,7 @@ locals {
       # NOTE: 'key' must match existing ASG suffix to avoid destroy/recreate.
       # When removing a CR, delete the entry entirely - keys are stable, not index-based.
       a100 = [
-        { key = "cr0", id = "cr-01cc0f00f28b095af", instance_count = 1 }, # A100 reservation (1 instance)
-        { key = "cr1", id = null, instance_count = 1 },                   # A100 on-demand (1 instance)
+        { key = "cr1", id = null, instance_count = 0 }, # A100 on-demand
       ]
       h100 = [
         { key = "cr0", id = "cr-0a3f49b96fe03ca04", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
@@ -571,8 +570,6 @@ locals {
       "cr-0a3f49b96fe03ca04" = "tertiary" # us-east-2c (p5.48xlarge)
       "cr-044bc72b0a6b56062" = "primary"  # us-east-2a (p5.48xlarge)
       "cr-0211ea1e8d3a3c79e" = "tertiary" # us-east-2c (p5.48xlarge, MIG-dedicated)
-      # A100 capacity reservation
-      "cr-01cc0f00f28b095af" = "primary" # us-east-2a
     }
   }
 }
