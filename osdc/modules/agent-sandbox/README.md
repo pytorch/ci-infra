@@ -80,20 +80,22 @@ Any caller can pick the model per request. Omitting `model` falls back to
 
 A sandbox slot is **2 vCPU / 4 GiB with requests == limits** (Guaranteed QoS), so
 capacity per node is a division rather than a guess — and one untrusted sandbox
-can't burst into another's CPU. **3 slots per `c7i.2xlarge`** fleet node:
+can't burst into another's CPU. **3 slots per `c7a.2xlarge`** fleet node:
 
 | | vCPU | MiB |
 |---|---|---|
-| allocatable (8 vCPU / 16 GiB, maxPods 58) | 7.91 | 14710 |
+| allocatable (8 vCPU / 16 GiB, maxPods 58) | 7.91 | 14624 |
 | less fleet daemonsets (`alloy-logging` 0.51/1074, `hf-cache-mount` 0.11/672, rest ~0.30/396) | 0.92 | 2142 |
-| free for sandboxes | 7.00 | 12568 |
+| free for sandboxes | 7.00 | 12482 |
 | ÷ slot (2 vCPU / 4 GiB) | **3** | **3** |
 
-Both numbers are measured on a live node, not derived from AWS-advertised specs —
-`allocatable` already nets out kube-reserved, which scales with `maxPods`, so
-don't scale this table linearly when changing instance size. The 2:4 slot matches
-c7i's 1:2 vCPU:GiB ratio, so neither dimension strands capacity. The prototype
-runs one replica, so today that's 1 of 3 slots.
+Both numbers are measured on a live node — AWS-advertised specs overstate usable
+memory, and `allocatable` already nets out kube-reserved, which scales with
+`maxPods`. Don't scale this table linearly when changing instance size.
+
+Memory is the tighter dimension: ~194 MiB spare beyond the 3rd slot, so a
+cluster-wide daemonset gaining ~200 MiB of requests silently costs a slot. The
+prototype runs one replica, so today that's 1 of 3 slots.
 
 ## Choosing the Bedrock model
 
