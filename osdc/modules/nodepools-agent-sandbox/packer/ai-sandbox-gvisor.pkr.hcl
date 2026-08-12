@@ -62,9 +62,9 @@ variable "subnet_filter_name" {
 }
 
 variable "build_instance_type" {
-  description = "Instance type used only for the build"
+  description = "Instance type used only for the build (any x86_64 will do; matches the fleet's family)"
   type        = string
-  default     = "c7i.xlarge"
+  default     = "c7a.xlarge"
 }
 
 locals {
