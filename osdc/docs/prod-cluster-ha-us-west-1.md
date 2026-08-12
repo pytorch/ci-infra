@@ -61,9 +61,11 @@ meta-prod-aws-uw1:
   node_compactor:
     min_node_age_seconds: 900
   buildkit:
-    arm64_instance_type: c7gd.16xlarge
-    amd64_instance_type: m6id.24xlarge
-    pods_per_node: 2
+    arm64_instance_types:
+      c7gd.16xlarge: 2
+    amd64_instance_types:
+      m6id.24xlarge: 2
+      m6id.12xlarge: 1
   arc-runners:
     github_config_url: "https://github.com/pytorch"
     github_secret_name: meta-prod-aws-uw1
