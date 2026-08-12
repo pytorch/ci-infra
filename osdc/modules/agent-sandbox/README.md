@@ -28,7 +28,8 @@ with its scoped IRSA role.
    └───────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Isolation:** `nodepools-agent-sandbox` fleet installs gVisor (runsc); the
+- **Isolation:** `nodepools-agent-sandbox` nodes boot from a custom AMI with
+  gVisor (runsc) baked in; the
   `gvisor` RuntimeClass pins the worker there. IMDS hop-limit 1 keeps the node
   role out of reach — the agent gets only its own scoped IRSA role.
 - **Credential:** a read-only Bedrock IRSA role (terraform) on the `sandbox-agent`
@@ -136,7 +137,9 @@ just integration-test meta-staging-aws-ue1
   exfiltration is not yet mitigated.
 - **The agent holds a credential** — a read-only Bedrock IRSA role. A prompt-injected
   agent could misuse it (bounded to Bedrock invoke cost/quota).
-- **gVisor install is best-effort** node userData (fail-closed if runsc doesn't register).
+- **The gVisor AMI must be built per region** before the fleet can launch a node
+  (`just build-agent-sandbox-ami <cluster>`), and it pins the AL2023 base — unlike
+  the `al2023@latest` fleets it does not pick up CVE fixes on node rotation.
 - **Warm worker, not per-task-ephemeral** (like buildkitd) — no per-task isolation reset yet.
 - **Output is trusted as-is** — the propose/dispose validation gate is Phase 2.
 - **Repo context is shallow** — the prompt carries the file count and the
