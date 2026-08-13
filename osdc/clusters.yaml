@@ -185,11 +185,24 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
+      # Staging mirrors prod's big+half shape at ~1/10 the cost. The integration
+      # test only builds alpine, so pod size is irrelevant to it — the binding
+      # requirement is reaching 8 active backends within its 8 min deadline,
+      # which is 4 nodes per arch, the same node count prod's pool uses today.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
+        # Warm baseline of one pod per arch = one 2xlarge. Not 0: KEDA scales on
+        # haproxy_backend_current_sessions, which cannot rise above 0 once the
+        # backend has no servers, so a zero-replica pool never wakes up.
+        amd64_min: 1
         amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
+        arm64_min: 1
         arm64_max: 8
     modules:
       - karpenter
@@ -260,11 +273,24 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
+      # Staging mirrors prod's big+half shape at ~1/10 the cost. The integration
+      # test only builds alpine, so pod size is irrelevant to it — the binding
+      # requirement is reaching 8 active backends within its 8 min deadline,
+      # which is 4 nodes per arch, the same node count prod's pool uses today.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
+        # Warm baseline of one pod per arch = one 2xlarge. Not 0: KEDA scales on
+        # haproxy_backend_current_sessions, which cannot rise above 0 once the
+        # backend has no servers, so a zero-replica pool never wakes up.
+        amd64_min: 1
         amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
+        arm64_min: 1
         arm64_max: 8
     pypi_cache:
       replicas: 1
@@ -337,11 +363,24 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
+      # Staging mirrors prod's big+half shape at ~1/10 the cost. The integration
+      # test only builds alpine, so pod size is irrelevant to it — the binding
+      # requirement is reaching 8 active backends within its 8 min deadline,
+      # which is 4 nodes per arch, the same node count prod's pool uses today.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
+        # Warm baseline of one pod per arch = one 2xlarge. Not 0: KEDA scales on
+        # haproxy_backend_current_sessions, which cannot rise above 0 once the
+        # backend has no servers, so a zero-replica pool never wakes up.
+        amd64_min: 1
         amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
+        arm64_min: 1
         arm64_max: 8
     pypi_cache:
       replicas: 1
