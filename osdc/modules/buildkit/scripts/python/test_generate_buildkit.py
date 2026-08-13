@@ -15,6 +15,9 @@ from generate_buildkit import (
     generate_autoscaling_yaml,
     generate_deployment_yaml,
     generate_nodepools_yaml,
+    parse_instance_plan,
+    plan_pod_resources,
+    pods_that_fit,
 )
 from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
 
@@ -224,9 +227,11 @@ class TestGenerateDeploymentYaml:
             ns = d["spec"]["template"]["spec"]["nodeSelector"]
             assert ns["workload-type"] == "buildkit"
             if d["metadata"]["name"] == "buildkitd-arm64":
-                assert ns["instance-type"] == "m8gd.24xlarge"
+                assert ns["kubernetes.io/arch"] == "arm64"
             else:
-                assert ns["instance-type"] == "m6id.24xlarge"
+                assert ns["kubernetes.io/arch"] == "amd64"
+            # Instance type is no longer pinned in the selector — the pool spans sizes.
+            assert "instance-type" not in ns
 
     def test_tolerations_present(self):
         output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
@@ -238,13 +243,12 @@ class TestGenerateDeploymentYaml:
             # workload taint toleration
             if name == "buildkitd-arm64":
                 assert tolerations[0]["key"] == "workload/buildkit-arm64"
-                assert tolerations[1]["value"] == "m8gd.24xlarge"
             else:
                 assert tolerations[0]["key"] == "workload/buildkit-amd64"
-                assert tolerations[1]["value"] == "m6id.24xlarge"
             assert tolerations[0]["value"] == "true"
-            # instance-type taint toleration
+            # instance-type taint tolerated by existence, not value
             assert tolerations[1]["key"] == "instance-type"
+            assert tolerations[1]["operator"] == "Exists"
 
     def test_guaranteed_qos_requests_eq_limits(self):
         output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
@@ -519,7 +523,9 @@ class TestGenerateNodepoolsYaml:
                 assert "workload/buildkit-arm64" in taint_keys
             else:
                 assert "workload/buildkit-amd64" in taint_keys
-            assert "instance-type" in taint_keys
+            # The workload taint alone isolates the pool; a per-size instance-type
+            # taint cannot describe a pool spanning several sizes.
+            assert "instance-type" not in taint_keys
 
 
 # ============================================================================
@@ -681,3 +687,84 @@ class TestMain:
 
             result = generate_buildkit.main()
         assert result == 1
+
+
+class TestMultipleInstanceTypes:
+    """A NodePool spanning several instance sizes, with one fixed pod size."""
+
+    AMD64 = "m6id.24xlarge:2,m6id.12xlarge:1"
+
+    def test_parse_instance_plan(self):
+        assert parse_instance_plan("a", 2) == [("a", 2)]
+        assert parse_instance_plan(" a:3 , b ", 2) == [("a", 3), ("b", 2)]
+        with pytest.raises(ValueError, match="no instance types"):
+            parse_instance_plan("  ", 2)
+        with pytest.raises(ValueError, match="positive integer"):
+            parse_instance_plan("a:0", 2)
+        with pytest.raises(ValueError, match="positive integer"):
+            parse_instance_plan("a:two", 2)
+
+    def test_pod_takes_smallest_size_any_entry_allows(self):
+        """Declaring 2 on the half-size node shrinks the pod for everyone."""
+        balanced = plan_pod_resources([("m6id.24xlarge", 2), ("m6id.12xlarge", 1)])
+        assert (balanced["cpu"], balanced["memory_gi"]) == (42, 155)
+        greedy = plan_pod_resources([("m6id.24xlarge", 2), ("m6id.12xlarge", 2)])
+        assert (greedy["cpu"], greedy["memory_gi"]) == (21, 78)
+
+    def test_every_entry_holds_its_declared_count(self):
+        for plan in (
+            [("m6id.24xlarge", 2), ("m6id.12xlarge", 1)],
+            [("m6id.24xlarge", 3), ("m6id.12xlarge", 1)],
+            [("m6id.24xlarge", 2), ("m6id.12xlarge", 2)],
+        ):
+            res = plan_pod_resources(plan)
+            for instance_type, declared in plan:
+                assert pods_that_fit(instance_type, res["cpu"], res["memory_gi"]) >= declared
+
+    def test_pod_size_comes_from_first_type(self):
+        """Adding m6id.12xlarge must not change the existing 42 vCPU / 155Gi pod."""
+        single = generate_deployment_yaml("m7gd.16xlarge", "m6id.24xlarge", 12, 2, arm64_pods_per_node=4)
+        multi = generate_deployment_yaml("m7gd.16xlarge", self.AMD64, 12, 2, arm64_pods_per_node=4)
+
+        def amd64_resources(output):
+            for d in yaml.safe_load_all(output):
+                if d and d["metadata"]["name"] == "buildkitd-amd64":
+                    return d["spec"]["template"]["spec"]["containers"][0]["resources"]
+            raise AssertionError("amd64 deployment not found")
+
+        assert amd64_resources(multi) == amd64_resources(single)
+        assert amd64_resources(multi)["requests"] == {"cpu": "42", "memory": "155Gi"}
+
+    def test_pods_that_fit(self):
+        assert pods_that_fit("m6id.24xlarge", 42, 155) == 2
+        assert pods_that_fit("m6id.12xlarge", 42, 155) == 1
+
+    def test_pod_size_driven_to_zero_rejected(self):
+        """Splitting a node too many ways must fail rather than emit a 0Gi pod."""
+        with pytest.raises(ValueError, match="too small to schedule"):
+            generate_deployment_yaml("m7gd.16xlarge", "m6id.24xlarge:2,m6id.12xlarge:400", 12, 2)
+
+    def test_denser_packing_than_declared_is_allowed(self):
+        """A smaller entry may shrink the pod, letting bigger nodes pack denser."""
+        output = generate_deployment_yaml("m7gd.16xlarge", "m6id.24xlarge:2,m6id.12xlarge:2", 12, 2)
+        for d in yaml.safe_load_all(output):
+            if d and d["metadata"]["name"] == "buildkitd-amd64":
+                req = d["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]
+                assert req == {"cpu": "21", "memory": "78Gi"}
+                assert pods_that_fit("m6id.24xlarge", 21, 78) == 4
+                return
+        raise AssertionError("amd64 deployment not found")
+
+    def test_nodepool_lists_every_type(self):
+        output = generate_nodepools_yaml("m7gd.16xlarge", self.AMD64, 12, 2, arm64_pods_per_node=4)
+        for d in yaml.safe_load_all(output):
+            if not d or d["kind"] != "NodePool" or d["metadata"]["name"] != "buildkit-amd64":
+                continue
+            spec = d["spec"]["template"]
+            requirements = {r["key"]: r["values"] for r in spec["spec"]["requirements"]}
+            assert requirements["node.kubernetes.io/instance-type"] == ["m6id.24xlarge", "m6id.12xlarge"]
+            # No per-size label or taint — they cannot describe a multi-size pool.
+            assert "instance-type" not in spec["metadata"]["labels"]
+            assert [t["key"] for t in spec["spec"]["taints"]] == ["workload/buildkit-amd64"]
+            return
+        raise AssertionError("buildkit-amd64 NodePool not found")

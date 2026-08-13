@@ -76,6 +76,16 @@ defaults:
     cpu_disruption_budget: "20%"
   buildkit:
     replicas_per_arch: 12
+    # instance type -> pods per node. Listing several sizes gives Karpenter a
+    # fallback when one runs out of on-demand capacity. The pod is sized so
+    # every entry holds at least its stated count, so m6id.12xlarge (half a
+    # 24xlarge) takes one of the same pods the 24xlarge takes two of.
+    # Prod clusters pin these explicitly; staging inherits.
+    amd64_instance_types:
+      m6id.24xlarge: 2
+      m6id.12xlarge: 1
+    arm64_instance_types:
+      m7gd.16xlarge: 4
     autoscaling:
       enabled: false
   keda:
@@ -175,11 +185,9 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
       autoscaling:
         enabled: true
-        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
         amd64_max: 8
         arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 8
@@ -252,11 +260,9 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
       autoscaling:
         enabled: true
-        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
         amd64_max: 8
         arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 8
@@ -331,11 +337,9 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
       autoscaling:
         enabled: true
-        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
         amd64_max: 8
         arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 8
@@ -415,13 +419,17 @@ clusters:
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
+      # instance type -> pods per node. Several sizes give Karpenter a
+      # fallback when one runs out of on-demand capacity; the pod is sized so
+      # every entry holds at least its stated count.
+      amd64_instance_types:
+        m6id.24xlarge: 2
+        m6id.12xlarge: 1
+      arm64_instance_types:
+        m7gd.16xlarge: 4
       autoscaling:
         enabled: true
-        amd64_min: 2   # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 2   # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
         amd64_max: 360  # ~90d peak ≈180, x2 for headroom
         arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 30  # ~90d peak ≈15, x2 for headroom
@@ -463,13 +471,17 @@ clusters:
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
+      # instance type -> pods per node. Several sizes give Karpenter a
+      # fallback when one runs out of on-demand capacity; the pod is sized so
+      # every entry holds at least its stated count.
+      amd64_instance_types:
+        m6id.24xlarge: 2
+        m6id.12xlarge: 1
+      arm64_instance_types:
+        m7gd.16xlarge: 4
       autoscaling:
         enabled: true
-        amd64_min: 2   # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 2   # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
         amd64_max: 360  # ~90d peak ≈180, x2 for headroom
         arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 30  # ~90d peak ≈15, x2 for headroom

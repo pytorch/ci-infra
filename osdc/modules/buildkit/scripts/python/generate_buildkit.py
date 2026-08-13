@@ -5,8 +5,15 @@
 # ///
 """Generate BuildKit Deployment and NodePool YAMLs with dynamic pod sizing.
 
-Computes pod resource requests based on instance type specs, ensuring
-exactly pods_per_node pods fit on each node with margin for overhead.
+An arch's instance types are given as "type:pods_per_node" pairs, e.g.
+"m6id.24xlarge:2,m6id.12xlarge:1". A NodePool may span several sizes so
+Karpenter has a fallback when one runs out of on-demand capacity.
+
+One Deployment means one pod spec, so the pairs are constraints rather than
+per-node settings: the pod takes the smallest size any pair allows, which
+guarantees every type holds at least its declared count. Actual placement is
+then plain bin-packing. Generation fails if a type cannot hold what it
+declared.
 
 Reads instance types, replicas, and pods_per_node via CLI arguments
 (passed from deploy.sh, which reads clusters.yaml).
@@ -100,6 +107,67 @@ def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
     }
 
 
+def parse_instance_plan(value: str, default_pods_per_node: int) -> list[tuple[str, int]]:
+    """Parse "type:pods_per_node,type:pods_per_node" into ordered pairs.
+
+    A bare "type" (no colon) falls back to default_pods_per_node.
+    """
+    plan: list[tuple[str, int]] = []
+    for entry in value.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        instance_type, _, count = entry.partition(":")
+        instance_type = instance_type.strip()
+        count = count.strip()
+        if count:
+            if not count.isdigit() or int(count) < 1:
+                raise ValueError(f"{instance_type}: pods-per-node must be a positive integer, got {count!r}")
+            plan.append((instance_type, int(count)))
+        else:
+            plan.append((instance_type, default_pods_per_node))
+    if not plan:
+        raise ValueError("no instance types given")
+    return plan
+
+
+def plan_pod_resources(plan: list[tuple[str, int]]) -> dict:
+    """Size the pod so every declared (type, pods_per_node) is satisfied.
+
+    One Deployment means one pod spec, so each entry is a constraint and the
+    pod takes the smallest size any of them allows. Because the result is <=
+    every per-entry size, each type is then guaranteed to hold at least its
+    declared pod count.
+    """
+    sized = [compute_pod_resources(instance_type, count) for instance_type, count in plan]
+    for (instance_type, count), res in zip(plan, sized, strict=True):
+        if res["cpu"] < 1 or res["memory_gi"] < 1:
+            raise ValueError(
+                f"{instance_type} split {count} ways leaves {res['cpu']} vCPU / "
+                f"{res['memory_gi']}Gi per pod — too small to schedule"
+            )
+    smallest_cpu = min(res["cpu"] for res in sized)
+    smallest_mem = min(res["memory_gi"] for res in sized)
+    # Report allocatable for the first entry — it is the reference node.
+    return {
+        "cpu": smallest_cpu,
+        "memory_gi": smallest_mem,
+        "allocatable_cpu_m": sized[0]["allocatable_cpu_m"],
+        "allocatable_mem_mi": sized[0]["allocatable_mem_mi"],
+    }
+
+
+def pods_that_fit(instance_type: str, cpu: int, memory_gi: int) -> int:
+    """How many pods of the given size fit on one node of instance_type."""
+    spec = INSTANCE_SPECS[instance_type]
+    vcpu = spec["vcpu"]
+    max_pods = ENI_MAX_PODS.get(instance_type, vcpu)
+    reserved_cpu_m, reserved_mem_mi = kubelet_reserved(vcpu, spec["memory_gib"], max_pods)
+    usable_cpu_m = vcpu * 1000 - reserved_cpu_m - DAEMONSET_OVERHEAD_CPU_M
+    usable_mem_mi = spec["memory_mi"] - reserved_mem_mi - DAEMONSET_OVERHEAD_MEM_MI
+    return min(usable_cpu_m // (cpu * 1000), usable_mem_mi // (memory_gi * 1024))
+
+
 def generate_deployment_yaml(
     arm64_instance: str,
     amd64_instance: str,
@@ -122,9 +190,10 @@ def generate_deployment_yaml(
     amd64_pods_per_node = amd64_pods_per_node if amd64_pods_per_node is not None else pods_per_node
     arm64_pods_per_node = arm64_pods_per_node if arm64_pods_per_node is not None else pods_per_node
 
-    arm64_res = compute_pod_resources(arm64_instance, arm64_pods_per_node)
-    amd64_res = compute_pod_resources(amd64_instance, amd64_pods_per_node)
-
+    arm64_plan = parse_instance_plan(arm64_instance, arm64_pods_per_node)
+    amd64_plan = parse_instance_plan(amd64_instance, amd64_pods_per_node)
+    arm64_res = plan_pod_resources(arm64_plan)
+    amd64_res = plan_pod_resources(amd64_plan)
     # When KEDA owns the replica count, omit `replicas` and add a preStop drain
     # that holds the pod open until its in-flight build finishes. Each fragment is
     # either its YAML or _OMIT; _deployment_block drops _OMIT lines (matched after
@@ -156,14 +225,18 @@ def generate_deployment_yaml(
         else _OMIT
     )
 
-    log_info(
-        f"arm64 ({arm64_instance}): {arm64_res['cpu']} vCPU, {arm64_res['memory_gi']}Gi per pod "
-        f"(allocatable: {arm64_res['allocatable_cpu_m']}m CPU, {arm64_res['allocatable_mem_mi']}Mi mem)"
-    )
-    log_info(
-        f"amd64 ({amd64_instance}): {amd64_res['cpu']} vCPU, {amd64_res['memory_gi']}Gi per pod "
-        f"(allocatable: {amd64_res['allocatable_cpu_m']}m CPU, {amd64_res['allocatable_mem_mi']}Mi mem)"
-    )
+    for arch, plan, res in (("arm64", arm64_plan, arm64_res), ("amd64", amd64_plan, amd64_res)):
+        log_info(
+            f"{arch}: {res['cpu']} vCPU, {res['memory_gi']}Gi per pod "
+            f"(allocatable: {res['allocatable_cpu_m']}m CPU, {res['allocatable_mem_mi']}Mi mem)"
+        )
+        for instance_type, declared in plan:
+            # fits >= declared always holds: the pod is no larger than what this
+            # entry alone would allow. A bigger number means another entry is
+            # sizing the pod, so this type packs denser than declared.
+            fits = pods_that_fit(instance_type, res["cpu"], res["memory_gi"])
+            extra = f" (declared {declared} — pod is sized by a smaller entry)" if fits > declared else ""
+            log_info(f"  {instance_type}: {fits} pod(s) per node{extra}")
 
     def _deployment_block(arch, instance_type, cpu, memory_gi, replicas, pods_per_node):
         replicas_line = _OMIT if autoscaling else f"replicas: {replicas}"
@@ -197,16 +270,17 @@ spec:
       {grace_line}
       nodeSelector:
         workload-type: buildkit
-        instance-type: "{instance_type}"
+        kubernetes.io/arch: {arch}
 
       tolerations:
         - key: workload/buildkit-{arch}
           operator: Equal
           value: "true"
           effect: NoSchedule
+        # Exists, not Equal: the pool spans instance sizes, and pre-existing
+        # nodes still carry an instance-type taint from the single-size pool.
         - key: instance-type
-          operator: Equal
-          value: "{instance_type}"
+          operator: Exists
           effect: NoSchedule
 
       containers:
@@ -291,17 +365,20 @@ spec:
         return "\n".join(line for line in block.splitlines() if line.strip() != _OMIT)
 
     arm64_block = _deployment_block(
-        "arm64", arm64_instance, arm64_res["cpu"], arm64_res["memory_gi"], arm64_replicas, arm64_pods_per_node
+        "arm64", arm64_plan[0][0], arm64_res["cpu"], arm64_res["memory_gi"], arm64_replicas, arm64_plan[0][1]
     )
     amd64_block = _deployment_block(
-        "amd64", amd64_instance, amd64_res["cpu"], amd64_res["memory_gi"], amd64_replicas, amd64_pods_per_node
+        "amd64", amd64_plan[0][0], amd64_res["cpu"], amd64_res["memory_gi"], amd64_replicas, amd64_plan[0][1]
     )
+
+    arm64_layout = ", ".join(f"{t} x{n}" for t, n in arm64_plan)
+    amd64_layout = ", ".join(f"{t} x{n}" for t, n in amd64_plan)
 
     header = f"""# BuildKit Daemon Deployments — auto-generated by generate_buildkit.py
 # Do not edit by hand. Re-run: just deploy-module <cluster> buildkit
 #
-# arm64 pods: {arm64_res["cpu"]} vCPU + {arm64_res["memory_gi"]}Gi each ({arm64_pods_per_node} per {arm64_instance}) x {arm64_replicas}
-# amd64 pods: {amd64_res["cpu"]} vCPU + {amd64_res["memory_gi"]}Gi each ({amd64_pods_per_node} per {amd64_instance}) x {amd64_replicas}
+# arm64 pods: {arm64_res["cpu"]} vCPU + {arm64_res["memory_gi"]}Gi each x {arm64_replicas} — {arm64_layout}
+# amd64 pods: {amd64_res["cpu"]} vCPU + {amd64_res["memory_gi"]}Gi each x {amd64_replicas} — {amd64_layout}
 #
 # Users target a specific architecture via Service name:
 #   buildctl --addr tcp://buildkitd-arm64.buildkit:1234 ...  (ARM64 build)
@@ -329,6 +406,9 @@ def generate_nodepools_yaml(
     amd64_pods_per_node = amd64_pods_per_node if amd64_pods_per_node is not None else pods_per_node
     arm64_pods_per_node = arm64_pods_per_node if arm64_pods_per_node is not None else pods_per_node
 
+    arm64_plan = parse_instance_plan(arm64_instance, arm64_pods_per_node)
+    amd64_plan = parse_instance_plan(amd64_instance, amd64_pods_per_node)
+
     def _nodepool_limits(instance_type, replicas, pods_per_node):
         """Compute NodePool resource limits with headroom."""
         spec = INSTANCE_SPECS[instance_type]
@@ -340,10 +420,12 @@ def generate_nodepools_yaml(
         memory_limit_gi = max_nodes * spec["memory_gib"]
         return cpu_limit, memory_limit_gi
 
-    def _nodepool_block(arch, instance_type, cpu_limit, memory_limit_gi):
+    def _nodepool_block(arch, instance_types, cpu_limit, memory_limit_gi):
+        instance_type = instance_types[0]
+        type_values = "\n".join(f"            - {t}" for t in instance_types)
         return f"""# Karpenter NodePool + EC2NodeClass: buildkit-{arch}
 # Auto-generated from generate_buildkit.py — do not edit by hand.
-# Instance type: {instance_type}
+# Instance types: {", ".join(instance_types)}
 
 apiVersion: karpenter.sh/v1
 kind: NodePool
@@ -364,7 +446,6 @@ spec:
     metadata:
       labels:
         workload-type: buildkit
-        instance-type: "{instance_type}"
 
     spec:
       requirements:
@@ -380,7 +461,7 @@ spec:
         - key: node.kubernetes.io/instance-type
           operator: In
           values:
-            - {instance_type}
+{type_values}
 
       nodeClassRef:
         group: karpenter.k8s.aws
@@ -390,9 +471,6 @@ spec:
       taints:
         - key: workload/buildkit-{arch}
           value: "true"
-          effect: NoSchedule
-        - key: instance-type
-          value: "{instance_type}"
           effect: NoSchedule
 
 ---
@@ -470,16 +548,18 @@ spec:
     InstanceType: "{instance_type}"
     Architecture: "{arch}\""""
 
-    arm64_cpu_limit, arm64_mem_limit = _nodepool_limits(arm64_instance, arm64_replicas, arm64_pods_per_node)
-    amd64_cpu_limit, amd64_mem_limit = _nodepool_limits(amd64_instance, amd64_replicas, amd64_pods_per_node)
+    # Limits are sized off the first entry. Total node CPU/memory for a fixed
+    # pod size is the same whatever mix of sizes Karpenter picks.
+    arm64_cpu_limit, arm64_mem_limit = _nodepool_limits(arm64_plan[0][0], arm64_replicas, arm64_plan[0][1])
+    amd64_cpu_limit, amd64_mem_limit = _nodepool_limits(amd64_plan[0][0], amd64_replicas, amd64_plan[0][1])
 
     log_info(
         f"NodePool limits — arm64: {arm64_cpu_limit} CPU, {arm64_mem_limit}Gi | "
         f"amd64: {amd64_cpu_limit} CPU, {amd64_mem_limit}Gi"
     )
 
-    arm64_block = _nodepool_block("arm64", arm64_instance, arm64_cpu_limit, arm64_mem_limit)
-    amd64_block = _nodepool_block("amd64", amd64_instance, amd64_cpu_limit, amd64_mem_limit)
+    arm64_block = _nodepool_block("arm64", [t for t, _ in arm64_plan], arm64_cpu_limit, arm64_mem_limit)
+    amd64_block = _nodepool_block("amd64", [t for t, _ in amd64_plan], amd64_cpu_limit, amd64_mem_limit)
 
     return arm64_block + "\n\n---\n" + amd64_block + "\n"
 
@@ -557,7 +637,11 @@ spec:
 def main():
     parser = argparse.ArgumentParser(description="Generate BuildKit Deployment and NodePool YAMLs")
     parser.add_argument("--arm64-instance-type", required=True, help="ARM64 instance type (e.g., m8gd.24xlarge)")
-    parser.add_argument("--amd64-instance-type", required=True, help="AMD64 instance type (e.g., m6id.24xlarge)")
+    parser.add_argument(
+        "--amd64-instance-type",
+        required=True,
+        help="AMD64 instance type(s), comma-separated; first sizes the pod (e.g., m6id.24xlarge,m6id.12xlarge)",
+    )
     parser.add_argument("--replicas", type=int, required=True, help="Default replicas per architecture")
     parser.add_argument("--pods-per-node", type=int, required=True, help="Default BuildKit pods per node")
     parser.add_argument("--amd64-replicas", type=int, default=None, help="Override amd64 replica count")
@@ -578,20 +662,21 @@ def main():
         log_error("--autoscaling requires --amd64-max and --arm64-max")
         return 1
 
-    # Validate instance types
-    for it in [args.arm64_instance_type, args.amd64_instance_type]:
-        if it not in INSTANCE_SPECS:
-            log_error(f"Unknown instance type: {it}")
-            log_error(f"Known types: {', '.join(sorted(INSTANCE_SPECS.keys()))}")
+    # Validate instance types (each arg may be a comma-separated type:count list)
+    for arch, value in (("arm64", args.arm64_instance_type), ("amd64", args.amd64_instance_type)):
+        try:
+            plan = parse_instance_plan(value, args.pods_per_node)
+        except ValueError as exc:
+            log_error(str(exc))
             return 1
-
-    # Validate arch matches
-    if INSTANCE_SPECS[args.arm64_instance_type]["arch"] != "arm64":
-        log_error(f"{args.arm64_instance_type} is not an arm64 instance type")
-        return 1
-    if INSTANCE_SPECS[args.amd64_instance_type]["arch"] != "amd64":
-        log_error(f"{args.amd64_instance_type} is not an amd64 instance type")
-        return 1
+        for it, _ in plan:
+            if it not in INSTANCE_SPECS:
+                log_error(f"Unknown instance type: {it}")
+                log_error(f"Known types: {', '.join(sorted(INSTANCE_SPECS.keys()))}")
+                return 1
+            if INSTANCE_SPECS[it]["arch"] != arch:
+                log_error(f"{it} is not an {arch} instance type")
+                return 1
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
