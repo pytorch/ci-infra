@@ -178,6 +178,9 @@ locals {
         }
         # Note: Nsight profiling nodes are not separate ASGs - just label existing nodes:
         # kubectl label node <node-name> gpu.monitoring/profiling-dedicated=true nvidia.com/gpu.deploy.dcgm-exporter=false --overwrite
+        # Note: A100, T4, L4, A10G, and RTX PRO 6000 are scaled to 0 due to no recent demand.
+        # Kept in the map so they stay reservable; re-enable by raising the count (A100 via
+        # its capacity_reservations entry).
         "a100" = {
           instance_type       = "p4d.24xlarge"
           instance_types      = null
@@ -190,7 +193,7 @@ locals {
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 0
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
@@ -199,7 +202,7 @@ locals {
         "l4" = {
           instance_type       = "g6.12xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 0
           gpus_per_instance   = 4 # 4x L4 GPUs
           use_placement_group = false
           architecture        = "x86_64"
@@ -208,7 +211,7 @@ locals {
         "a10g" = {
           instance_type       = "g5.12xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 4 # 4x A10G GPUs
           use_placement_group = false
           architecture        = "x86_64"
@@ -217,7 +220,7 @@ locals {
         "rtxpro6000" = {
           instance_type       = "g7e.24xlarge"
           instance_types      = null
-          instance_count      = 0 # Keep unless demand changes
+          instance_count      = 0
           gpus_per_instance   = 4 # 4x RTX PRO 6000 Blackwell GPUs
           use_placement_group = false
           architecture        = "x86_64"
