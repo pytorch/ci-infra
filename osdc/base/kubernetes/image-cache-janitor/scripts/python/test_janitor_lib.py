@@ -3,11 +3,14 @@
 import json
 
 from janitor_lib import (
+    CacheDirInfo,
     ImageInfo,
     MetricsServer,
     calculate_total_cache_size,
     parse_crictl_images,
+    parse_crictl_pod_names,
     select_images_to_remove,
+    select_orphan_cache_dirs,
 )
 
 GI = 1024**3
@@ -290,3 +293,52 @@ class TestMetricsServerFormat:
         m = MetricsServer()
         output = m.format()
         assert output.endswith("\n")
+
+
+class TestOrphanCacheDirs:
+    """Reclaiming BuildKit cache directories left behind by deleted pods."""
+
+    @staticmethod
+    def _dirs(*specs):
+        return [CacheDirInfo(name=n, mtime=m) for n, m in specs]
+
+    def test_parse_crictl_pod_names(self):
+        payload = json.dumps(
+            {"items": [{"metadata": {"name": "buildkitd-amd64-abc"}}, {"metadata": {"name": "alloy-1"}}]}
+        )
+        assert parse_crictl_pod_names(payload) == {"buildkitd-amd64-abc", "alloy-1"}
+
+    def test_no_pods_no_dirs(self):
+        assert parse_crictl_pod_names(json.dumps({"items": []})) == set()
+        assert select_orphan_cache_dirs([], set(), 1000.0, 300) == []
+
+    def test_empty_live_set_deletes_nothing(self):
+        """A blank crictl result means "unknown", never "all are orphaned".
+
+        The janitor is itself a pod on the node, so an empty list is always a
+        transient fault. Without this the enforce path would wipe every live
+        pod's cache.
+        """
+        dirs = self._dirs(("live-a", 0.0), ("live-b", 0.0))
+        assert select_orphan_cache_dirs(dirs, set(), 10_000.0, 300) == []
+
+    def test_live_pod_dir_is_kept(self):
+        dirs = self._dirs(("live", 0.0))
+        assert select_orphan_cache_dirs(dirs, {"live"}, 10_000.0, 300) == []
+
+    def test_dead_pod_dir_is_orphaned(self):
+        dirs = self._dirs(("dead", 0.0))
+        assert [d.name for d in select_orphan_cache_dirs(dirs, {"live"}, 10_000.0, 300)] == ["dead"]
+
+    def test_grace_period_protects_a_just_created_dir(self):
+        """kubelet creates the dir before crictl reports the sandbox."""
+        # A real node always has other pods running (the janitor itself, at least).
+        others = {"image-cache-janitor-xyz"}
+        dirs = self._dirs(("starting", 9_900.0))
+        assert select_orphan_cache_dirs(dirs, others, 10_000.0, 300) == []
+        assert [d.name for d in select_orphan_cache_dirs(dirs, others, 10_300.0, 300)] == ["starting"]
+
+    def test_only_dead_dirs_selected_from_a_mix(self):
+        dirs = self._dirs(("live-a", 0.0), ("dead-a", 0.0), ("live-b", 0.0), ("dead-b", 0.0))
+        got = select_orphan_cache_dirs(dirs, {"live-a", "live-b"}, 10_000.0, 300)
+        assert sorted(d.name for d in got) == ["dead-a", "dead-b"]
