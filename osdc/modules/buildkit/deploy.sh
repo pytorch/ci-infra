@@ -24,16 +24,17 @@ source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
-# Read per-installation config. replicas_per_arch / pods_per_node are the
-# per-arch defaults; amd64_* / arm64_* override them when the arches differ.
+# Read per-installation config. {amd64,arm64}_instance_types map an instance
+# type to its pods-per-node; several sizes give Karpenter a capacity fallback.
+# pods_per_node stays the default for any entry that omits its count.
 REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.replicas_per_arch 4)
-ARM64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_instance_type m8gd.24xlarge)
-AMD64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_instance_type m6id.24xlarge)
+# No inline fallback: defaults.buildkit in clusters.yaml always supplies these,
+# and a missing value should abort rather than silently deploy a guess.
+ARM64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_instance_types)
+AMD64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_instance_types)
 PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.pods_per_node 2)
 AMD64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_replicas "$REPLICAS")
 ARM64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_replicas "$REPLICAS")
-AMD64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_pods_per_node "$PODS_PER_NODE")
-ARM64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_pods_per_node "$PODS_PER_NODE")
 # Lowercase via tr (not ${VAR,,}) — deploy.sh runs under macOS bash 3.2 too.
 AUTOSCALING=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.enabled false | tr '[:upper:]' '[:lower:]')
 
@@ -49,8 +50,6 @@ GEN_ARGS=(
   --pods-per-node "$PODS_PER_NODE"
   --amd64-replicas "$AMD64_REPLICAS"
   --arm64-replicas "$ARM64_REPLICAS"
-  --amd64-pods-per-node "$AMD64_PODS_PER_NODE"
-  --arm64-pods-per-node "$ARM64_PODS_PER_NODE"
   --output-dir "$GENERATED_DIR"
 )
 if [[ "$AUTOSCALING" == "true" ]]; then

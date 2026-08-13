@@ -299,14 +299,21 @@ defaults:
 clusters:
   my-cluster:
     buildkit:
-      amd64_instance_type: m6id.24xlarge
+      amd64_instance_types:      # instance type -> pods per node
+        m6id.24xlarge: 2
+        m6id.12xlarge: 1
       amd64_replicas: 32
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
+      arm64_instance_types:
+        m7gd.16xlarge: 4
       arm64_replicas: 8
-      arm64_pods_per_node: 4
 ```
 Per-arch override keys are separate (`amd64_*` and `arm64_*`) — there is no flat `pods_per_node` key.
+
+`{amd64,arm64}_instance_types` maps each instance type to its pods per node.
+Listing several sizes gives Karpenter a fallback when one runs out of on-demand
+capacity. One Deployment means one pod spec, so the counts are constraints, not
+per-node settings: the pod takes the smallest size any entry allows, which makes
+every type hold at least its stated count. Placement is then bin-packing.
 
 **Node Compactor:** All config under `node_compactor:` key. Knobs configurable via `clusters.yaml`: `enabled`, `interval_seconds` (20), `dry_run`, `min_nodes` (1), `min_node_age_seconds` (900), `capacity_reservation_nodes` (0), `max_uptime_hours` (48). Other knobs (`taint_rate`, `fleet_cooldown`, `spare_capacity_nodes`, `spare_capacity_ratio`, `spare_capacity_threshold`) are internal Python defaults in the compactor source, NOT configurable via clusters.yaml.
 
