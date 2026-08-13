@@ -2,10 +2,13 @@
 # Downloads the patched runner-container-hooks zip once per node to NVMe,
 # so runner pods can mount it read-only without per-pod downloads.
 #
-# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.17
-# v0.8.17 drops the stream-buffers dependency whose WritableStreamBuffer used the
-# deprecated Buffer() constructor (per-step DEP0005 warning), via
-# jeanschmidt/runner-container-hooks#12. Remove this when the fix lands upstream.
+# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.18
+# v0.8.18 raises the per-attempt cp{To,From}Pod tar timeout from 120s to 300s,
+# via jeanschmidt/runner-container-hooks#13. The workspace copy scales with file
+# count, and release-branch jobs (two full pytorch action trees, ~47k files)
+# took ~108s on an idle node — close enough to 120s that contention timed every
+# attempt out, and each retry restarts from zero.
+# Remove this fork pin when the fix lands upstream.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -56,7 +59,7 @@ spec:
             - -c
             - |
               set -eu
-              HOOKS_VERSION="0.8.17"
+              HOOKS_VERSION="0.8.18"
               HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
               DEST="/mnt/runner-container-hooks"
               MARKER="$DEST/.version"
