@@ -129,6 +129,10 @@ spec:
               value: "300"
             - name: CONTAINER_RUNTIME_ENDPOINT
               value: "unix:///run/containerd/containerd.sock"
+            # Report orphaned BuildKit cache dirs without deleting them until
+            # the metrics confirm the sweep picks the right directories.
+            - name: BUILDKIT_ORPHAN_DRY_RUN
+              value: "true"
 
           securityContext:
             privileged: true
