@@ -111,6 +111,7 @@ INSTANCE_SPECS: dict[str, dict] = {
     # BuildKit instances (used by modules/buildkit/)
     "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "arm64"},
     "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "m6id.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
     "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "arm64"},
     "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
     "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
@@ -202,6 +203,7 @@ ENI_MAX_PODS: dict[str, int] = {
     # BuildKit instance types
     "m8gd.24xlarge": 737,
     "m6id.24xlarge": 737,
+    "m6id.12xlarge": 234,  # 8 ENIs x 30 IPs - 8
     "c7gd.16xlarge": 737,
     "m7gd.16xlarge": 737,
     "m8gd.16xlarge": 737,
