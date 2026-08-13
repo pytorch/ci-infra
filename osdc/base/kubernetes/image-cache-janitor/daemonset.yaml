@@ -151,8 +151,6 @@ spec:
               readOnly: true
             - name: containerd-sock
               mountPath: /run/containerd/containerd.sock
-            - name: buildkit-cache
-              mountPath: /mnt/k8s-disks/0/buildkit-cache
 
       volumes:
         - name: scripts
@@ -163,11 +161,6 @@ spec:
           hostPath:
             path: /run/containerd/containerd.sock
             type: Socket
-        # Only exists on BuildKit nodes; the sweep no-ops elsewhere.
-        - name: buildkit-cache
-          hostPath:
-            path: /mnt/k8s-disks/0/buildkit-cache
-            type: DirectoryOrCreate
 
 ---
 apiVersion: v1

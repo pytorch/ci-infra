@@ -117,7 +117,14 @@ def select_orphan_cache_dirs(
     A directory is orphaned when no pod of that name is running on the
     node. The grace period covers the window where kubelet has created
     the directory but the sandbox is not yet visible to crictl.
+
+    An empty live_pod_names is treated as "unknown", not "nothing is
+    running": the janitor is itself a pod on this node, so crictl always
+    reports at least one. Returning nothing keeps a transient containerd
+    hiccup from being read as "every directory is orphaned".
     """
+    if not live_pod_names:
+        return []
     return [d for d in dirs if d.name not in live_pod_names and (now - d.mtime) >= grace_seconds]
 
 

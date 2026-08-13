@@ -312,6 +312,16 @@ class TestOrphanCacheDirs:
         assert parse_crictl_pod_names(json.dumps({"items": []})) == set()
         assert select_orphan_cache_dirs([], set(), 1000.0, 300) == []
 
+    def test_empty_live_set_deletes_nothing(self):
+        """A blank crictl result means "unknown", never "all are orphaned".
+
+        The janitor is itself a pod on the node, so an empty list is always a
+        transient fault. Without this the enforce path would wipe every live
+        pod's cache.
+        """
+        dirs = self._dirs(("live-a", 0.0), ("live-b", 0.0))
+        assert select_orphan_cache_dirs(dirs, set(), 10_000.0, 300) == []
+
     def test_live_pod_dir_is_kept(self):
         dirs = self._dirs(("live", 0.0))
         assert select_orphan_cache_dirs(dirs, {"live"}, 10_000.0, 300) == []
@@ -322,9 +332,11 @@ class TestOrphanCacheDirs:
 
     def test_grace_period_protects_a_just_created_dir(self):
         """kubelet creates the dir before crictl reports the sandbox."""
+        # A real node always has other pods running (the janitor itself, at least).
+        others = {"image-cache-janitor-xyz"}
         dirs = self._dirs(("starting", 9_900.0))
-        assert select_orphan_cache_dirs(dirs, set(), 10_000.0, 300) == []
-        assert [d.name for d in select_orphan_cache_dirs(dirs, set(), 10_300.0, 300)] == ["starting"]
+        assert select_orphan_cache_dirs(dirs, others, 10_000.0, 300) == []
+        assert [d.name for d in select_orphan_cache_dirs(dirs, others, 10_300.0, 300)] == ["starting"]
 
     def test_only_dead_dirs_selected_from_a_mix(self):
         dirs = self._dirs(("live-a", 0.0), ("dead-a", 0.0), ("live-b", 0.0), ("dead-b", 0.0))

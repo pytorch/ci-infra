@@ -55,7 +55,12 @@ data:
     # BuildKit pods cache to <BUILDKIT_CACHE_DIR>/<pod-name> on the instance
     # store. A pod's directory outlives the pod, and no surviving buildkitd
     # knows about it, so buildkit's own GC can never reclaim it.
-    BUILDKIT_CACHE_DIR = os.environ.get("BUILDKIT_CACHE_DIR", "/mnt/k8s-disks/0/buildkit-cache")
+    # Read through /proc/1/root (hostPID + privileged) rather than a hostPath
+    # mount: a DirectoryOrCreate mount would create this path on all ~786 nodes
+    # the DaemonSet covers, not just the handful running BuildKit.
+    BUILDKIT_CACHE_DIR = os.environ.get(
+        "BUILDKIT_CACHE_DIR", "/proc/1/root/mnt/k8s-disks/0/buildkit-cache"
+    )
     BUILDKIT_ORPHAN_GRACE_SECONDS = int(os.environ.get("BUILDKIT_ORPHAN_GRACE_SECONDS", "1800"))
     BUILDKIT_ORPHAN_DRY_RUN = os.environ.get("BUILDKIT_ORPHAN_DRY_RUN", "true").lower() == "true"
 
@@ -170,7 +175,14 @@ data:
         A directory is orphaned when no pod of that name is running on the
         node. The grace period covers the window where kubelet has created
         the directory but the sandbox is not yet visible to crictl.
+
+        An empty live_pod_names is treated as "unknown", not "nothing is
+        running": the janitor is itself a pod on this node, so crictl always
+        reports at least one. Returning nothing keeps a transient containerd
+        hiccup from being read as "every directory is orphaned".
         """
+        if not live_pod_names:
+            return []
         return [
             d for d in dirs
             if d.name not in live_pod_names and (now - d.mtime) >= grace_seconds
@@ -313,6 +325,11 @@ data:
             return False
 
 
+    # (dir name, mtime) -> size. Sizing a multi-hundred-GB cache is expensive,
+    # and under dry run the same orphans persist across every cycle.
+    _SIZE_CACHE: dict[tuple[str, float], int] = {}
+
+
     def _dir_size_bytes(path: str) -> int:
         """Best-effort directory size via du. Returns 0 if it fails or times out."""
         try:
@@ -353,8 +370,14 @@ data:
         orphans = select_orphan_cache_dirs(
             _scan_cache_dirs(), live, time.time(), BUILDKIT_ORPHAN_GRACE_SECONDS,
         )
+        live_keys = {(d.name, d.mtime) for d in orphans}
+        for stale in [k for k in _SIZE_CACHE if k not in live_keys]:
+            del _SIZE_CACHE[stale]
         for d in orphans:
-            d.size = _dir_size_bytes(os.path.join(BUILDKIT_CACHE_DIR, d.name))
+            key = (d.name, d.mtime)
+            if key not in _SIZE_CACHE:
+                _SIZE_CACHE[key] = _dir_size_bytes(os.path.join(BUILDKIT_CACHE_DIR, d.name))
+            d.size = _SIZE_CACHE[key]
 
         total = sum(d.size for d in orphans)
         metrics.set("image_cache_janitor_buildkit_orphan_dirs", float(len(orphans)))
