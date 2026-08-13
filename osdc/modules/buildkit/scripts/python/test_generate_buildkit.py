@@ -768,3 +768,39 @@ class TestMultipleInstanceTypes:
             assert [t["key"] for t in spec["spec"]["taints"]] == ["workload/buildkit-amd64"]
             return
         raise AssertionError("buildkit-amd64 NodePool not found")
+
+
+class TestStagingSmallPool:
+    """Staging mirrors prod's big+half shape on much smaller instances."""
+
+    AMD64 = "m6id.4xlarge:2,m6id.2xlarge:1"
+    ARM64 = "m7gd.4xlarge:2,m7gd.2xlarge:1"
+
+    def test_declared_packing_holds(self):
+        for plan in (
+            [("m6id.4xlarge", 2), ("m6id.2xlarge", 1)],
+            [("m7gd.4xlarge", 2), ("m7gd.2xlarge", 1)],
+        ):
+            res = plan_pod_resources(plan)
+            assert (res["cpu"], res["memory_gi"]) == (6, 25)
+            for instance_type, declared in plan:
+                assert pods_that_fit(instance_type, res["cpu"], res["memory_gi"]) == declared
+
+    def test_reaches_integration_test_target(self):
+        """The buildkit integration test needs 8 active backends per arch."""
+        res = plan_pod_resources([("m6id.4xlarge", 2), ("m6id.2xlarge", 1)])
+        per_node = pods_that_fit("m6id.4xlarge", res["cpu"], res["memory_gi"])
+        assert math.ceil(8 / per_node) == 4, "8 pods should need 4 nodes, as prod's pool does today"
+
+    def test_nodepool_limits_cover_the_smallest_type(self):
+        """At max replicas an all-2xlarge fleet must stay inside the limits."""
+        output = generate_nodepools_yaml(self.ARM64, self.AMD64, 8, 2)
+        res = plan_pod_resources([("m6id.4xlarge", 2), ("m6id.2xlarge", 1)])
+        for d in yaml.safe_load_all(output):
+            if not d or d["kind"] != "NodePool" or d["metadata"]["name"] != "buildkit-amd64":
+                continue
+            limit = int(d["spec"]["limits"]["cpu"])
+            nodes = math.ceil(8 / pods_that_fit("m6id.2xlarge", res["cpu"], res["memory_gi"]))
+            assert nodes * INSTANCE_SPECS["m6id.2xlarge"]["vcpu"] <= limit
+            return
+        raise AssertionError("buildkit-amd64 NodePool not found")
