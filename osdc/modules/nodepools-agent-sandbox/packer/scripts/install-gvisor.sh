@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
-# Bake gVisor (runsc) into the ai-sandbox AMI. Runs once at IMAGE BUILD time
-# under packer — never at node boot.
+# Bake gVisor (runsc) into the ai-sandbox AMI. Build time only, never node boot.
 #
-# Two things this deliberately does NOT do, both of which the previous userData
-# version did:
-#   * fetch anything at node boot — the binaries are in the image
-#   * touch /etc/containerd/config.toml or restart containerd — nodeadm
-#     regenerates that file at every boot, and restarting containerd after
-#     kubelet has started races whatever is already running on the node
-#
-# Instead the runtime handler is declared as a nodeadm NodeConfig drop-in.
-# nodeadm merges /etc/eks/nodeadm.d/* with the user-data config and writes
-# /etc/containerd/config.toml BEFORE starting containerd, so runsc is registered
-# at containerd's first start.
+# Deliberately does not touch /etc/containerd/config.toml or restart containerd:
+# nodeadm rewrites that file every boot, and a restart after kubelet has started
+# races whatever is already on the node. The runtime handler is declared as a
+# nodeadm drop-in instead, which nodeadm merges before starting containerd.
 set -euxo pipefail
 
 : "${GVISOR_RELEASE:?GVISOR_RELEASE must be set (yyyymmdd release to pin)}"
@@ -32,11 +24,10 @@ install_bin() {
 install_bin runsc
 install_bin containerd-shim-runsc-v1
 
-# EKS AL2023 ships containerd v2.x, whose config is `version = 3` and whose CRI
-# plugin key is `io.containerd.cri.v1.runtime` (NOT the containerd-1.x
-# `io.containerd.grpc.v1.cri` — a v1-style stanza is silently ignored and runsc
-# never registers). This stanza is additive; the default runc runtime is
-# untouched, so anything without runtimeClassName still runs under runc.
+# The key must be `io.containerd.cri.v1.runtime`: EKS AL2023 ships containerd
+# v2.x (`version = 3` config), where a containerd-1.x `io.containerd.grpc.v1.cri`
+# stanza is silently ignored and runsc never registers. Additive — runc is
+# untouched, so pods without runtimeClassName are unaffected.
 install -d -m 0755 /etc/eks/nodeadm.d
 cat >/etc/eks/nodeadm.d/10-gvisor.yaml <<'EOF'
 # Baked into the ai-sandbox AMI by modules/nodepools-agent-sandbox/packer.
@@ -51,8 +42,7 @@ spec:
 EOF
 chmod 0644 /etc/eks/nodeadm.d/10-gvisor.yaml
 
-# Fail the build rather than ship an image whose runsc can't run. `runsc do`
-# exercises the full sandbox (platform detection included) in one shot.
+# Fail the build rather than ship an image whose runsc can't run.
 runsc --version
 # "do" is a runsc subcommand, quoted so shellcheck doesn't read it as the shell keyword.
 runsc --network=none "do" /bin/true
