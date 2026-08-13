@@ -78,11 +78,11 @@ data "amazon-parameterstore" "eks_al2023" {
 }
 
 source "amazon-ebs" "ai_sandbox" {
-  region        = var.aws_region
-  source_ami    = data.amazon-parameterstore.eks_al2023.value
-  instance_type = var.build_instance_type
-  ssh_username  = "ec2-user"
-  ami_name      = local.ami_name
+  region          = var.aws_region
+  source_ami      = data.amazon-parameterstore.eks_al2023.value
+  instance_type   = var.build_instance_type
+  ssh_username    = "ec2-user"
+  ami_name        = local.ami_name
   ami_description = "EKS AL2023 + gVisor ${var.gvisor_release} for the OSDC ai-sandbox fleet"
 
   # IMDSv2. Two separate reasons, both required:
@@ -110,17 +110,32 @@ source "amazon-ebs" "ai_sandbox" {
   }
   associate_public_ip_address = true
 
+  # Packer's throwaway security group otherwise opens port 22 to 0.0.0.0/0 for the
+  # life of the build ("Authorizing access to port 22 from [0.0.0.0/0]"). The
+  # keypair is ephemeral and the window is minutes, but this image becomes the
+  # host OS for a fleet that runs untrusted code — a compromise here is a write
+  # into that image, so narrow the ingress to the builder's own address.
+  #
+  # If the builder sits behind a NAT pool whose egress address differs from the
+  # one detected here, SSH will hang; pin the range explicitly instead:
+  #   -var 'temporary_security_group_source_cidrs=["<corp cidr>"]'
+  # The stronger fix is ssh_interface = "session_manager" (no ingress rule and no
+  # public IP at all), deferred until this build runs in CI: it needs the
+  # session-manager-plugin on PATH (not mise-managed), an SSM instance profile,
+  # and an outbound WebSocket the corporate proxy may not permit.
+  temporary_security_group_source_public_ip = true
+
   # Karpenter selects this AMI by tag (see defs/ai-sandbox.yaml) rather than by
   # name glob, so the naming scheme can change without touching the nodepool.
   tags = {
-    Name           = local.ami_name
-    "osdc.io/ami"  = "ai-sandbox-gvisor"
+    Name             = local.ami_name
+    "osdc.io/ami"    = "ai-sandbox-gvisor"
     "osdc.io/module" = "nodepools-agent-sandbox"
-    Cluster        = var.cluster_name
-    GvisorRelease  = var.gvisor_release
-    K8sVersion     = var.k8s_version
-    SourceAMI      = data.amazon-parameterstore.eks_al2023.value
-    Project        = "ciforge"
+    Cluster          = var.cluster_name
+    GvisorRelease    = var.gvisor_release
+    K8sVersion       = var.k8s_version
+    SourceAMI        = data.amazon-parameterstore.eks_al2023.value
+    Project          = "ciforge"
   }
   snapshot_tags = {
     Name          = local.ami_name
