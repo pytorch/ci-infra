@@ -29,6 +29,7 @@ data:
     import json
     import logging
     import os
+    import shutil
     import socket
     import subprocess
     import sys
@@ -50,6 +51,13 @@ data:
     IMAGE_CACHE_TARGET_GI = int(os.environ.get("IMAGE_CACHE_TARGET_GI", "400"))
     CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "300"))
     METRICS_PORT = 9103
+
+    # BuildKit pods cache to <BUILDKIT_CACHE_DIR>/<pod-name> on the instance
+    # store. A pod's directory outlives the pod, and no surviving buildkitd
+    # knows about it, so buildkit's own GC can never reclaim it.
+    BUILDKIT_CACHE_DIR = os.environ.get("BUILDKIT_CACHE_DIR", "/mnt/k8s-disks/0/buildkit-cache")
+    BUILDKIT_ORPHAN_GRACE_SECONDS = int(os.environ.get("BUILDKIT_ORPHAN_GRACE_SECONDS", "1800"))
+    BUILDKIT_ORPHAN_DRY_RUN = os.environ.get("BUILDKIT_ORPHAN_DRY_RUN", "true").lower() == "true"
 
     # Convert GiB to bytes
     GI = 1024 ** 3
@@ -128,6 +136,48 @@ data:
 
 
     # ---------------------------------------------------------------------------
+    # Orphaned BuildKit cache directories
+    # ---------------------------------------------------------------------------
+
+    @dataclass
+    class CacheDirInfo:
+        """A directory under BUILDKIT_CACHE_DIR, named after the pod that owns it."""
+
+        name: str
+        mtime: float
+        size: int = 0
+
+
+    def parse_crictl_pod_names(json_str: str) -> set[str]:
+        """Extract pod names from ``crictl pods -o json`` output."""
+        data = json.loads(json_str)
+        names = set()
+        for pod in data.get("items", []):
+            name = (pod.get("metadata") or {}).get("name")
+            if name:
+                names.add(name)
+        return names
+
+
+    def select_orphan_cache_dirs(
+        dirs: list[CacheDirInfo],
+        live_pod_names: set[str],
+        now: float,
+        grace_seconds: int,
+    ) -> list[CacheDirInfo]:
+        """Select cache directories whose owning pod is gone.
+
+        A directory is orphaned when no pod of that name is running on the
+        node. The grace period covers the window where kubelet has created
+        the directory but the sandbox is not yet visible to crictl.
+        """
+        return [
+            d for d in dirs
+            if d.name not in live_pod_names and (now - d.mtime) >= grace_seconds
+        ]
+
+
+    # ---------------------------------------------------------------------------
     # Prometheus metrics server (stdlib only, no pip dependencies)
     # ---------------------------------------------------------------------------
 
@@ -165,6 +215,12 @@ data:
              "Configured cache size limit in bytes"),
             ("image_cache_janitor_cache_target_bytes", "gauge",
              "Configured cache target size in bytes"),
+            ("image_cache_janitor_buildkit_orphan_dirs", "gauge",
+             "Orphaned BuildKit cache directories found in the last cycle"),
+            ("image_cache_janitor_buildkit_orphan_bytes", "gauge",
+             "Bytes held by orphaned BuildKit cache directories"),
+            ("image_cache_janitor_buildkit_reclaimed_bytes_total", "counter",
+             "Total bytes reclaimed from orphaned BuildKit cache directories"),
         ]
 
         def __init__(self) -> None:
@@ -257,9 +313,73 @@ data:
             return False
 
 
+    def _dir_size_bytes(path: str) -> int:
+        """Best-effort directory size via du. Returns 0 if it fails or times out."""
+        try:
+            out = subprocess.run(
+                ["du", "-sb", path], capture_output=True, text=True, check=True, timeout=120,
+            )
+            return int(out.stdout.split()[0])
+        except (subprocess.SubprocessError, ValueError, IndexError):
+            log.warning("Could not size %s", path)
+            return 0
+
+
+    def _scan_cache_dirs() -> list[CacheDirInfo]:
+        """List directories directly under BUILDKIT_CACHE_DIR."""
+        dirs: list[CacheDirInfo] = []
+        with os.scandir(BUILDKIT_CACHE_DIR) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    dirs.append(CacheDirInfo(name=entry.name, mtime=entry.stat().st_mtime))
+        return dirs
+
+
     # ---------------------------------------------------------------------------
     # GC cycle
     # ---------------------------------------------------------------------------
+
+    def _run_buildkit_orphan_cycle() -> None:
+        """Reclaim BuildKit cache directories left behind by deleted pods."""
+        if not os.path.isdir(BUILDKIT_CACHE_DIR):
+            return  # not a BuildKit node
+
+        try:
+            live = parse_crictl_pod_names(run_crictl("pods", "-o", "json"))
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+            log.error("Failed to list pods, skipping orphan sweep: %s", exc)
+            return
+
+        orphans = select_orphan_cache_dirs(
+            _scan_cache_dirs(), live, time.time(), BUILDKIT_ORPHAN_GRACE_SECONDS,
+        )
+        for d in orphans:
+            d.size = _dir_size_bytes(os.path.join(BUILDKIT_CACHE_DIR, d.name))
+
+        total = sum(d.size for d in orphans)
+        metrics.set("image_cache_janitor_buildkit_orphan_dirs", float(len(orphans)))
+        metrics.set("image_cache_janitor_buildkit_orphan_bytes", float(total))
+
+        if not orphans:
+            log.info("BuildKit cache: no orphaned directories")
+            return
+
+        log.info(
+            "BuildKit cache: %d orphaned directories, %.1f GiB%s",
+            len(orphans), total / GI, " (dry run)" if BUILDKIT_ORPHAN_DRY_RUN else "",
+        )
+        if BUILDKIT_ORPHAN_DRY_RUN:
+            return
+
+        for d in orphans:
+            path = os.path.join(BUILDKIT_CACHE_DIR, d.name)
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                log.warning("Failed to remove %s: %s", path, exc)
+                continue
+            log.info("Reclaimed %s (%.1f GiB)", path, d.size / GI)
+            metrics.inc("image_cache_janitor_buildkit_reclaimed_bytes_total", float(d.size))
 
     def _run_gc_cycle() -> None:
         """Run one garbage collection cycle."""
@@ -342,6 +462,10 @@ data:
                 _run_gc_cycle()
             except Exception:
                 log.exception("Unexpected error in GC cycle")
+            try:
+                _run_buildkit_orphan_cycle()
+            except Exception:
+                log.exception("Unexpected error in BuildKit orphan cycle")
             time.sleep(CHECK_INTERVAL_SECONDS)
 
 

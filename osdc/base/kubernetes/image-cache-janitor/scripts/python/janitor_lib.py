@@ -82,6 +82,46 @@ def select_images_to_remove(
 
 
 # ---------------------------------------------------------------------------
+# Orphaned BuildKit cache directories
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CacheDirInfo:
+    """A directory under BUILDKIT_CACHE_DIR, named after the pod that owns it."""
+
+    name: str
+    mtime: float
+    size: int = 0
+
+
+def parse_crictl_pod_names(json_str: str) -> set[str]:
+    """Extract pod names from ``crictl pods -o json`` output."""
+    data = json.loads(json_str)
+    names = set()
+    for pod in data.get("items", []):
+        name = (pod.get("metadata") or {}).get("name")
+        if name:
+            names.add(name)
+    return names
+
+
+def select_orphan_cache_dirs(
+    dirs: list[CacheDirInfo],
+    live_pod_names: set[str],
+    now: float,
+    grace_seconds: int,
+) -> list[CacheDirInfo]:
+    """Select cache directories whose owning pod is gone.
+
+    A directory is orphaned when no pod of that name is running on the
+    node. The grace period covers the window where kubelet has created
+    the directory but the sandbox is not yet visible to crictl.
+    """
+    return [d for d in dirs if d.name not in live_pod_names and (now - d.mtime) >= grace_seconds]
+
+
+# ---------------------------------------------------------------------------
 # Prometheus metrics (no HTTP server — only storage and formatting)
 # ---------------------------------------------------------------------------
 
