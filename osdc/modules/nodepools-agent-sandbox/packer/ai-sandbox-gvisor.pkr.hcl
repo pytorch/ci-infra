@@ -1,24 +1,14 @@
-# Custom EKS AL2023 AMI with gVisor (runsc) baked in, for the ai-sandbox fleet.
+# EKS AL2023 AMI with gVisor (runsc) baked in, for the ai-sandbox fleet.
 #
-# Build:  just build-agent-sandbox-ami <cluster>
+#   just build-agent-sandbox-ami <cluster>
 #
-# Why an AMI instead of a userData script: on a Karpenter-managed fleet the node
-# must be ready the moment it registers. Installing runsc at boot meant fetching
-# binaries over the network on every scale-up and then RESTARTING containerd
-# after kubelet had already started — a restart that races anything already
-# scheduled on the node. Baking it means containerd starts once, correct.
+# Baked rather than installed from userData: that fetched binaries on every
+# scale-up and restarted containerd after kubelet was already running. runsc is
+# registered instead via a nodeadm NodeConfig in /etc/eks/nodeadm.d/, merged
+# before containerd starts — writing config.toml in the image wouldn't survive,
+# nodeadm regenerates it each boot.
 #
-# The runsc runtime handler is registered by dropping a nodeadm NodeConfig at
-# /etc/eks/nodeadm.d/. nodeadm merges configs from that directory with the
-# user-data config and generates /etc/containerd/config.toml *before* starting
-# containerd, so the handler exists at first start. Writing config.toml directly
-# in the image would not work — nodeadm regenerates it at every boot.
-#
-# The source AMI is resolved from the EKS-optimized AL2023 SSM parameter at build
-# time, so each rebuild picks up the current patched base. That freshness is now
-# a rebuild cadence rather than automatic: the stock fleets track
-# `alias: al2023@latest` and pick up CVE fixes on node rotation, while this fleet
-# only moves when the AMI is rebuilt. See the module README.
+# Base AMI and gVisor are both pinned, so CVE fixes need a rebuild (README).
 
 packer {
   required_version = ">= 1.10"
@@ -49,9 +39,7 @@ variable "k8s_version" {
 variable "gvisor_release" {
   description = "gVisor release date to pin (yyyymmdd), from https://gvisor.dev/docs/user_guide/install/"
   type        = string
-  # Pinned deliberately: the previous userData script fetched `latest`, so two
-  # nodes launched a day apart could run different runsc builds. Bump this
-  # explicitly and rebuild.
+  # Pinned: `latest` meant nodes launched a day apart could differ.
   default = "20260803"
 }
 
@@ -85,13 +73,9 @@ source "amazon-ebs" "ai_sandbox" {
   ami_name        = local.ami_name
   ami_description = "EKS AL2023 + gVisor ${var.gvisor_release} for the OSDC ai-sandbox fleet"
 
-  # IMDSv2. Two separate reasons, both required:
-  #   * metadata_options applies to the BUILD instance. An org SCP explicitly
-  #     denies ec2:RunInstances unless ec2:MetadataHttpTokens=required, so a
-  #     build without this fails with UnauthorizedOperation.
-  #   * imds_support makes the resulting AMI default to IMDSv2-only. The sandbox
-  #     threat model leans on IMDS being unreachable from pods (hop limit 1), and
-  #     IMDSv1 would let a compromised agent bypass that with a plain GET.
+  # metadata_options: an org SCP denies RunInstances without http_tokens=required.
+  # imds_support: the AMI itself must be v2-only, or a compromised agent could
+  # reach the node role over IMDSv1 despite the hop limit.
   imds_support = "v2.0"
   metadata_options {
     http_endpoint               = "enabled"
@@ -99,8 +83,7 @@ source "amazon-ebs" "ai_sandbox" {
     http_put_response_hop_limit = 1
   }
 
-  # Build in the cluster VPC's public subnet — the account has no reliable
-  # default VPC, and the build needs egress to fetch the gVisor release.
+  # Public subnet: no usable default VPC, and the build fetches the gVisor release.
   subnet_filter {
     filters = {
       "tag:Name" = "${var.cluster_name}${var.subnet_filter_name}"
@@ -110,23 +93,12 @@ source "amazon-ebs" "ai_sandbox" {
   }
   associate_public_ip_address = true
 
-  # Packer's throwaway security group otherwise opens port 22 to 0.0.0.0/0 for the
-  # life of the build ("Authorizing access to port 22 from [0.0.0.0/0]"). The
-  # keypair is ephemeral and the window is minutes, but this image becomes the
-  # host OS for a fleet that runs untrusted code — a compromise here is a write
-  # into that image, so narrow the ingress to the builder's own address.
-  #
-  # If the builder sits behind a NAT pool whose egress address differs from the
-  # one detected here, SSH will hang; pin the range explicitly instead:
-  #   -var 'temporary_security_group_source_cidrs=["<corp cidr>"]'
-  # The stronger fix is ssh_interface = "session_manager" (no ingress rule and no
-  # public IP at all), deferred until this build runs in CI: it needs the
-  # session-manager-plugin on PATH (not mise-managed), an SSM instance profile,
-  # and an outbound WebSocket the corporate proxy may not permit.
+  # Otherwise Packer opens :22 to 0.0.0.0/0 for the build. The address comes from
+  # checkip.amazonaws.com, so if the builder's SSH egress differs (NAT pool, VPN)
+  # SSH hangs — pass -var 'temporary_security_group_source_cidrs=[...]' instead.
   temporary_security_group_source_public_ip = true
 
-  # Karpenter selects this AMI by tag (see defs/ai-sandbox.yaml) rather than by
-  # name glob, so the naming scheme can change without touching the nodepool.
+  # Karpenter selects by tag (defs/ai-sandbox.yaml), so the name is free to change.
   tags = {
     Name             = local.ami_name
     "osdc.io/ami"    = "ai-sandbox-gvisor"
@@ -150,8 +122,7 @@ build {
   provisioner "shell" {
     script           = "${path.root}/scripts/install-gvisor.sh"
     environment_vars = ["GVISOR_RELEASE=${var.gvisor_release}"]
-    # {{ .Vars }} is required: overriding execute_command drops the default
-    # environment_vars injection, and the script hard-fails without GVISOR_RELEASE.
+    # {{ .Vars }} is required — overriding execute_command drops environment_vars.
     execute_command = "{{ .Vars }} sudo -E bash -eux '{{ .Path }}'"
   }
 
