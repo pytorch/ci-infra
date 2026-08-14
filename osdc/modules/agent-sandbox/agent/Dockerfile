@@ -1,8 +1,9 @@
-# Credential-free (except its Bedrock IRSA role) agent worker image.
+# Credential-free agent worker image for the sandbox prototype.
 #
-# A long-running HTTP worker (server.py) callable over the network like buildkitd.
-# It clones PUBLIC repos anonymously (no token) and calls Bedrock directly via
-# boto3 (which picks up the pod's IRSA web-identity credentials). No proxies.
+# A long-running HTTP worker (server.py) callable over the network like
+# buildkitd. It clones public repos directly and calls Bedrock THROUGH the sigv4
+# proxy. The image holds no secrets and no AWS SDK — Bedrock is reached as plain
+# HTTP to the signing proxy, which owns the credential.
 #
 # Build + push once to the in-cluster Harbor osdc project (see README):
 #   docker buildx build --platform linux/amd64 -t ci-agent-sandbox:prototype \
@@ -15,8 +16,6 @@ RUN apt-get update \
         ca-certificates \
         git \
         python3 \
-        python3-pip \
-    && pip3 install --no-cache-dir --break-system-packages boto3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY server.py /usr/local/bin/server.py
