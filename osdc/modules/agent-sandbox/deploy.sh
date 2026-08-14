@@ -7,15 +7,14 @@ set -euo pipefail
 # Deploys the sandbox:
 #   1. Builds the agent image and pushes it to the in-cluster Harbor `osdc`
 #      project under a content-hash tag (skipped if that tag already exists).
-#   2. Reads the sandbox-agent IRSA role ARN (read-only Bedrock) from terraform.
-#   3. Applies the namespace, gvisor RuntimeClass, service account, the
-#      sandbox-agent worker + Service, and the NetworkPolicies. The image, region
-#      and Bedrock model are substituted in.
-#   4. Annotates the sandbox-agent SA with the IRSA role so the agent can call
-#      Bedrock directly (no proxy).
+#   2. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
+#   3. Applies the namespace, gvisor RuntimeClass, service accounts, sigv4-proxy,
+#      the sandbox-agent worker + Service, and the NetworkPolicies. The image,
+#      region and Bedrock model are substituted in.
+#   4. Annotates the sigv4-proxy SA with the IRSA role and restarts it.
 #
-# No proxies, no operator secrets: the agent clones public repos anonymously and
-# calls Bedrock with its own scoped IRSA role.
+# The AWS credential lives on the sigv4-proxy pod; the sandbox worker holds none.
+# Public repos are cloned directly, so there is no GitHub credential at all.
 
 CLUSTER="$1"
 export CNAME="$2"
@@ -116,7 +115,7 @@ fi
 PF_PID=""
 AGENT_IMAGE="${IMAGE}:${TAG}"
 
-# --- Read terraform outputs (sandbox-agent Bedrock IRSA role) ---
+# --- Read terraform outputs (sigv4-proxy IRSA role) ---
 echo "[agent-sandbox] Reading terraform outputs..."
 cd "$MODULE_DIR/terraform"
 tofu init -reconfigure \
@@ -125,9 +124,9 @@ tofu init -reconfigure \
   -backend-config="region=${STATE_REGION}" \
   -backend-config="dynamodb_table=ciforge-terraform-locks" \
   >/dev/null 2>&1
-AGENT_ROLE_ARN=$(tofu output -raw agent_role_arn)
+SIGV4_ROLE_ARN=$(tofu output -raw sigv4_proxy_role_arn)
 cd - >/dev/null
-echo "[agent-sandbox] sandbox-agent Bedrock IRSA role: ${AGENT_ROLE_ARN}"
+echo "[agent-sandbox] sigv4-proxy IRSA role: ${SIGV4_ROLE_ARN}"
 
 # --- Apply manifests (substitute the agent image + region + model into sandbox-agent) ---
 echo "[agent-sandbox] Applying base manifests (agent image: ${AGENT_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
@@ -137,32 +136,34 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
     -e "s|__BEDROCK_DEFAULT_MODEL_ID__|${BEDROCK_DEFAULT_MODEL_ID}|g" \
   | kubectl_apply_if_changed -f -
 
-# --- Prune the removed credential-proxy resources (idempotent) ---
-# The mitmproxy (agent-vault) + aws-sigv4-proxy were dropped from this module;
-# kubectl apply won't delete resources no longer in the manifest set, so remove
-# them explicitly. Operator-provided secrets (agent-vault-ca, agent-sandbox-creds)
-# are left alone — they were created out-of-band and deleting them is the
-# operator's call.
-echo "[agent-sandbox] Pruning removed proxy resources (if present)..."
-kubectl delete deployment,service,serviceaccount agent-vault sigv4-proxy \
-  -n "$NAMESPACE" --ignore-not-found
-kubectl delete configmap agent-vault-config -n "$NAMESPACE" --ignore-not-found
-# Stale NetworkPolicies from the proxy design: the old `default-deny` (now
-# `default-deny-ingress`) plus the proxy/agent egress policies. Leaving them would
-# keep egress restricted, contradicting the open-egress prototype.
-kubectl delete networkpolicy default-deny proxy-ingress proxy-egress sandbox-agent-egress \
-  -n "$NAMESPACE" --ignore-not-found
+# --- Prune the no-proxy design's NetworkPolicy (idempotent) ---
+# The credential-free design's deny-all is `default-deny` (Ingress + Egress); the
+# IRSA design used `default-deny-ingress`. Same reason as the annotation below:
+# apply can't delete what the manifests no longer contain, so it would linger.
+kubectl delete networkpolicy default-deny-ingress -n "$NAMESPACE" --ignore-not-found
 
-# --- Annotate the sandbox-agent SA with its Bedrock IRSA role ---
-# The pod-identity webhook injects the web-identity token from this annotation
-# (independent of automountServiceAccountToken: false). Restart so running pods
-# pick up a changed role — the image tag is content-addressed, so a code change
-# rolls the pods via the Deployment update above, not via this restart.
-kubectl annotate sa sandbox-agent -n "$NAMESPACE" \
-  eks.amazonaws.com/role-arn="$AGENT_ROLE_ARN" --overwrite
-kubectl rollout restart deployment/sandbox-agent -n "$NAMESPACE"
+# --- Revoke the agent's own AWS identity (idempotent) ---
+# A cluster deployed before the proxies existed has an IRSA role annotated on the
+# sandbox-agent SA. `kubectl apply` won't remove an annotation it no longer sets,
+# so the agent would keep a usable AWS credential and the whole point of the
+# proxies would be silently lost. Strip it, then restart so the pod drops the
+# injected web-identity token.
+if kubectl get sa sandbox-agent -n "$NAMESPACE" \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null | grep -q .; then
+  echo "[agent-sandbox] Removing the stale IRSA role from the sandbox-agent SA..."
+  kubectl annotate sa sandbox-agent -n "$NAMESPACE" eks.amazonaws.com/role-arn- >/dev/null
+  kubectl rollout restart deployment/sandbox-agent -n "$NAMESPACE"
+fi
 
-echo "[agent-sandbox] Waiting for rollout..."
+# --- Annotate the sigv4-proxy SA with its IRSA role, then restart it ---
+# The AWS credential is bound here, not to the agent: the pod-identity webhook
+# injects the web-identity token from this annotation.
+kubectl annotate sa sigv4-proxy -n "$NAMESPACE" \
+  eks.amazonaws.com/role-arn="$SIGV4_ROLE_ARN" --overwrite
+kubectl rollout restart deployment/sigv4-proxy -n "$NAMESPACE"
+
+echo "[agent-sandbox] Waiting for rollouts..."
+kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m || true
 kubectl rollout status deployment/sandbox-agent -n "$NAMESPACE" --timeout=10m || true
 
 echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd:"

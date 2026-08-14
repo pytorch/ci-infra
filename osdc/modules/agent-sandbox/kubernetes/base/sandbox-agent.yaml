@@ -1,12 +1,13 @@
-# The sandbox worker: a long-running HTTP service on the gVisor fleet, callable
-# over the network like buildkitd. __AGENT_IMAGE__ / __AWS_REGION__ /
-# __BEDROCK_DEFAULT_MODEL_ID__ are substituted by deploy.sh (the image it built and
-# pushed to Harbor; the model from clusters.yaml agent_sandbox.default_model_id).
+# The sandbox worker: a long-running, credential-free HTTP service on the gVisor
+# fleet, callable over the network like buildkitd. It clones public repos directly
+# and reaches Bedrock through sigv4-proxy, which holds the AWS credential — so no
+# credential is ever in this pod. __AGENT_IMAGE__ / __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ are
+# substituted by deploy.sh (the image it built and pushed to Harbor; the model
+# from clusters.yaml agent_sandbox.default_model_id).
 #
-# runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under runsc.
-# The only credential it holds is the read-only Bedrock IRSA role bound to the
-# sandbox-agent SA (annotated by deploy.sh) — used directly by boto3. It clones
-# public repos anonymously; no proxies, no mounted secrets.
+# runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under
+# runsc. It holds NO credentials: Bedrock is reached as plain HTTP to sigv4-proxy,
+# which signs with its own IRSA role.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,14 +42,14 @@ spec:
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
-            # Region for boto3 / Bedrock. IRSA injects AWS_ROLE_ARN +
-            # AWS_WEB_IDENTITY_TOKEN_FILE automatically (from the SA annotation).
             - name: AWS_REGION
               value: "__AWS_REGION__"
             # Default model for /run — a caller can override it per request with
             # "model". A cross-region inference profile ID; see clusters.yaml.
             - name: BEDROCK_DEFAULT_MODEL_ID
               value: "__BEDROCK_DEFAULT_MODEL_ID__"
+            - name: SIGV4_PROXY
+              value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
           readinessProbe:
             httpGet:
               path: /healthz
@@ -76,19 +77,3 @@ spec:
             limits:
               cpu: "2"
               memory: "4Gi"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: sandbox-agent
-  namespace: ai-sandbox
-  labels:
-    osdc.io/module: agent-sandbox
-    app: sandbox-agent
-spec:
-  selector:
-    app: sandbox-agent
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http

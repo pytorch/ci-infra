@@ -1,0 +1,135 @@
+# aws-sigv4-proxy (AWS-maintained) — signs the agent's plain HTTP requests with
+# SigV4 using this pod's IRSA identity, then forwards them upstream over HTTPS.
+# Covers all AWS, including Bedrock (bedrock-runtime InvokeModel). The agent
+# sends UNSIGNED requests here with the target AWS host in the Host header; the
+# proxy infers the service and signs. The agent never holds AWS credentials —
+# IRSA STS creds live only in this trusted proxy and auto-rotate.
+#
+# Runs on base infra nodes (tolerates CriticalAddonsOnly), off the sandbox fleet.
+# The SA is annotated with the read-only IRSA role ARN at deploy time (deploy.sh
+# reads the terraform output).
+#
+# PROTOTYPE — VERIFY BEFORE DEPLOY:
+#   * Image tag: pin aws-sigv4-proxy by digest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sigv4-proxy
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: sigv4-proxy
+spec:
+  # 2 for HA: both proxies are stateless per connection, so any replica can serve
+  # any request — it signs each one independently with its own IRSA credentials
+  # and keeps no cross-request state.
+  replicas: 2
+  # The sandbox has no retry, so the old pod must keep serving until the
+  # replacement is Ready — otherwise a rollout fails whatever task is in flight.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: sigv4-proxy
+  template:
+    metadata:
+      labels:
+        app: sigv4-proxy
+        osdc.io/module: agent-sandbox
+    spec:
+      serviceAccountName: sigv4-proxy
+      # Credentials stay on the managed base nodes, never on an ephemeral
+      # Karpenter node that also runs sandboxes.
+      nodeSelector:
+        role: base-infrastructure
+      affinity:
+        # Belt to the nodeSelector's braces: state the security property directly,
+        # so it survives someone repurposing the label above. A credential must
+        # never sit on a node running sandboxes — gVisor is the boundary, and an
+        # escape would land on the host holding this pod's projected token.
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-fleet
+                    operator: NotIn
+                    values: ["ai-sandbox"]
+        # One replica per node, or "HA" is two pods a single drain can take out
+        # together. matchLabelKeys scopes this to the current ReplicaSet
+        # generation, so a rollout isn't blocked by old pods still terminating —
+        # same pattern as modules/bin-pack-scheduler; see
+        # base/helm/harbor/values.yaml for the deadlock it avoids.
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: sigv4-proxy
+              matchLabelKeys:
+                - pod-template-hash
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+      # Drain in-flight requests before SIGTERM: maxUnavailable: 0 guarantees a
+      # Ready endpoint exists, but does nothing for connections already on this
+      # pod. The image is distroless, so an exec preStop would not work; the native
+      # sleep handler does. 30s is ample — a Bedrock invoke takes seconds.
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: sigv4-proxy
+          # TODO(prototype): pin by digest.
+          image: public.ecr.aws/aws-observability/aws-sigv4-proxy:latest
+          args:
+            # No --name: the target service/host comes from each request's Host
+            # header, so one proxy serves bedrock-runtime, cloudwatch, logs, etc.
+            #
+            # NOT --verbose: it dumps every signed request, including the live
+            # X-Amz-Security-Token, into pod logs — which alloy-logging then ships
+            # to Loki. That would put the credential we just took away from the
+            # agent into the logging pipeline instead. Failed requests only.
+            - --log-failed-requests
+            - --port
+            - ":8080"
+          ports:
+            - name: proxy
+              containerPort: 8080
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 2000
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sigv4-proxy
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: sigv4-proxy
+spec:
+  selector:
+    app: sigv4-proxy
+  ports:
+    - name: proxy
+      port: 8080
+      targetPort: proxy
