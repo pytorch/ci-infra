@@ -207,7 +207,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
     parser.add_argument(
         "--ecr-pull-image-name",
-        default="pytorch-linux-jammy-py3.10-clang18",
+        default="pytorch-linux-jammy-linter",
         help="ECR image name used by the test-ecr-pull job (debug override)",
     )
     return parser.parse_args()
