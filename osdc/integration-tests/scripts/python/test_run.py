@@ -1297,7 +1297,7 @@ class TestParseArgs:
             ],
         ):
             args = parse_args()
-        assert args.ecr_pull_image_name == "pytorch-linux-jammy-py3.10-clang21"
+        assert args.ecr_pull_image_name == "pytorch-linux-jammy-linter"
 
     def test_ecr_pull_image_name_override(self):
         with patch(
@@ -1703,7 +1703,7 @@ class TestMain:
             keep_pr=False,
             force=True,
             skip_drain=True,
-            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang21",
+            ecr_pull_image_name="pytorch-linux-jammy-linter",
         )
 
         import logging
@@ -1724,11 +1724,11 @@ class TestMain:
         mock_resolve.assert_called_once_with()
         kwargs = mock_gen.call_args.kwargs
         assert kwargs["ecr_pull_sha"] == "abc123"
-        assert kwargs["ecr_pull_resolved_tag"] == "pytorch-linux-jammy-py3.10-clang21-abc123"
+        assert kwargs["ecr_pull_resolved_tag"] == "pytorch-linux-jammy-linter-abc123"
         assert "tree-SHA: abc123" in caplog.text
         assert (
             "image URL: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:"
-            "pytorch-linux-jammy-py3.10-clang21-abc123"
+            "pytorch-linux-jammy-linter-abc123"
         ) in caplog.text
 
     @patch("run.parse_args")
@@ -1762,7 +1762,7 @@ class TestMain:
             keep_pr=False,
             force=True,
             skip_drain=True,
-            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang21",
+            ecr_pull_image_name="pytorch-linux-jammy-linter",
         )
 
         import logging
@@ -1803,7 +1803,7 @@ class TestMain:
             keep_pr=False,
             force=True,
             skip_drain=True,
-            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang21",
+            ecr_pull_image_name="pytorch-linux-jammy-linter",
         )
 
         with (
@@ -1932,8 +1932,8 @@ class TestVerifyEcrImageExists:
     @patch("run.subprocess.run")
     def test_present_tag_passes(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
-        verify_ecr_image_exists("pytorch-linux-jammy-py3.10-clang21-abc123")
-        assert "imageTag=pytorch-linux-jammy-py3.10-clang21-abc123" in mock_run.call_args[0][0]
+        verify_ecr_image_exists("pytorch-linux-jammy-linter-abc123")
+        assert "imageTag=pytorch-linux-jammy-linter-abc123" in mock_run.call_args[0][0]
 
     @patch("run.subprocess.run")
     def test_missing_tag_exits(self, mock_run):
