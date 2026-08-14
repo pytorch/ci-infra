@@ -27,6 +27,7 @@ from run import (
     resolve,
     run_cmd_with_retry,
     safe_json_loads,
+    verify_ecr_image_exists,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -1549,6 +1550,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo"),
             patch("phases.generate_workflow", return_value="wf content"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch(
                 "phases.prepare_pr",
@@ -1589,6 +1591,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", side_effect=KeyboardInterrupt),
@@ -1630,6 +1633,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", return_value={}),
@@ -1668,6 +1672,7 @@ class TestMain:
             patch("phases.clear_staging_pools") as mock_clear,
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=None),
             patch("phases_validation.run_parallel_validation") as mock_validation,
@@ -1706,6 +1711,7 @@ class TestMain:
         with (
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc123") as mock_resolve,
             patch("phases.generate_workflow", return_value="wf") as mock_gen,
             patch("phases.prepare_pr", return_value=None),
@@ -1917,3 +1923,39 @@ class TestRegionExcludedBlocks:
     def test_missing_fleet_def_returns_empty(self, tmp_path):
         # No modules/nodepools/defs tree → FileNotFoundError handled → empty.
         assert region_excluded_blocks(tmp_path, "us-west-1") == set()
+
+
+class TestVerifyEcrImageExists:
+    """A missing tag must fail here, not two hours later as an unexplained job
+    timeout — but an unavailable checker must not block the whole run."""
+
+    @patch("run.subprocess.run")
+    def test_present_tag_passes(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
+        verify_ecr_image_exists("pytorch-linux-jammy-py3.10-clang21-abc123")
+        assert "imageTag=pytorch-linux-jammy-py3.10-clang21-abc123" in mock_run.call_args[0][0]
+
+    @patch("run.subprocess.run")
+    def test_missing_tag_exits(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=254,
+            stdout="",
+            stderr="An error occurred (ImageNotFoundException) when calling the DescribeImages operation",
+        )
+        with pytest.raises(SystemExit) as exc:
+            verify_ecr_image_exists("pytorch-linux-jammy-py3.10-clang18-abc123")
+        assert exc.value.code == 1
+
+    @patch("run.subprocess.run", side_effect=FileNotFoundError("aws not found"))
+    def test_missing_aws_cli_warns_and_continues(self, _mock_run):
+        verify_ecr_image_exists("any-tag")  # must not raise
+
+    @patch("run.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="aws", timeout=60))
+    def test_timeout_warns_and_continues(self, _mock_run):
+        verify_ecr_image_exists("any-tag")  # must not raise
+
+    @patch("run.subprocess.run")
+    def test_other_aws_error_warns_and_continues(self, mock_run):
+        """Credentials or throttling problems are not evidence the tag is absent."""
+        mock_run.return_value = MagicMock(returncode=255, stdout="", stderr="ExpiredTokenException")
+        verify_ecr_image_exists("any-tag")  # must not raise
