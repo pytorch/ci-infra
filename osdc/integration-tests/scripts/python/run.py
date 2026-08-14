@@ -261,11 +261,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
     parser.add_argument(
         "--ecr-pull-image-name",
-        # Prefer a name that encodes no toolchain version: the tag is
-        # <name>-<tree-SHA>, so anything with a compiler in it breaks on every bump
-        # (clang10 -> 12 -> 15 -> 18 -> 20 -> 21 since May 2025, four of them in the
-        # last 100 docker-builds.yml commits). The linter image has no version in its
-        # name and was renamed once in that period, for the focal -> jammy move.
         default="pytorch-linux-jammy-linter",
         help="ECR image name used by the test-ecr-pull job (debug override)",
     )
