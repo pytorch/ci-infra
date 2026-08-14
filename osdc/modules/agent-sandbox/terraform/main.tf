@@ -1,8 +1,7 @@
-# Read-only IRSA role for the sandbox-agent service account — the ONLY credential
-# the agent holds. Scoped to Bedrock model invocation and nothing else. The agent
-# calls Bedrock directly (AWS SDK signs with this role's STS creds); there is no
-# proxy. IMDS is unreachable from pods (hop-limit 1), so the agent is confined to
-# this scoped role and can never assume the broad node instance role.
+# Read-only IRSA role for the aws-sigv4-proxy service account. This is the ONLY
+# AWS identity in the sandbox, and it lives on the trusted proxy — never on the
+# agent. Scoped to Bedrock model invocation plus read-only CloudWatch/Logs so the
+# agent (via the proxy) can query metrics/logs and call an LLM, and nothing else.
 #
 # Created in the cluster's own state: `just deploy-module <cluster> agent-sandbox`
 # runs this (terraform phase) before the k8s phase.
@@ -40,7 +39,7 @@ locals {
   oidc_provider     = data.terraform_remote_state.base.outputs.oidc_provider
 
   namespace       = "ai-sandbox"
-  service_account = "sandbox-agent"
+  service_account = "sigv4-proxy"
 
   account_id = data.aws_caller_identity.current.account_id
 
@@ -70,8 +69,8 @@ locals {
   }
 }
 
-resource "aws_iam_role" "agent" {
-  name = "${var.cluster_name}-agent-sandbox-bedrock"
+resource "aws_iam_role" "sigv4_proxy" {
+  name = "${var.cluster_name}-agent-sandbox-sigv4-proxy"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -93,8 +92,8 @@ resource "aws_iam_role" "agent" {
   tags = local.tags
 }
 
-resource "aws_iam_policy" "agent" {
-  name = "${var.cluster_name}-agent-sandbox-bedrock"
+resource "aws_iam_policy" "sigv4_proxy" {
+  name = "${var.cluster_name}-agent-sandbox-sigv4-proxy"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -108,13 +107,27 @@ resource "aws_iam_policy" "agent" {
         ]
         Resource = local.bedrock_resources
       },
+      {
+        Sid    = "ReadOnlyObservability"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:GetMetricData",
+          "cloudwatch:GetMetricStatistics",
+          "cloudwatch:ListMetrics",
+          "logs:GetLogEvents",
+          "logs:FilterLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams",
+        ]
+        Resource = "*"
+      },
     ]
   })
 
   tags = local.tags
 }
 
-resource "aws_iam_role_policy_attachment" "agent" {
-  policy_arn = aws_iam_policy.agent.arn
-  role       = aws_iam_role.agent.name
+resource "aws_iam_role_policy_attachment" "sigv4_proxy" {
+  policy_arn = aws_iam_policy.sigv4_proxy.arn
+  role       = aws_iam_role.sigv4_proxy.name
 }
