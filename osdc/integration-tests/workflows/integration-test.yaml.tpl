@@ -1961,8 +1961,9 @@ jobs:
   # Call the sandbox over the network from a regular runner — exactly like a
   # runner calls buildkitd. Proves: (1) the sandbox Service is reachable from
   # arc-runners (NetworkPolicy allow, no RBAC), (2) it clones a public repo
-  # anonymously — no token on the runner or in the agent, and (3) it really
-  # invokes Bedrock with its read-only IRSA role (the only credential it holds).
+  # anonymously with no token on the runner or in the agent, and (3) it really
+  # invokes Bedrock — through sigv4-proxy, which holds the AWS credential so the
+  # sandbox holds none at all.
   test-agent-sandbox:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
@@ -1993,14 +1994,15 @@ jobs:
             echo "FAIL: sandbox did not clone the repo"
             exit 1
           fi
-          echo "PASS: sandbox cloned a public repo anonymously — no token on the runner or agent"
+          echo "PASS: sandbox cloned a public repo anonymously — no token on the runner or in the agent"
           # Bedrock is a hard assertion: a model is configured (clusters.yaml
-          # agent_sandbox.default_model_id) and the agent's IRSA role is the only
-          # credential it holds, so a non-empty report proves the whole
-          # credential path works. errors.bedrock means it did not.
+          # agent_sandbox.default_model_id) and the sandbox itself holds no AWS
+          # credential, so a non-empty report proves the whole signing path works:
+          # unsigned request out of the agent, signed by sigv4-proxy with its IRSA
+          # role, answered by Bedrock. errors.bedrock means it did not.
           if echo "$RESP" | grep -q '"bedrock"'; then
             echo "FAIL: Bedrock invocation errored — see errors.bedrock above"
-            echo "  (model not enabled in this region, or the IRSA role lacks bedrock:InvokeModel"
+            echo "  (model not enabled in this region, or the sigv4-proxy IRSA role lacks bedrock:InvokeModel"
             echo "   on the inference profile / cross-region foundation models)"
             exit 1
           fi
@@ -2014,5 +2016,5 @@ jobs:
             echo "FAIL: prompt was not grounded — top_level listing is empty"
             exit 1
           fi
-          echo "PASS: Bedrock InvokeModel via the agent's read-only IRSA role returned a report"
+          echo "PASS: Bedrock InvokeModel via sigv4-proxy returned a report — the sandbox signed nothing itself"
   # END_AGENT_SANDBOX

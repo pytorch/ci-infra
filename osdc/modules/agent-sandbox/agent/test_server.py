@@ -1,47 +1,21 @@
 """Tests for the sandbox agent worker (server.py).
 
-boto3 is installed in the agent image, not in this repo's venv, so it is stubbed
-into sys.modules before importing the worker. Everything else runs for real:
-`top_level_entries` against a real git repo, and the HTTP surface against a real
-socket.
+The worker is stdlib-only — it reaches Bedrock through the sigv4 proxy over plain
+HTTP — so nothing needs stubbing. Everything runs for real: `clone_repo` against a
+real git repo (redirected off the network), `invoke_bedrock` against a fake sigv4
+proxy on a real socket, and the HTTP surface against a real socket.
 """
 
 import json
 import subprocess
-import sys
-import types
+import threading
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 import pytest
-
-
-def _install_boto3_stub() -> None:
-    """Minimal stand-ins for the two AWS imports server.py makes at module scope."""
-    if "boto3" not in sys.modules:
-        boto3 = types.ModuleType("boto3")
-        boto3.client = lambda *a, **kw: None  # replaced per-test via monkeypatch
-        sys.modules["boto3"] = boto3
-    if "botocore.exceptions" not in sys.modules:
-        botocore = sys.modules.setdefault("botocore", types.ModuleType("botocore"))
-        exceptions = types.ModuleType("botocore.exceptions")
-
-        class BotoCoreError(Exception):
-            pass
-
-        class ClientError(Exception):
-            pass
-
-        exceptions.BotoCoreError = BotoCoreError
-        exceptions.ClientError = ClientError
-        botocore.exceptions = exceptions
-        sys.modules["botocore.exceptions"] = exceptions
-
-
-_install_boto3_stub()
-
-import server  # noqa: E402  (must follow the boto3 stub)
+import server
 
 
 def _git_repo(path, entries):
@@ -133,30 +107,63 @@ class TestBuildPrompt:
         assert "Top-level entries" not in prompt
 
 
+@pytest.fixture
+def fake_sigv4_proxy(monkeypatch):
+    """Stand in for aws-sigv4-proxy: record what the worker sent, reply with a
+    Bedrock-shaped body. The real proxy adds the SigV4 signature — the worker
+    deliberately sends an unsigned request, which is the whole point of the
+    design, so there is no credential here to assert on."""
+    seen = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["path"] = self.path
+            seen["headers"] = dict(self.headers)
+            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            payload = json.dumps(seen.get("reply", {"content": [{"type": "text", "text": "the report"}]})).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    Thread(target=httpd.serve_forever, daemon=True).start()
+    monkeypatch.setattr(server, "SIGV4_PROXY", f"127.0.0.1:{httpd.server_address[1]}")
+    yield seen
+    httpd.shutdown()
+    httpd.server_close()
+
+
 class TestInvokeBedrock:
-    def test_sends_the_messages_api_body_and_returns_the_text(self, monkeypatch):
-        captured = {}
+    def test_posts_an_unsigned_messages_api_request_to_the_proxy(self, fake_sigv4_proxy):
+        model = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        assert server.invoke_bedrock(model, "hello") == "the report"
 
-        class FakeClient:
-            def invoke_model(self, **kwargs):
-                captured.update(kwargs)
-                payload = json.dumps({"content": [{"type": "text", "text": "the report"}]})
-                return {"body": types.SimpleNamespace(read=lambda: payload.encode())}
-
-        monkeypatch.setattr(server.boto3, "client", lambda *a, **kw: FakeClient(), raising=False)
-        assert server.invoke_bedrock("us.anthropic.claude-haiku-4-5-20251001-v1:0", "hello") == "the report"
-
-        assert captured["modelId"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-        body = json.loads(captured["body"])
+        assert fake_sigv4_proxy["path"] == f"/model/{model}/invoke"
+        body = fake_sigv4_proxy["body"]
         assert body["anthropic_version"] == "bedrock-2023-05-31"
         assert body["messages"] == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
 
-    def test_empty_content_yields_empty_report(self, monkeypatch):
-        class FakeClient:
-            def invoke_model(self, **kwargs):
-                return {"body": types.SimpleNamespace(read=lambda: b'{"content": []}')}
+    def test_sets_the_bedrock_host_header_for_the_proxy_to_sign(self, fake_sigv4_proxy):
+        """aws-sigv4-proxy signs for the upstream named in Host; without it the
+        request would be signed for (and sent to) the wrong service."""
+        server.invoke_bedrock("m", "hello")
+        assert fake_sigv4_proxy["headers"]["Host"] == f"bedrock-runtime.{server.REGION}.amazonaws.com"
 
-        monkeypatch.setattr(server.boto3, "client", lambda *a, **kw: FakeClient(), raising=False)
+    def test_carries_no_credential(self, fake_sigv4_proxy):
+        """The worker must never hold or send AWS credentials — signing is the
+        proxy's job."""
+        server.invoke_bedrock("m", "hello")
+        sent = {k.lower() for k in fake_sigv4_proxy["headers"]}
+        assert "authorization" not in sent
+        assert not any(h.startswith("x-amz-security-token") for h in sent)
+
+    def test_empty_content_yields_empty_report(self, fake_sigv4_proxy):
+        fake_sigv4_proxy["reply"] = {"content": []}
         assert server.invoke_bedrock("m", "hello") == ""
 
 
@@ -213,7 +220,7 @@ class TestRunTask:
 
     def test_bedrock_failure_is_captured(self, monkeypatch):
         def boom(model, prompt):
-            raise server.ClientError("AccessDeniedException: not authorized")
+            raise urllib.error.URLError("sigv4-proxy unreachable")
 
         monkeypatch.setattr(server, "clone_repo", lambda *a, **kw: 1)
         monkeypatch.setattr(server, "top_level_entries", lambda dest: ["README.md"])
@@ -221,7 +228,7 @@ class TestRunTask:
 
         result = server.run_task({"repo": "org/repo", "model": "m"})
         assert result["cloned"] is True
-        assert "AccessDeniedException" in result["errors"]["bedrock"]
+        assert "sigv4-proxy unreachable" in result["errors"]["bedrock"]
 
 
 @pytest.fixture
@@ -272,6 +279,52 @@ class TestHTTPSurface:
     def test_run_returns_the_task_result(self, worker, monkeypatch):
         monkeypatch.setattr(server, "run_task", lambda spec: {"cloned": True, "report": f"ran {spec['repo']}"})
         assert _post(f"{worker}/run", {"repo": "org/repo"}) == {"cloned": True, "report": "ran org/repo"}
+
+
+class TestConcurrency:
+    def test_healthz_answers_while_a_task_runs(self, worker, monkeypatch):
+        """A single-threaded server starves /healthz during a clone, the readiness
+        probe times out, and the pod is dropped from the Service mid-task —
+        observed on the live cluster."""
+        started, release = threading.Event(), threading.Event()
+
+        def slow(spec):
+            started.set()
+            release.wait(10)
+            return {"cloned": True}
+
+        monkeypatch.setattr(server, "run_task", slow)
+        task = Thread(target=lambda: _post(f"{worker}/run", {"repo": "org/repo"}), daemon=True)
+        task.start()
+        assert started.wait(5), "task never started"
+        try:
+            assert json.loads(_get(f"{worker}/healthz").read()) == {"status": "ok"}
+        finally:
+            release.set()
+            task.join(10)
+
+    def test_second_task_is_refused_not_queued(self, worker, monkeypatch):
+        """One task at a time is still enforced — by the lock, not by blocking the
+        listener, so the caller gets a clear 429 instead of hanging."""
+        started, release = threading.Event(), threading.Event()
+
+        def slow(spec):
+            started.set()
+            release.wait(10)
+            return {"cloned": True}
+
+        monkeypatch.setattr(server, "run_task", slow)
+        first = Thread(target=lambda: _post(f"{worker}/run", {"repo": "org/repo"}), daemon=True)
+        first.start()
+        assert started.wait(5), "first task never started"
+        try:
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                _post(f"{worker}/run", {"repo": "org/other"})
+            assert exc.value.code == 429
+            assert "busy" in json.loads(exc.value.read())["error"]
+        finally:
+            release.set()
+            first.join(10)
 
 
 class TestMain:
