@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Sandbox agent HTTP worker.
 
-A long-running worker — callable over the network like buildkitd (a runner does
-`curl sandbox-agent.ai-sandbox.svc:8080/run ...`, no K8s RBAC, just a NetworkPolicy
-allow). It runs under gVisor on the ai-sandbox fleet.
+A long-running, credential-free worker — callable over the network exactly like
+buildkitd (a runner does `curl sandbox-agent.ai-sandbox.svc:8080/run ...`, no K8s
+RBAC, just a NetworkPolicy allow). It runs under gVisor on the ai-sandbox fleet.
 
-Credentials: the ONLY credential the agent holds is a read-only Bedrock IRSA role
-(bound to its ServiceAccount). It clones PUBLIC repos anonymously (no token) and
-calls Bedrock directly with boto3 (which uses the IRSA web-identity credentials).
+It holds NO credentials: it clones public repos anonymously and calls Bedrock
+through the sigv4 proxy, which signs with its own IRSA identity. This process
+never sees a token.
 
 Endpoints:
   GET  /healthz  -> {"status": "ok"}
@@ -15,7 +15,7 @@ Endpoints:
                     {"cloned": bool, "file_count": int, "top_level": [str],
                      "report": str, "errors": {...}}
 
-Single worker, one task at a time (prototype).
+Threaded listener, one task at a time (_TASK_LOCK). stdlib only.
 """
 
 from __future__ import annotations
@@ -25,15 +25,21 @@ import os
 import socket
 import subprocess
 import tempfile
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+import threading
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PORT", "8080"))
 REGION = os.environ.get("AWS_REGION", "us-east-1")
+SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
+BEDROCK_TIMEOUT_S = 120
+# One task at a time (prototype, like buildkitd max-parallelism=1). Held while a
+# task runs so /healthz and a second /run stay answerable instead of queueing
+# behind it on the listener.
+_TASK_LOCK = threading.Lock()
 
 
 def clone_repo(repo: str, ref: str, dest: str) -> int:
@@ -44,6 +50,8 @@ def clone_repo(repo: str, ref: str, dest: str) -> int:
         capture_output=True,
         text=True,
         timeout=CLONE_TIMEOUT_S,
+        # A private repo would otherwise make git prompt for a username and block
+        # until the clone timeout instead of failing.
         env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
     listing = subprocess.run(
@@ -72,17 +80,25 @@ def top_level_entries(dest: str) -> list[str]:
 
 
 def invoke_bedrock(model: str, prompt: str) -> str:
-    """Call Bedrock InvokeModel directly via boto3 (signed with the pod's IRSA creds)."""
+    """Call Bedrock InvokeModel through the sigv4 proxy (unsigned in, signed out)."""
     body = json.dumps(
         {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 1024,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         }
+    ).encode()
+    req = urllib.request.Request(
+        f"http://{SIGV4_PROXY}/model/{model}/invoke",
+        data=body,
+        method="POST",
+        headers={
+            "Host": f"bedrock-runtime.{REGION}.amazonaws.com",
+            "Content-Type": "application/json",
+        },
     )
-    client = boto3.client("bedrock-runtime", region_name=REGION)
-    resp = client.invoke_model(modelId=model, body=body, contentType="application/json", accept="application/json")
-    payload = json.loads(resp["body"].read())
+    with urllib.request.urlopen(req, timeout=BEDROCK_TIMEOUT_S) as resp:  # noqa: S310
+        payload = json.loads(resp.read())
     content = payload.get("content") or []
     return content[0]["text"] if content else ""
 
@@ -140,7 +156,7 @@ def run_task(spec: dict) -> dict:
         prompt = build_prompt(repo, ref, task, result["file_count"], entries)
         try:
             result["report"] = invoke_bedrock(model, prompt)
-        except (BotoCoreError, ClientError, KeyError, ValueError) as exc:
+        except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as exc:
             result["errors"]["bedrock"] = str(exc)
 
     return result
@@ -173,16 +189,27 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc:
             self._send(400, {"error": str(exc)})
             return
-        self._send(200, run_task(spec))
+        if not _TASK_LOCK.acquire(blocking=False):
+            self._send(429, {"error": "busy: one task at a time"})
+            return
+        try:
+            self._send(200, run_task(spec))
+        finally:
+            _TASK_LOCK.release()
 
     def log_message(self, fmt: str, *args) -> None:
         print(f"[sandbox-agent] {fmt % args}")
 
 
-class HTTPServerV6(HTTPServer):
+class HTTPServerV6(ThreadingHTTPServer):
     # OSDC EKS is IPv6-only: the pod IP (and the readiness probe / Service target)
     # are IPv6, so the listener must bind :: — a default AF_INET server binds
     # 0.0.0.0 and is unreachable on this cluster.
+    #
+    # Threading, because a single-threaded server cannot answer /healthz while a
+    # task is running: the readiness probe then times out mid-clone, the pod is
+    # dropped from the Service, and callers get connection refused. One task at a
+    # time is still enforced, by _TASK_LOCK rather than by blocking the listener.
     address_family = socket.AF_INET6
 
 
