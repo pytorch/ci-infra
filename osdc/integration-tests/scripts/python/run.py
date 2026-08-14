@@ -207,7 +207,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
     parser.add_argument(
         "--ecr-pull-image-name",
-        default="pytorch-linux-jammy-py3.10-clang18",
+        # Must be a name pytorch currently builds (see their docker-builds.yml
+        # matrix). A retired name fails identically to a not-yet-built image, but
+        # permanently — clang18 was dropped for clang21 and every run hung for 2h.
+        default="pytorch-linux-jammy-py3.10-clang21",
         help="ECR image name used by the test-ecr-pull job (debug override)",
     )
     return parser.parse_args()
