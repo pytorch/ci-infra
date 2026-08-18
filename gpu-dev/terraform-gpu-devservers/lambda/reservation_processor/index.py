@@ -106,6 +106,19 @@ SPOT_GPU_TYPES = os.environ.get("SPOT_GPU_TYPES", "")
 ASG_NAME_PREFIX = os.environ.get("ASG_NAME_PREFIX", "pytorch-gpu-dev-gpu-nodes")
 
 
+class SnapshotPendingError(RuntimeError):
+    """A disk snapshot is still pending and allocation should be retried later."""
+
+
+class ReservationTerminatedError(RuntimeError):
+    """A stale request attempted to overwrite a terminated reservation."""
+
+
+TERMINATED_RESERVATION_STATUSES = {
+    "cancelled", "canceled", "expired", "failed", "completed"
+}
+
+
 def _is_spot_type(gpu_type: str) -> bool:
     if not SPOT_GPU_TYPES:
         return False
@@ -2843,6 +2856,45 @@ def setup_multinode_ssh(pod_names: list, gpus_per_node: int):
     logger.info(f"✓ Multinode SSH setup complete for {len(pod_names)} pods")
 
 
+def _reservation_is_terminated(reservation_id: str) -> bool:
+    """Return whether a reservation must not be created or retried."""
+    item = dynamodb.Table(RESERVATIONS_TABLE).get_item(
+        Key={"reservation_id": reservation_id}, ConsistentRead=True
+    ).get("Item", {})
+    return bool(
+        item.get("cancelled_at")
+        or item.get("status") in TERMINATED_RESERVATION_STATUSES
+    )
+
+
+def _put_reservation_record(table, item: dict[str, Any]) -> None:
+    """Atomically write a reservation without overwriting a terminal state."""
+    try:
+        table.put_item(
+            Item=item,
+            ConditionExpression=(
+                "attribute_not_exists(reservation_id) OR "
+                "(attribute_not_exists(cancelled_at) AND "
+                "(attribute_not_exists(#status) OR "
+                "(#status <> :cancelled AND #status <> :canceled AND "
+                "#status <> :expired AND #status <> :failed AND "
+                "#status <> :completed)))"
+            ),
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":cancelled": "cancelled",
+                ":canceled": "canceled",
+                ":expired": "expired",
+                ":failed": "failed",
+                ":completed": "completed",
+            },
+        )
+    except botocore.exceptions.ClientError as error:
+        if error.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise ReservationTerminatedError(item["reservation_id"]) from error
+        raise
+
+
 def process_reservation_request(record: dict[str, Any]) -> bool:
     """Process individual reservation request"""
     try:
@@ -2861,13 +2913,19 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
 
         logger.info(f"Processing reservation: {reservation_request}")
 
+        reservation_id = reservation_request.get("reservation_id")
+        if reservation_id and _reservation_is_terminated(reservation_id):
+            logger.info(
+                f"Ignoring stale SQS retry for terminated reservation {reservation_id}"
+            )
+            return True
+
         # Check if this is a multinode reservation
         is_multinode = reservation_request.get("is_multinode", False)
         if is_multinode:
             return process_multinode_reservation_request(reservation_request)
 
         # Create initial reservation record in DynamoDB
-        reservation_id = reservation_request.get("reservation_id")
         if reservation_id:
             try:
                 # Create initial reservation record with pending status
@@ -2919,12 +2977,17 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
 
                 # Store initial record
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                reservations_table.put_item(Item=initial_record)
+                _put_reservation_record(reservations_table, initial_record)
                 record_trace_event(trace_data if trace_enabled else None, "dynamodb_initial_write")
 
                 logger.info(
                     f"Created initial reservation record: {reservation_id}")
 
+            except ReservationTerminatedError:
+                logger.info(
+                    f"Reservation {reservation_id} was terminated while its request was starting"
+                )
+                return True
             except Exception as record_error:
                 logger.error(
                     f"Failed to create initial reservation record: {record_error}"
@@ -2980,12 +3043,28 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 )
 
             # Create reservation
-            reservation_id = create_reservation(reservation_request)
+            try:
+                reservation_id = create_reservation(reservation_request)
+            except ReservationTerminatedError:
+                logger.info(
+                    f"Reservation {reservation_id} was terminated before allocation"
+                )
+                return True
             logger.info(f"Created reservation: {reservation_id}")
 
             # Allocate resources (K8s pod creation would go here)
-            allocate_gpu_resources(reservation_id, reservation_request, trace_data if trace_enabled else None)
-            return True  # Successfully processed
+            try:
+                allocate_gpu_resources(
+                    reservation_id,
+                    reservation_request,
+                    trace_data if trace_enabled else None,
+                )
+            except SnapshotPendingError as snapshot_pending:
+                if not _reservation_is_terminated(reservation_id):
+                    update_reservation_status(
+                        reservation_id, "queued", str(snapshot_pending)
+                    )
+            return True  # Successfully processed or queued for a snapshot retry
         else:
             # Insufficient resources - set to queued and let scheduled Lambda handle it
             reservation_id = reservation_request.get("reservation_id")
@@ -3438,7 +3517,7 @@ def create_reservation(request: dict[str, Any]) -> str:
         reservation["lambda_version"] = LAMBDA_VERSION
 
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-        reservations_table.put_item(Item=reservation)
+        _put_reservation_record(reservations_table, reservation)
 
         logger.info(f"Created reservation record: {reservation_id}")
         return reservation_id
@@ -3748,6 +3827,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             github_public_key = ssh_future.result()
             try:
                 disk_result = disk_future.result()
+            except SnapshotPendingError:
+                raise
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
                 error_msg = str(disk_error)
@@ -4138,6 +4219,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             f"Successfully created pod {pod_name} with SSH access on port {node_port}"
         )
 
+    except SnapshotPendingError:
+        raise
     except Exception as e:
         logger.error(f"Error allocating GPU resources: {str(e)}")
         # Store trace data even on failure if tracing is enabled
@@ -7308,30 +7391,13 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
         if pending_snapshots:
             latest_pending = max(pending_snapshots, key=lambda s: s['StartTime'])
             snapshot_id = latest_pending['SnapshotId']
-            logger.warning(f"Found pending snapshot {snapshot_id} for disk '{disk_name or 'default'}' - waiting for completion")
-
-            # Update reservation status to show we're waiting
-            if reservation_id:
-                update_reservation_status(
-                    reservation_id,
-                    "preparing",
-                    f"Waiting for disk snapshot to complete (from previous session)"
-                )
-
-            # Wait for pending snapshot to complete (up to 30 minutes)
-            try:
-                waiter = ec2_client.get_waiter('snapshot_completed')
-                waiter.wait(
-                    SnapshotIds=[snapshot_id],
-                    WaiterConfig={
-                        'Delay': 15,
-                        'MaxAttempts': 120  # 30 minutes
-                    }
-                )
-                logger.info(f"Pending snapshot {snapshot_id} completed, proceeding with disk creation")
-            except Exception as wait_error:
-                logger.error(f"Timeout waiting for snapshot {snapshot_id}: {wait_error}")
-                raise RuntimeError(f"Disk '{disk_name or 'default'}' snapshot is still being created from previous session. Please wait a few minutes and try again.")
+            progress = latest_pending.get('Progress', 'unknown')
+            message = (
+                f"Waiting for disk snapshot {snapshot_id} to complete "
+                f"({progress})"
+            )
+            logger.info(message)
+            raise SnapshotPendingError(message)
 
         # Now find latest completed snapshot (excluding soft-deleted ones)
         snapshot_filters = [
@@ -7381,20 +7447,11 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                         if snap_list:
                             clone_snapshot = snap_list[0]
                             if clone_snapshot['State'] == 'pending':
-                                logger.info(f"Clone source snapshot {clone_source} is pending for disk '{disk_name}' - waiting for completion")
-                                if reservation_id:
-                                    update_reservation_status(
-                                        reservation_id,
-                                        "preparing",
-                                        "Waiting for cloned disk snapshot to complete"
-                                    )
-                                waiter = ec2_client.get_waiter('snapshot_completed')
-                                waiter.wait(
-                                    SnapshotIds=[clone_source],
-                                    WaiterConfig={'Delay': 15, 'MaxAttempts': 120}
+                                progress = clone_snapshot.get('Progress', 'unknown')
+                                raise SnapshotPendingError(
+                                    f"Waiting for cloned disk snapshot {clone_source} "
+                                    f"to complete ({progress})"
                                 )
-                                snap_response = ec2_client.describe_snapshots(SnapshotIds=[clone_source])
-                                clone_snapshot = snap_response.get('Snapshots', [])[0]
 
                             if clone_snapshot['State'] == 'completed':
                                 latest_snapshot = clone_snapshot
@@ -9059,6 +9116,12 @@ def process_scheduled_queue_management():
                                 reservation_id,
                                 "queued",
                                 "Allocation failed, back to queue",
+                            )
+                    except SnapshotPendingError as snapshot_pending:
+                        logger.info(str(snapshot_pending))
+                        if not _reservation_is_terminated(reservation_id):
+                            update_reservation_status(
+                                reservation_id, "queued", str(snapshot_pending)
                             )
                     except Exception as alloc_error:
                         logger.error(
