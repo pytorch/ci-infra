@@ -1,0 +1,80 @@
+# The sandbox worker: a long-running, credential-free HTTP service on the gVisor
+# fleet, callable over the network like buildkitd. It clones public repos directly
+# and reaches Bedrock through sigv4-proxy, which holds the AWS credential — so no
+# credential is ever in this pod. __AGENT_IMAGE__ / __AWS_REGION__ /
+# __BEDROCK_DEFAULT_MODEL_ID__ are substituted by deploy.sh (from clusters.yaml
+# agent_sandbox.agent_image and agent_sandbox.default_model_id).
+#
+# runtimeClassName: gvisor pins it to the ai-sandbox fleet and runs it under
+# runsc. It holds NO credentials: Bedrock is reached as plain HTTP to sigv4-proxy,
+# which signs with its own IRSA role.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-agent
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: sandbox-agent
+spec:
+  # Prototype: one warm worker, one task at a time (like buildkitd max-parallelism=1).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-agent
+  template:
+    metadata:
+      labels:
+        app: sandbox-agent
+        osdc.io/module: agent-sandbox
+    spec:
+      runtimeClassName: gvisor
+      serviceAccountName: sandbox-agent
+      automountServiceAccountToken: false
+      containers:
+        - name: agent
+          image: __AGENT_IMAGE__
+          # Prototype uses a mutable :prototype tag; re-pull on every start so a
+          # fresh push is picked up.
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: AWS_REGION
+              value: "__AWS_REGION__"
+            # Default model for /run — a caller can override it per request with
+            # "model". A cross-region inference profile ID; see clusters.yaml.
+            - name: BEDROCK_DEFAULT_MODEL_ID
+              value: "__BEDROCK_DEFAULT_MODEL_ID__"
+            - name: SIGV4_PROXY
+              value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          # requests == limits (Guaranteed QoS) so sandbox capacity per node is a
+          # division, not a guess — and so one untrusted sandbox can't burst into
+          # another's CPU.
+          #
+          # A 2 vCPU / 4 GiB slot fills both dimensions of the c7a.2xlarge fleet
+          # node at the same rate, landing on 3 sandboxes per node: 7.00 vCPU /
+          # 12482 MiB are free for sandboxes (7.91 vCPU / 14624 MiB allocatable
+          # less the 0.92 vCPU / 2142 MiB the fleet's daemonsets request — both
+          # measured on a live node), and 7.00/2 = 3, 12482/4096 = 3.
+          # See modules/nodepools-agent-sandbox/defs/ai-sandbox.yaml.
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
