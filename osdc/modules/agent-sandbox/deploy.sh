@@ -5,11 +5,13 @@ set -euo pipefail
 # Args: $1=cluster-id  $2=cluster-name  $3=region
 #
 # Deploys the sandbox:
-#   1. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
-#   2. Applies the namespace, gvisor RuntimeClass, service accounts, sigv4-proxy,
-#      the sandbox-agent worker + Service, and the NetworkPolicies. The agent image
-#      + region are substituted from clusters.yaml.
-#   3. Annotates the sigv4-proxy SA with the IRSA role and restarts it.
+#   1. Builds the agent image and pushes it to the in-cluster Harbor `osdc`
+#      project under a content-hash tag (skipped if that tag already exists).
+#   2. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
+#   3. Applies the namespace, gvisor RuntimeClass, service accounts, sigv4-proxy,
+#      the sandbox-agent worker + Service, and the NetworkPolicies. The image,
+#      region and Bedrock model are substituted in.
+#   4. Annotates the sigv4-proxy SA with the IRSA role and restarts it.
 #
 # The AWS credential lives on the sigv4-proxy pod; the sandbox worker holds none.
 # Public repos are cloned directly, so there is no GitHub credential at all.
@@ -29,13 +31,19 @@ source "$UPSTREAM_ROOT/scripts/state-config.sh"
 : "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
+# --- Cleanup trap (Harbor port-forward + temp files) ---
+PF_PID=""
+NETRC_FILE=""
+IMAGE_TAR=""
+cleanup() {
+  [[ -n "$PF_PID" ]] && { kill "$PF_PID" && wait "$PF_PID"; } 2>/dev/null || true
+  [[ -n "$NETRC_FILE" ]] && rm -f "$NETRC_FILE" 2>/dev/null || true
+  [[ -n "$IMAGE_TAR" ]] && rm -f "$IMAGE_TAR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 NAMESPACE=ai-sandbox
 BUCKET_CFG=$(uv run "$CFG" "$CLUSTER" state_bucket)
-AGENT_IMAGE=$(uv run "$CFG" "$CLUSTER" agent_sandbox.agent_image "")
-if [[ -z "$AGENT_IMAGE" ]]; then
-  echo "[agent-sandbox] ERROR: agent_sandbox.agent_image not set for $CLUSTER in clusters.yaml" >&2
-  exit 1
-fi
 # Bedrock model for /run. Required: without it the agent clones but every task
 # returns errors.bedrock="no model configured".
 BEDROCK_DEFAULT_MODEL_ID=$(uv run "$CFG" "$CLUSTER" agent_sandbox.default_model_id "")
@@ -44,7 +52,70 @@ if [[ -z "$BEDROCK_DEFAULT_MODEL_ID" ]]; then
   exit 1
 fi
 
-# --- Read terraform outputs (sandbox-agent Bedrock IRSA role) ---
+# --- Build + push the agent image (mirrors modules/zombie-cleanup) ---
+# Content-hash tag over the image inputs, so a code change deploys a new immutable
+# tag and an unchanged tree skips the build entirely. Tests are excluded — they
+# never enter the image, and hashing them would rebuild on test-only edits.
+IMAGE="harbor:30002/osdc/ci-agent-sandbox"
+TAG=$(find "$MODULE_DIR/agent" \( -name '*.py' -o -name 'Dockerfile' \) \
+  ! -name 'test_*' ! -name 'conftest.py' -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)
+
+HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
+  -o jsonpath='{.data.password}' | base64 -d)
+NETRC_FILE=$(mktemp)
+chmod 600 "$NETRC_FILE"
+cat >"$NETRC_FILE" <<EOF
+machine localhost
+login admin
+password ${HARBOR_ADMIN_PW}
+EOF
+
+kubectl port-forward -n harbor-system svc/harbor 8081:80 &
+PF_PID=$!
+for i in $(seq 1 30); do
+  if curl -s -o /dev/null "http://localhost:8081/api/v2.0/health" 2>/dev/null; then
+    break
+  fi
+  if [[ "$i" -eq 30 ]]; then
+    echo "[agent-sandbox] ERROR: Harbor port-forward not ready after 30s" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+# Nodes pull anonymously through the harbor:30002 mirror, so the project must be public.
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X POST "http://localhost:8081/api/v2.0/projects" \
+  --netrc-file "$NETRC_FILE" \
+  -H "Content-Type: application/json" \
+  -d '{"project_name":"osdc","public":true}')
+case "$HTTP_CODE" in
+  201) echo "[agent-sandbox] Created Harbor project 'osdc'" ;;
+  409) : ;; # already exists
+  *) echo "[agent-sandbox] Warning: Harbor project creation returned HTTP $HTTP_CODE" ;;
+esac
+
+crane auth login localhost:8081 -u admin -p "$HARBOR_ADMIN_PW" --insecure
+if crane manifest "localhost:8081/osdc/ci-agent-sandbox:${TAG}" --insecure >/dev/null 2>&1; then
+  echo "[agent-sandbox] Image osdc/ci-agent-sandbox:${TAG} already exists — skipping build."
+else
+  echo "[agent-sandbox] Building agent image (tag: ${TAG})..."
+  # amd64: the ai-sandbox fleet is a single x86 instance type (defs/ai-sandbox.yaml).
+  docker build --platform linux/amd64 -t "ci-agent-sandbox:${TAG}" "$MODULE_DIR/agent"
+  echo "[agent-sandbox] Pushing image to Harbor..."
+  IMAGE_TAR=$(mktemp)
+  docker save "ci-agent-sandbox:${TAG}" -o "$IMAGE_TAR"
+  crane push "$IMAGE_TAR" "localhost:8081/osdc/ci-agent-sandbox:${TAG}" --insecure
+  rm -f "$IMAGE_TAR"
+  IMAGE_TAR=""
+fi
+
+# `wait` reaps the job so bash doesn't print "Terminated" into the deploy log.
+{ kill "$PF_PID" && wait "$PF_PID"; } 2>/dev/null || true
+PF_PID=""
+AGENT_IMAGE="${IMAGE}:${TAG}"
+
+# --- Read terraform outputs (sigv4-proxy IRSA role) ---
 echo "[agent-sandbox] Reading terraform outputs..."
 cd "$MODULE_DIR/terraform"
 tofu init -reconfigure \
