@@ -80,3 +80,4 @@ Reference documentation in `docs/`:
 | `docs/arc-fork-build-deploy.md` | ARC fork (jeanschmidt/actions-runner-controller) build/release workflow and chart publishing |
 | `docs/pypi-package-cache.md` | PyPI wheel cache architecture, slug naming, S3 layout, runner integration |
 | `docs/h100-fabric-handles-imex-channels.md` | Enabling CUDA fabric handles (`CU_MEM_HANDLE_TYPE_FABRIC`) on H100 runners — IMEX channel creation, the gated fabric runner, and verification |
+| `docs/dcgm-exporter-memory-tuning.md` | Why dcgm-exporter OOMs on high-vCPU GPU nodes (Go 1.24 GOMAXPROCS defaults to host vCPU count) and the GOMAXPROCS=2 fix |
