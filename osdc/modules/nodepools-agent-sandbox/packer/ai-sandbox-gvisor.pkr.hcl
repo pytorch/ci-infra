@@ -95,7 +95,9 @@ source "amazon-ebs" "ai_sandbox" {
 
   # Otherwise Packer opens :22 to 0.0.0.0/0 for the build. The address comes from
   # checkip.amazonaws.com, so if the builder's SSH egress differs (NAT pool, VPN)
-  # SSH hangs — pass -var 'temporary_security_group_source_cidrs=[...]' instead.
+  # SSH hangs — replace this line with temporary_security_group_source_cidrs =
+  # ["x.x.x.x/32"]. Both are builder settings, not -var inputs, and setting both
+  # is an error.
   temporary_security_group_source_public_ip = true
 
   # Karpenter selects by tag (defs/ai-sandbox.yaml), so the name is free to change.
