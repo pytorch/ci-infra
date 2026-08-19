@@ -57,6 +57,10 @@ spec:
               value: ":9400"
             - name: GOMEMLIMIT
               value: "410MiB"
+            # Go 1.24 image has no cgroup-aware GOMAXPROCS; unset it defaults to the host
+            # vCPU count (up to 192 on 8-GPU nodes) — pin it so runtime memory stays under 512Mi.
+            - name: GOMAXPROCS
+              value: "2"
           resources:
             requests:
               cpu: 100m
