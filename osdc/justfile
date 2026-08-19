@@ -2551,19 +2551,58 @@ lint:
         return $rc
     }
 
+    # Terraform roots: every main.tf that is not a nested submodule of one. The
+    # exclusion has to name terraform/modules specifically — every root here lives
+    # under osdc/modules/, so a bare '*/modules/*' matches all of them and silently
+    # leaves nothing to lint.
+    _tf_roots() {
+        for parent in $(_src_dirs base) $(_src_dirs modules); do
+            find "$parent" -path '*/.scratch' -prune -o \
+                -name 'main.tf' -not -path '*/terraform/modules/*' -print0 2>/dev/null
+        done
+    }
+
     lint_tflint() {
         local roots=()
-        for parent in $(_src_dirs modules); do
-            while IFS= read -r -d '' f; do
-                roots+=("$(dirname "$f")")
-            done < <(find "$parent" -path '*/.scratch' -prune -o -name 'main.tf' -not -path '*/modules/*' -print0 2>/dev/null)
-        done
+        while IFS= read -r -d '' f; do
+            roots+=("$(dirname "$f")")
+        done < <(_tf_roots)
         [[ ${#roots[@]} -eq 0 ]] && return 0
         tflint --init --config "{{UPSTREAM}}/.tflint.hcl" 2>/dev/null || true
         local rc=0
         for dir in "${roots[@]}"; do
             echo "  linting: ${dir#{{UPSTREAM}}/}"
             tflint --chdir="$dir" --config "{{UPSTREAM}}/.tflint.hcl" || rc=1
+        done
+        return $rc
+    }
+
+    lint_tofu_validate() {
+        # `tofu fmt` only requires canonical HCL and tflint parses each root without
+        # resolving it, so a root can be green on both and fail the moment anyone
+        # runs it — an undeclared provider, a bad type, a typo'd attribute. This is
+        # the whole check a module root gets before its first deploy: `just plan`
+        # only reaches modules a cluster in clusters.yaml enables, and the plan
+        # workflow's matrix is prod clusters only.
+        #
+        # -backend=false: no state, no credentials, no lock table. What this cannot
+        # prove is the terraform_remote_state reads — those need a real plan against
+        # a cluster's state.
+        local roots=() rc=0
+        while IFS= read -r -d '' f; do
+            roots+=("$(dirname "$f")")
+        done < <(_tf_roots)
+        [[ ${#roots[@]} -eq 0 ]] && return 0
+        # Shared plugin cache: otherwise every root re-downloads the AWS provider.
+        export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${HOME}/.terraform.d/plugin-cache}"
+        mkdir -p "$TF_PLUGIN_CACHE_DIR"
+        for dir in "${roots[@]}"; do
+            echo "  validating: ${dir#{{UPSTREAM}}/}"
+            (
+                cd "$dir" || exit 1
+                tofu init -backend=false -input=false -no-color >/dev/null || exit 1
+                tofu validate -no-color
+            ) || rc=1
         done
         return $rc
     }
@@ -2584,6 +2623,7 @@ lint:
     # Format: "display name:function_name"
     LINTERS=(
         "tofu fmt:lint_tofu_fmt"
+        "tofu validate:lint_tofu_validate"
         "shellcheck:lint_shellcheck"
         "shfmt:lint_shfmt"
         "ruff check:lint_ruff_check"
