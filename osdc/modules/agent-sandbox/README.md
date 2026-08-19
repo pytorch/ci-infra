@@ -120,10 +120,28 @@ aws bedrock list-inference-profiles --region us-east-1 \
   --query 'inferenceProfileSummaries[?contains(inferenceProfileId, `anthropic`)].inferenceProfileId' --output table
 ```
 
-Because a `us.` profile routes the request to any US region, the IRSA policy
-grants `bedrock:InvokeModel` on `arn:aws:bedrock:*::foundation-model/*` in
-addition to this region's inference profiles — with the region pinned, invokes
-fail `AccessDenied` whenever routing leaves the cluster's region.
+Because a `us.` profile routes the request to any US region, the IRSA policy grants
+`bedrock:InvokeModel` on `arn:aws:bedrock:*::foundation-model/anthropic.*` in
+addition to this region's `us.anthropic.*` inference profiles — with the region
+pinned, invokes fail `AccessDenied` whenever routing leaves the cluster's region.
+
+The foundation-model half is conditioned on `bedrock:InferenceProfileArn` matching
+one of those profiles, so it authorizes only the routed tail of a profile invoke. A
+direct on-demand invoke carries no profile ARN in its request context and is denied,
+which makes the profile the only path in — and the model id comes from the caller's
+`/run` body, so that boundary is the one bounding what can be invoked.
+
+Changing either half needs **two** checks after `just deploy-module`, because IAM
+accepts an unknown condition key silently and a misspelling denies everything:
+
+1. a routed invoke through the profile succeeds (the canary covers this);
+2. a direct `anthropic.claude-...` foundation-model invoke returns `AccessDenied`.
+
+One call on its own can't tell a wrong condition key from a wrong request. AWS also
+documents an org-level SCP that denies `bedrock:*` when a profile ARN is present but
+doesn't match — worth having if this role ever gains other statements that grant
+foundation-model access, but it lives outside this repo.
+Background: [Securing Amazon Bedrock cross-Region inference](https://aws.amazon.com/blogs/machine-learning/securing-amazon-bedrock-cross-region-inference-geographic-and-global/).
 
 ## Integration test
 
