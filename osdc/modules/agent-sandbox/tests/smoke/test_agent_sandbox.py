@@ -1,10 +1,14 @@
 """Smoke tests for the agent-sandbox module.
 
-Validates the deployed standing infrastructure: namespace, the gvisor
-RuntimeClass, the two egress proxies (sigv4-proxy + sigv4-proxy), their Services,
-the IRSA-annotated sigv4-proxy SA, the credential-free sandbox-agent SA, and the
-NetworkPolicies. These check the security spine is wired — not that an agent run
-succeeds (that is the e2e test).
+Validates the deployed standing infrastructure: namespace, quota, the gvisor
+RuntimeClass, the sigv4-proxy that holds the only AWS credential, the dispatcher and
+their Services, the dispatcher's namespaced RBAC, the credential-free sandbox-agent SA
+that task pods run as, and the NetworkPolicies. These check the security spine is wired
+— not that an agent run succeeds (that is the e2e test).
+
+There is no standing worker to assert on: the dispatcher creates one Job per request, so
+task pods exist only while a task runs. Their shape is asserted in the dispatcher's own
+unit tests, against the Job manifest it builds.
 """
 
 from __future__ import annotations
@@ -12,12 +16,25 @@ from __future__ import annotations
 import subprocess
 
 import pytest
-from helpers import assert_deployment_ready, filter_services, run_kubectl
+from helpers import assert_deployment_ready, filter_deployments, filter_services, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
 NAMESPACE = "ai-sandbox"
 IRSA_KEY = "eks.amazonaws.com/role-arn"
+PROXY_PORT = 8080
+
+
+def _deployment(all_deployments: dict, name: str) -> dict:
+    """A Deployment in this namespace, by name.
+
+    Filtering on namespace matters: a bare name match over a cluster-wide list would
+    silently assert against a same-named Deployment elsewhere, and would raise
+    StopIteration rather than say what is missing when the module isn't deployed.
+    """
+    deps = filter_deployments(all_deployments, namespace=NAMESPACE, name=name)
+    assert len(deps) == 1, f"Expected exactly one '{name}' Deployment in '{NAMESPACE}'; got {len(deps)}."
+    return deps[0]
 
 
 class TestAgentSandboxNamespace:
@@ -54,55 +71,86 @@ class TestSigv4Proxy:
         svcs = filter_services(all_services, namespace=NAMESPACE, name="sigv4-proxy")
         assert len(svcs) == 1, f"Expected Service 'sigv4-proxy' in '{NAMESPACE}'."
 
+    def test_proxy_is_pinned_to_bedrock(self, all_deployments: dict) -> None:
+        """Without --host/--name the caller's Host header decides which AWS service
+        gets signed for, leaving the IAM policy as the only boundary — and the caller
+        is the untrusted sandbox. --verbose would put the live security token in pod
+        logs, which alloy-logging ships to Loki."""
+        deps = filter_deployments(all_deployments, namespace=NAMESPACE, name="sigv4-proxy")
+        assert len(deps) == 1, f"Expected exactly one 'sigv4-proxy' Deployment in '{NAMESPACE}'."
+        args = deps[0]["spec"]["template"]["spec"]["containers"][0].get("args", [])
+        for flag in ("--host", "--name", "--region"):
+            assert flag in args, f"sigv4-proxy must pin {flag}; got {args}."
+        host = args[args.index("--host") + 1]
+        assert host.startswith("bedrock-runtime."), f"sigv4-proxy --host must be bedrock-runtime.*; got {host!r}."
+        service = args[args.index("--name") + 1]
+        assert service == "bedrock", f"sigv4-proxy --name must be 'bedrock'; got {service!r}."
+        assert "--verbose" not in args, "sigv4-proxy must not run --verbose — it logs the signed credential."
 
-class TestSandboxWorker:
-    """The callable worker — a Deployment + Service reachable from arc-runners,
-    like buildkitd."""
 
-    def test_worker_ready(self, all_deployments: dict) -> None:
-        assert_deployment_ready(all_deployments, NAMESPACE, "sandbox-agent")
+class TestSandboxDispatcher:
+    """The callable entry point — a Deployment + Service reachable from arc-runners,
+    like buildkitd. It creates one Job per request, so there is no standing worker: task
+    pods exist only while a task runs, and the Job manifest is asserted in the
+    dispatcher's unit tests."""
 
-    def test_worker_service_exists(self, all_services: dict) -> None:
+    def test_dispatcher_ready(self, all_deployments: dict) -> None:
+        assert_deployment_ready(all_deployments, NAMESPACE, "sandbox-dispatcher")
+
+    def test_service_keeps_the_sandbox_agent_name(self, all_services: dict) -> None:
+        """sandbox-agent.ai-sandbox.svc:8080 is the address arc-runners and the canary
+        already use; the dispatcher answers there now."""
         svcs = filter_services(all_services, namespace=NAMESPACE, name="sandbox-agent")
         assert len(svcs) == 1, f"Expected Service 'sandbox-agent' in '{NAMESPACE}'."
+        assert svcs[0]["spec"]["selector"] == {"app": "sandbox-dispatcher"}, (
+            f"the sandbox-agent Service must select the dispatcher; got {svcs[0]['spec']['selector']!r}."
+        )
 
-    def test_worker_runs_under_gvisor(self, all_deployments: dict) -> None:
-        """The worker Deployment must request the gvisor RuntimeClass."""
-        dep = next(d for d in all_deployments["items"] if d["metadata"]["name"] == "sandbox-agent")
-        rc = dep["spec"]["template"]["spec"].get("runtimeClassName")
-        assert rc == "gvisor", f"sandbox-agent must set runtimeClassName: gvisor, got {rc!r}."
+    def test_dispatcher_is_not_on_the_sandbox_fleet(self, all_deployments: dict) -> None:
+        """It holds the RBAC that creates task pods, so it must not run under gVisor
+        alongside the untrusted work it launches."""
+        dep = _deployment(all_deployments, "sandbox-dispatcher")
+        assert dep["spec"]["template"]["spec"].get("runtimeClassName") is None, (
+            "sandbox-dispatcher must not set runtimeClassName — the sandbox fleet is for task pods."
+        )
 
-    def test_worker_has_invokable_bedrock_model(self, all_deployments: dict) -> None:
-        """BEDROCK_DEFAULT_MODEL_ID must be set to a cross-region inference profile.
+    def test_dispatcher_knows_the_task_image(self, all_deployments: dict) -> None:
+        """AGENT_IMAGE is what it stamps into every Job. Unsubstituted, /run answers 500
+        rather than creating a Job that cannot pull."""
+        dep = _deployment(all_deployments, "sandbox-dispatcher")
+        env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
+        image = env.get("AGENT_IMAGE", "")
+        assert image, "sandbox-dispatcher must set AGENT_IMAGE — it stamps that image into every Job."
+        assert "__" not in image, f"AGENT_IMAGE must be substituted by deploy.sh; got {image!r}."
 
-        Without it every /run that doesn't pass "model" returns
-        errors.bedrock="no model configured". A bare foundation-model ID is also
-        wrong: Anthropic models on Bedrock are INFERENCE_PROFILE-only (the
-        ON_DEMAND Claude 3 is refused as provider-legacy), so the ID needs a
-        `us.`/`global.` routing prefix.
+    def test_dispatcher_has_invokable_bedrock_model(self, all_deployments: dict) -> None:
+        """BEDROCK_DEFAULT_MODEL_ID is passed to every task pod. Without it every /run
+        that doesn't pass "model" returns errors.bedrock="no model configured". A bare
+        foundation-model ID is also wrong: Anthropic models on Bedrock are
+        INFERENCE_PROFILE-only (the ON_DEMAND Claude 3 is refused as provider-legacy),
+        so the ID needs a `us.`/`global.` routing prefix.
         """
-        dep = next(d for d in all_deployments["items"] if d["metadata"]["name"] == "sandbox-agent")
+        dep = _deployment(all_deployments, "sandbox-dispatcher")
         env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
         model = env.get("BEDROCK_DEFAULT_MODEL_ID", "")
         assert model, (
-            "sandbox-agent must set BEDROCK_DEFAULT_MODEL_ID — set agent_sandbox.default_model_id in clusters.yaml."
+            "sandbox-dispatcher must set BEDROCK_DEFAULT_MODEL_ID — set agent_sandbox.default_model_id in clusters.yaml."
         )
         assert model.startswith(("us.", "global.", "eu.", "apac.")), (
             f"BEDROCK_DEFAULT_MODEL_ID must be a cross-region inference profile ID, got {model!r}."
         )
 
-    def test_requests_equal_limits(self, all_deployments: dict) -> None:
-        """Guaranteed QoS: capacity per node must stay a division, not a guess.
-        Requests below limits would let sandboxes overcommit the fleet node and
-        burst into each other's CPU."""
-        dep = next(d for d in all_deployments["items"] if d["metadata"]["name"] == "sandbox-agent")
-        resources = dep["spec"]["template"]["spec"]["containers"][0]["resources"]
-        assert resources["requests"] == resources["limits"], (
-            f"sandbox-agent requests must equal limits; got {resources!r}."
-        )
+    def test_concurrency_is_capped(self, all_deployments: dict) -> None:
+        """/run is unauthenticated, so an uncapped dispatcher turns a caller loop into
+        unbounded Jobs and, through Karpenter, unbounded nodes."""
+        dep = _deployment(all_deployments, "sandbox-dispatcher")
+        env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
+        cap = env.get("MAX_CONCURRENT_TASKS", "")
+        assert cap.isdigit(), f"MAX_CONCURRENT_TASKS must be an integer; got {cap!r}."
+        assert int(cap) > 0, f"MAX_CONCURRENT_TASKS must be positive; got {cap!r}."
 
     def test_callable_from_arc_runners(self) -> None:
-        """A NetworkPolicy must allow arc-runners to reach the worker (buildkitd
+        """A NetworkPolicy must allow arc-runners to reach the dispatcher (buildkitd
         parity: network access, not RBAC, is the entry point)."""
         np = run_kubectl(["get", "networkpolicy", "sandbox-agent-ingress"], namespace=NAMESPACE)
         froms = [f for rule in np["spec"].get("ingress", []) for f in rule.get("from", [])]
@@ -114,12 +162,69 @@ class TestSandboxWorker:
         )
 
 
+class TestAgentSandboxQuota:
+    def test_quota_bounds_the_namespace(self) -> None:
+        """The bound that holds even if a dispatcher is buggy: without it, Jobs created
+        per request become ai-sandbox nodes until an AWS quota notices."""
+        rq = run_kubectl(["get", "resourcequota", "ai-sandbox"], namespace=NAMESPACE)
+        hard = rq["spec"]["hard"]
+        for key in ("pods", "requests.cpu", "requests.memory", "requests.ephemeral-storage"):
+            assert key in hard, f"ResourceQuota must bound {key}; got {sorted(hard)}."
+
+
+class TestDispatcherRBAC:
+    """Creating a pod is privileged, so the dispatcher's permissions are the trust shift
+    this design introduces — and they must stay namespaced and minimal."""
+
+    def _can_i(self, verb: str, resource: str, subject: str, namespace: str) -> str:
+        proc = subprocess.run(
+            ["kubectl", "-n", namespace, "auth", "can-i", verb, resource, f"--as={subject}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.stdout.strip()
+
+    def test_role_is_namespaced(self) -> None:
+        role = run_kubectl(["get", "role", "sandbox-dispatcher"], namespace=NAMESPACE)
+        assert role["metadata"]["namespace"] == NAMESPACE
+
+    def test_role_grants_no_write_on_pods(self) -> None:
+        """The Job controller creates the pods. A dispatcher that could create pods
+        directly could create one without the gvisor RuntimeClass."""
+        role = run_kubectl(["get", "role", "sandbox-dispatcher"], namespace=NAMESPACE)
+        pod_verbs = {v for rule in role["rules"] if "pods" in rule.get("resources", []) for v in rule["verbs"]}
+        assert pod_verbs <= {"get", "list", "watch"}, f"pods must be read-only for the dispatcher; got {pod_verbs}."
+
+    def test_dispatcher_can_create_jobs_here(self) -> None:
+        subject = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"
+        assert self._can_i("create", "jobs", subject, NAMESPACE) == "yes"
+
+    def test_dispatcher_cannot_create_jobs_elsewhere(self) -> None:
+        """Namespaced Role, not a ClusterRole: a compromised dispatcher must not be able
+        to run pods outside the sandbox namespace."""
+        subject = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"
+        assert self._can_i("create", "jobs", subject, "default") == "no"
+
+    def test_dispatcher_cannot_read_secrets(self) -> None:
+        subject = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"
+        assert self._can_i("get", "secrets", subject, NAMESPACE) == "no"
+
+    def test_task_service_account_cannot_create_jobs(self) -> None:
+        """Task pods run as sandbox-agent, which must stay unable to touch the API at
+        all — otherwise the untrusted side can launch its own pods."""
+        subject = f"system:serviceaccount:{NAMESPACE}:sandbox-agent"
+        assert self._can_i("create", "jobs", subject, NAMESPACE) == "no"
+
+
 class TestAgentSandboxServiceAccounts:
     def test_sigv4_proxy_sa_has_irsa(self) -> None:
         """sigv4-proxy signs AWS/Bedrock with a read-only IRSA role."""
         sa = run_kubectl(["get", "serviceaccount", "sigv4-proxy"], namespace=NAMESPACE)
         ann = sa.get("metadata", {}).get("annotations", {})
-        assert IRSA_KEY in ann, "sigv4-proxy SA missing IRSA annotation — deploy.sh did not annotate it."
+        assert IRSA_KEY in ann, (
+            "sigv4-proxy SA missing IRSA annotation — deploy.sh did not substitute __SIGV4_ROLE_ARN__."
+        )
         assert ann[IRSA_KEY].startswith("arn:aws:iam::"), f"IRSA annotation is not an IAM role ARN: {ann[IRSA_KEY]}"
 
     def test_agent_sa_is_credential_and_token_free(self) -> None:
@@ -154,3 +259,50 @@ class TestAgentSandboxNetworkPolicies:
         names = {np["metadata"]["name"] for np in nps.get("items", [])}
         assert "default-deny" in names, f"agent-sandbox must ship a default-deny NetworkPolicy; got {sorted(names)}."
         assert len(names) >= 5, f"Expected the full NetworkPolicy set (>=5); got {sorted(names)}."
+
+    def test_task_egress_allow_list(self) -> None:
+        """The whole design rests on this allow-list, so assert its contents rather
+        than a count of policy names: widening it to 0.0.0.0/0 on all ports, or
+        loosening the podSelector, leaves every name in place and a count green."""
+        np = run_kubectl(["get", "networkpolicy", "sandbox-task-egress"], namespace=NAMESPACE)
+        assert np["spec"].get("podSelector", {}).get("matchLabels") == {"app": "sandbox-task"}, (
+            f"sandbox-task-egress must select only task pods; got {np['spec'].get('podSelector')!r}."
+        )
+        rules = np["spec"].get("egress", [])
+        assert all(rule.get("ports") for rule in rules), (
+            f"every worker egress rule must name ports — an unported rule allows all of them; got {rules}."
+        )
+        ports = {(p.get("protocol", "TCP"), p["port"]) for rule in rules for p in rule.get("ports", [])}
+        assert ports == {("TCP", PROXY_PORT), ("UDP", 53), ("TCP", 53), ("TCP", 443)}, (
+            f"task egress must be the proxy, DNS and HTTPS for the git clone; got {sorted(ports)}."
+        )
+
+        pod_rules = [r for r in rules if any("podSelector" in t for t in r.get("to", []))]
+        assert pod_rules, "task egress must allow the sigv4-proxy."
+        assert all(
+            t["podSelector"]["matchLabels"] == {"app": "sigv4-proxy"} for r in pod_rules for t in r.get("to", [])
+        ), f"the only pod-to-pod egress may be the sigv4-proxy; got {pod_rules}."
+
+        # The clone path: NetworkPolicy can't name github.com, so this is the widest
+        # rule in the namespace and must stay HTTPS-only.
+        wide_rules = [r for r in rules if any("ipBlock" in t for t in r.get("to", []))]
+        assert wide_rules, "task egress must express the git clone path explicitly, not rely on unenforced IPv4."
+        wide_ports = {(p.get("protocol", "TCP"), p["port"]) for r in wide_rules for p in r.get("ports", [])}
+        assert wide_ports == {("TCP", 443)}, (
+            f"the internet-facing task rule must be HTTPS-only (the clone); got {sorted(wide_ports)}."
+        )
+
+    def test_dispatcher_egress_has_no_internet_path(self) -> None:
+        """The dispatcher is the component with RBAC, so it is the one that must not be
+        able to reach the internet — only DNS and the API server."""
+        np = run_kubectl(["get", "networkpolicy", "sandbox-dispatcher-egress"], namespace=NAMESPACE)
+        rules = np["spec"].get("egress", [])
+        ports = {(p.get("protocol", "TCP"), p["port"]) for rule in rules for p in rule.get("ports", [])}
+        assert ports == {("UDP", 53), ("TCP", 53), ("TCP", 443)}, (
+            f"dispatcher egress must be DNS plus the API server; got {sorted(ports)}."
+        )
+        cidrs = {t["ipBlock"]["cidr"] for rule in rules for t in rule.get("to", []) if "ipBlock" in t}
+        assert cidrs, "dispatcher egress must name the API server address."
+        assert not {c for c in cidrs if c in ("0.0.0.0/0", "::/0")}, (
+            f"dispatcher egress must not include a default route — that is an exfiltration path; got {cidrs}."
+        )
