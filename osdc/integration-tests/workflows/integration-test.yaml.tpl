@@ -1955,3 +1955,66 @@ jobs:
           echo "PASS: built $(basename "$WHL")"
   # END_RELEASE
 
+
+  # BEGIN_AGENT_SANDBOX
+  # ── AI Agent Sandbox ──────────────────────────────────────────────────
+  # Call the sandbox over the network from a regular runner — exactly like a
+  # runner calls buildkitd. Proves: (1) the sandbox Service is reachable from
+  # arc-runners (NetworkPolicy allow, no RBAC), (2) it clones a public repo
+  # anonymously with no token on the runner or in the agent, and (3) it really
+  # invokes Bedrock — through sigv4-proxy, which holds the AWS credential so the
+  # sandbox holds none at all.
+  test-agent-sandbox:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    env:
+      SANDBOX: http://sandbox-agent.ai-sandbox.svc.cluster.local:8080
+    steps:
+      - name: Install curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl
+      - name: Health check (reachable from a regular runner, like buildkitd)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$SANDBOX/healthz"
+          echo ""
+          echo "PASS: sandbox Service reachable from arc-runners"
+      - name: Run a task through the sandbox (anonymous clone + real Bedrock call)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESP=$(curl -fsS -m 300 -X POST "$SANDBOX/run" \
+            -H 'Content-Type: application/json' \
+            -d '{"repo":"pytorch/pytorch","ref":"main","task":"List the top-level files."}')
+          echo "Response: $RESP"
+          if ! echo "$RESP" | grep -q '"cloned": *true'; then
+            echo "FAIL: sandbox did not clone the repo"
+            exit 1
+          fi
+          echo "PASS: sandbox cloned a public repo anonymously — no token on the runner or in the agent"
+          # Bedrock is a hard assertion: a model is configured (clusters.yaml
+          # agent_sandbox.default_model_id) and the sandbox itself holds no AWS
+          # credential, so a non-empty report proves the whole signing path works:
+          # unsigned request out of the agent, signed by sigv4-proxy with its IRSA
+          # role, answered by Bedrock. errors.bedrock means it did not.
+          if echo "$RESP" | grep -q '"bedrock"'; then
+            echo "FAIL: Bedrock invocation errored — see errors.bedrock above"
+            echo "  (model not enabled in this region, or the sigv4-proxy IRSA role lacks bedrock:InvokeModel"
+            echo "   on the inference profile / cross-region foundation models)"
+            exit 1
+          fi
+          if echo "$RESP" | grep -q '"report": *""'; then
+            echo "FAIL: Bedrock returned an empty report"
+            exit 1
+          fi
+          # The prompt is grounded in the clone's real top-level listing, so an
+          # empty top_level means the model was answering from nothing.
+          if echo "$RESP" | grep -q '"top_level": *\[\]'; then
+            echo "FAIL: prompt was not grounded — top_level listing is empty"
+            exit 1
+          fi
+          echo "PASS: Bedrock InvokeModel via sigv4-proxy returned a report — the sandbox signed nothing itself"
+  # END_AGENT_SANDBOX
