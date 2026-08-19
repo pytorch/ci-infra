@@ -51,19 +51,11 @@ egress lockdown, and a per-task-ephemeral (vs warm) worker are deferred (see
 
 ## The agent image
 
-Built and pushed by hand to the in-cluster Harbor `osdc` project (public, so nodes
-pull it anonymously via the `harbor:30002` mirror), and referenced from
-`clusters.yaml` → `agent_sandbox.agent_image`. No secrets to create.
-
-```bash
-docker buildx build --platform linux/amd64 -t ci-agent-sandbox:prototype \
-  -o type=docker,dest=/tmp/agent.tar modules/agent-sandbox/agent
-
-HARBOR_PASS=$(kubectl get secret harbor-admin-password -n harbor-system -o jsonpath='{.data.password}' | base64 -d)
-kubectl port-forward --address 127.0.0.1 svc/harbor -n harbor-system 8081:80 >/dev/null 2>&1 &
-crane auth login 127.0.0.1:8081 -u admin -p "$HARBOR_PASS"
-crane push /tmp/agent.tar 127.0.0.1:8081/osdc/ci-agent-sandbox:prototype
-```
+`deploy.sh` builds it and pushes it to the in-cluster Harbor `osdc` project
+(public, so nodes pull anonymously via the `harbor:30002` mirror) — same pattern as
+`modules/zombie-cleanup`. The tag is a content hash of `agent/`, so an unchanged
+tree skips the build and a code change deploys a new immutable tag. Requires a
+local docker daemon.
 
 ## Deploy
 
