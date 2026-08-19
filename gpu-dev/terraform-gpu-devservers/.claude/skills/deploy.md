@@ -15,10 +15,12 @@ Lambda functions built on Mac can have issues:
 
 ### 1. Commit your changes
 ```bash
-cd /Users/wouterdevriendt/dev/osdc/terraform-gpu-devservers
+cd "$(git rev-parse --show-toplevel)/gpu-dev/terraform-gpu-devservers"
 git add lambda/
 git commit -m "fix: your change description"
-git push origin main  # or your branch
+git push origin HEAD  # open a PR; direct pushes to main are rejected
+# NOTE: land the PR before deploying. Step 3 applies your LOCAL tree, so
+# applying with the PR still open ships unreviewed code.
 ```
 
 ### 2. Switch to the correct workspace
@@ -30,21 +32,21 @@ git push origin main  # or your branch
 ./switch-to.sh default
 ```
 
-### 3. Deploy via Terraform
+### 3. Deploy via OpenTofu
 ```bash
-# Terraform will rebuild Lambda packages cleanly
-terraform apply
+# OpenTofu will rebuild Lambda packages cleanly
+tofu apply
 ```
 
 **Why this works:**
-- Terraform rebuilds Lambda ZIP files from scratch
+- OpenTofu rebuilds Lambda ZIP files from scratch
 - Avoids Mac-specific build artifacts
 - Ensures consistent deployment across environments
 - Properly updates Lambda function code AND configuration
 
 ## Quick Hotfix (Emergency Only)
 
-If you absolutely must hotfix without full `terraform apply`:
+If you absolutely must hotfix without full `tofu apply`:
 
 ```bash
 # Clean Python cache first
@@ -58,7 +60,7 @@ aws lambda update-function-code \
   --function-name pytorch-gpu-dev-reservation-processor \
   --zip-file fileb:///tmp/lambda.zip
 
-# Then ALWAYS follow up with proper terraform apply
+# Then ALWAYS follow up with proper tofu apply
 ```
 
 ## Lambda Functions in this Repo
@@ -69,15 +71,15 @@ aws lambda update-function-code \
 
 ## Common Issues
 
-**"Code not updating"**: Run `terraform taint` first:
+**"Code not updating"**: Run `tofu taint` first:
 ```bash
-terraform taint aws_lambda_function.reservation_processor
-terraform apply
+tofu taint aws_lambda_function.reservation_processor
+tofu apply
 ```
 
-**"Import errors in Lambda"**: Mac `__pycache__` issue - use `terraform apply`
+**"Import errors in Lambda"**: Mac `__pycache__` issue - use `tofu apply`
 
-**"Function exists but code is old"**: Lambda version mismatch - check `terraform refresh`
+**"Function exists but code is old"**: Lambda version mismatch - check `tofu refresh`
 
 ## Never Do This
 

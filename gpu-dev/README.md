@@ -1,4 +1,4 @@
-# osdc — Open Source Developer Cloud
+# gpu-dev — GPU developer-server platform (formerly "osdc", wdvr/osdc)
 
 A self-hosted developer platform for GPU work. Devs ask for `1 / 2 / 4 / 8`
 GPUs of a given type, the platform parks them on a Kubernetes pod with SSH

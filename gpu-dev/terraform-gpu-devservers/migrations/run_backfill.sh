@@ -147,25 +147,22 @@ if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
     exit 1
 fi
 
-# Step 8: Get bucket name from terraform/tofu
+# Step 8: Get bucket name from tofu
 echo ""
-echo "🪣 Getting S3 bucket name from terraform..."
+echo "🪣 Getting S3 bucket name from tofu..."
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 TF_DIR="$SCRIPT_DIR/.."
 
-# Try tf first (aliased to tofu), fall back to tofu, then terraform
+# Try tf first (aliased to tofu), fall back to tofu
 set +e
 BUCKET_NAME=$(cd "$TF_DIR" && tf output -raw disk_contents_bucket_name 2>/dev/null)
 if [ -z "$BUCKET_NAME" ]; then
     BUCKET_NAME=$(cd "$TF_DIR" && tofu output -raw disk_contents_bucket_name 2>/dev/null)
 fi
-if [ -z "$BUCKET_NAME" ]; then
-    BUCKET_NAME=$(cd "$TF_DIR" && terraform output -raw disk_contents_bucket_name 2>/dev/null)
-fi
 set -e
 
 if [ -z "$BUCKET_NAME" ]; then
-    echo "❌ Could not get bucket name from terraform/tofu output"
+    echo "❌ Could not get bucket name from tofu output"
     exit 1
 fi
 echo "✓ Bucket: $BUCKET_NAME"

@@ -1,17 +1,24 @@
-# Agent notes
+# Agent notes — gpu-dev (GPU developer-server platform)
+
+This is NOT the sibling `osdc/` directory. Both are branded "Open Source Dev
+Cloud" and share no code: `gpu-dev/` is the GPU developer-server platform behind
+the `gpu-dev` CLI; `osdc/` is the Kubernetes CI-runner platform. Separate AWS
+state, separate clusters. Never plan or apply against one from the other.
 
 the first part of this doc is the devs description of the repo. Everything under the 'AGENT SECTION' is for you, the agent, to update state, tricky things, what we're working on and more.
 This will help both you, the agent, but also other agents down the road that share the responsibility of this repo management to navigate the repo.
 
 ## Agent restrictions
 
-- NEVER run `terraform apply` or any destructive terraform commands
-- You can run read-only terraform commands like `terraform plan`, `terraform state show`, etc.
+- NEVER run `terraform`. This project uses OpenTofu; running `terraform` against a
+  tofu state corrupts it and there is no recovery (see ../osdc/CLAUDE.md).
+- NEVER run `tofu apply` or any other destructive tofu command.
+- You may run read-only tofu commands: `tofu plan`, `tofu state show`, etc.
 - You can run AWS CLI commands for read-only resource fetching and analysis
 - NEVER run destructive AWS CLI commands: `aws ec2 terminate-instances`, `aws ec2 stop-instances`, `aws autoscaling set-desired-capacity` (to 0), `aws ec2 delete-*`, `aws dynamodb delete-table`, etc. On 2026-03-09 an agent accidentally terminated 10 EC2 instances including 6 pet H100 instances from another team's capacity reservations. This must never happen again.
 - NEVER run `kubectl delete node`, `kubectl drain`, `kubectl cordon`, or any command that removes/disrupts running workloads
 - User will handle all infrastructure deployments themselves
-- Note: We use OpenTofu, so user runs `opentofu apply` or `tf apply` locally (tf is aliased to opentofu)
+- Note: We use OpenTofu, so user runs `tofu apply` locally (`tf` is aliased to `tofu`)
 - we use k for kubectl and have kubens configured to namespace gpu-dev
 
 ## Development style

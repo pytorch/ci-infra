@@ -9,8 +9,8 @@ Terraform configuration for PyTorch GPU development servers using AWS EKS with K
 Deploy to us-west-1 with 2x T4 instances for cost-effective testing:
 
 ```bash
-terraform init
-terraform apply
+tofu init
+tofu apply
 # This deploys to us-west-1 with 2x g4dn.12xlarge instances (8x T4 GPUs total)
 ```
 
@@ -19,8 +19,8 @@ terraform apply
 Deploy to us-east-2 with A100 instances for production workloads:
 
 ```bash
-terraform init
-terraform apply -var-file="prod.tfvars"
+tofu init
+tofu apply -var-file="prod.tfvars"
 # This deploys to us-east-2 with 2x p4d.24xlarge instances (16x A100 GPUs total)
 ```
 
@@ -28,8 +28,8 @@ terraform apply -var-file="prod.tfvars"
 
 | Environment | Region | Command | Instance Type | GPU Type | Total GPUs | Cost/hour |
 |-------------|--------|---------|---------------|----------|------------|-----------|
-| **Test (default)** | us-west-1 | `terraform apply` | g4dn.12xlarge | T4 | 8 | ~$7.82 |
-| **Production** | us-east-2 | `terraform apply -var-file="prod.tfvars"` | p4d.24xlarge | A100 | 16 | ~$49.54 |
+| **Test (default)** | us-west-1 | `tofu apply` | g4dn.12xlarge | T4 | 8 | ~$7.82 |
+| **Production** | us-east-2 | `tofu apply -var-file="prod.tfvars"` | p4d.24xlarge | A100 | 16 | ~$49.54 |
 
 **Test Environment Features:**
 - Cost-effective T4 GPUs for development and testing
@@ -279,7 +279,7 @@ The system uses **Kubernetes-native GPU tracking** instead of manual allocation:
 - **Instances**: 2x g4dn.12xlarge (4x T4 GPUs each = 8 total)
 - **GPU Types**: T4 only (cost-effective testing)
 - **Cost**: ~$7.82/hour
-- **Usage**: `terraform apply`
+- **Usage**: `tofu apply`
 
 #### Production Environment
 
@@ -287,7 +287,7 @@ The system uses **Kubernetes-native GPU tracking** instead of manual allocation:
 - **Instances**: 2x p4d.24xlarge (8x A100 GPUs each = 16 total)
 - **GPU Types**: T4, A100, H100, H200, B200 (full support)
 - **Cost**: ~$49.54/hour
-- **Usage**: `terraform apply -var-file="prod.tfvars"`
+- **Usage**: `tofu apply -var-file="prod.tfvars"`
 
 ## CLI Usage
 
