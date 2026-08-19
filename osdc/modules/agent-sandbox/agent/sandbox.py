@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
-"""Sandbox agent HTTP worker.
+"""Sandbox task library: clone a public repo, then ask Bedrock about it.
 
-A long-running, credential-free worker — callable over the network exactly like
-buildkitd (a runner does `curl sandbox-agent.ai-sandbox.svc:8080/run ...`, no K8s
-RBAC, just a NetworkPolicy allow). It runs under gVisor on the ai-sandbox fleet.
+Imported by task.py, which runs it once per pod. It holds NO credentials — it clones
+public repos anonymously and reaches Bedrock through the sigv4 proxy, which signs
+with its own IRSA identity. This process never sees a token.
 
-It holds NO credentials: it clones public repos anonymously and calls Bedrock
-through the sigv4 proxy, which signs with its own IRSA identity. This process
-never sees a token.
-
-Endpoints:
-  GET  /healthz  -> {"status": "ok"}
-  POST /run      -> body {"repo","ref","task","model"?} (ref: branch or tag, not a
-                    sha — see clone_repo); returns
-                    {"cloned": bool, "file_count": int, "top_level": [str],
-                     "report": str, "errors": {...}}
-
-Threaded listener, one task at a time (_TASK_LOCK). stdlib only.
+The HTTP surface lives in the dispatcher (../dispatcher/dispatcher.py): it turns each
+request into one Job, so nothing here has to serialize or refuse concurrent work.
 """
 
 from __future__ import annotations
@@ -24,33 +14,22 @@ from __future__ import annotations
 import http.client
 import json
 import os
-import socket
 import subprocess
 import tempfile
-import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PORT = int(os.environ.get("PORT", "8080"))
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
-# /run is unauthenticated (a NetworkPolicy is the only gate), so every bound below
-# is a caller-controlled quantity that must not be trusted.
-MAX_BODY_BYTES = 64 * 1024
+# The proxy's response is caller-influenced (the prompt is), so bound it.
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BODY_BYTES = 8 * 1024
 READ_CHUNK_BYTES = 64 * 1024
-REQUEST_TIMEOUT_S = 30
-# One task at a time (prototype, like buildkitd max-parallelism=1). Held while a
-# task runs so /healthz and a second /run stay answerable instead of queueing
-# behind it on the listener.
-_TASK_LOCK = threading.Lock()
 
 
 def clone_repo(repo: str, ref: str, dest: str) -> int:
@@ -257,97 +236,3 @@ def run_task(spec: dict) -> dict:
             result["errors"]["bedrock"] = str(exc)
 
     return result
-
-
-class Handler(BaseHTTPRequestHandler):
-    # Socket timeout for the whole connection (socketserver applies it in setup()).
-    # Without it a caller that announces a body and then sends it slowly, or never,
-    # parks a handler thread for as long as it likes — and ThreadingHTTPServer puts
-    # no ceiling on how many threads that is. Task work happens between socket
-    # operations, so a long clone or invoke never trips this.
-    timeout = REQUEST_TIMEOUT_S
-
-    def _send(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self) -> None:
-        if self.path == "/healthz":
-            self._send(200, {"status": "ok"})
-        else:
-            self._send(404, {"error": "not found"})
-
-    def _read_spec(self) -> dict:
-        """Parse and validate the /run body, raising ValueError with the reason.
-
-        All of this runs before the task lock, on a thread of its own, so it stays
-        bounded: the declared length is caller-controlled and read(-1) would read
-        until end of file. Types are checked rather than truth-tested, because a
-        field that is the wrong type reaches git or the proxy as an argument.
-        """
-        raw_length = self.headers.get("Content-Length", "0")
-        try:
-            length = int(raw_length)
-        except ValueError:
-            raise ValueError(f"invalid Content-Length: {raw_length!r}") from None
-        if not 0 <= length <= MAX_BODY_BYTES:
-            raise ValueError(f"Content-Length must be between 0 and {MAX_BODY_BYTES}, got {length}")
-
-        spec = json.loads(self.rfile.read(length) or "{}")
-        if not isinstance(spec, dict):
-            raise ValueError("body must be a JSON object")
-        if not isinstance(spec.get("repo"), str) or not spec["repo"]:
-            raise ValueError("missing 'repo'")
-        for key in ("ref", "task", "model"):
-            if key in spec and not isinstance(spec[key], str):
-                raise ValueError(f"'{key}' must be a string")
-        return spec
-
-    def do_POST(self) -> None:
-        if self.path != "/run":
-            self._send(404, {"error": "not found"})
-            return
-        try:
-            spec = self._read_spec()
-        except ValueError as exc:
-            # json.JSONDecodeError is a ValueError subclass, so a malformed body,
-            # a non-object body and a bad header all answer 400 rather than dropping
-            # the connection with no response at all.
-            self._send(400, {"error": str(exc)})
-            return
-        if not _TASK_LOCK.acquire(blocking=False):
-            self._send(429, {"error": "busy: one task at a time"})
-            return
-        try:
-            self._send(200, run_task(spec))
-        finally:
-            _TASK_LOCK.release()
-
-    def log_message(self, fmt: str, *args) -> None:
-        print(f"[sandbox-agent] {fmt % args}")
-
-
-class HTTPServerV6(ThreadingHTTPServer):
-    # OSDC EKS is IPv6-only: the pod IP (and the readiness probe / Service target)
-    # are IPv6, so the listener must bind :: — a default AF_INET server binds
-    # 0.0.0.0 and is unreachable on this cluster.
-    #
-    # Threading, because a single-threaded server cannot answer /healthz while a
-    # task is running: the readiness probe then times out mid-clone, the pod is
-    # dropped from the Service, and callers get connection refused. One task at a
-    # time is still enforced, by _TASK_LOCK rather than by blocking the listener.
-    address_family = socket.AF_INET6
-
-
-def main() -> None:
-    server = HTTPServerV6(("::", PORT), Handler)
-    print(f"[sandbox-agent] listening on [::]:{PORT}", flush=True)
-    server.serve_forever()
-
-
-if __name__ == "__main__":
-    main()

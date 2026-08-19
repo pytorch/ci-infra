@@ -263,9 +263,6 @@ clusters:
     pypi_cache:
       replicas: 1
     agent_sandbox:
-      # PROTOTYPE. Built + pushed to the in-cluster Harbor `osdc` project; nodes
-      # pull it via the harbor:30002 mirror (see modules/agent-sandbox/README.md).
-      agent_image: "harbor:30002/osdc/ci-agent-sandbox:prototype"
       # Bedrock model the agent invokes. Must be a cross-region inference profile
       # ID (`us.` prefix), not a bare foundation-model ID: every Anthropic model
       # in us-east-1 is INFERENCE_PROFILE-only, and the Claude 3 generation that
