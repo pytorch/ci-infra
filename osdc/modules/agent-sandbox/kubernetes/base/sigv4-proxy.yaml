@@ -84,13 +84,23 @@ spec:
           # TODO(prototype): pin by digest.
           image: public.ecr.aws/aws-observability/aws-sigv4-proxy:latest
           args:
-            # No --name: the target service/host comes from each request's Host
-            # header, so one proxy serves bedrock-runtime, cloudwatch, logs, etc.
+            # Pinned to Bedrock in this region. Without --host/--name the target
+            # service comes from each request's Host header, so the caller — the
+            # untrusted sandbox — chooses which AWS service gets signed for, and the
+            # IRSA policy becomes the entire boundary. One proxy serving
+            # bedrock-runtime, cloudwatch and logs is only worth having once
+            # something needs the others.
             #
             # NOT --verbose: it dumps every signed request, including the live
             # X-Amz-Security-Token, into pod logs — which alloy-logging then ships
             # to Loki. That would put the credential we just took away from the
             # agent into the logging pipeline instead. Failed requests only.
+            - --host
+            - bedrock-runtime.__AWS_REGION__.amazonaws.com
+            - --name
+            - bedrock
+            - --region
+            - __AWS_REGION__
             - --log-failed-requests
             - --port
             - ":8080"
