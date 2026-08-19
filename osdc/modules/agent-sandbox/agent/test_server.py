@@ -6,9 +6,13 @@ real git repo (redirected off the network), `invoke_bedrock` against a fake sigv
 proxy on a real socket, and the HTTP surface against a real socket.
 """
 
+import http.client
+import io
 import json
+import socket
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -166,6 +170,88 @@ class TestInvokeBedrock:
         fake_sigv4_proxy["reply"] = {"content": []}
         assert server.invoke_bedrock("m", "hello") == ""
 
+    def test_model_is_one_percent_encoded_path_segment(self, fake_sigv4_proxy):
+        """An ARN is a documented model identifier and contains "/" — unencoded it
+        splits the path and the request stops naming a model invoke at all."""
+        arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-haiku-4-5-v1:0"
+        server.invoke_bedrock(arn, "hello")
+        path = fake_sigv4_proxy["path"]
+        assert path.endswith("/invoke")
+        assert path.count("/") == 3, f"model id must be a single path segment, got {path}"
+        assert "inference-profile%2F" in path
+        # ":" stays as sent today — a legal path character, and every model id in
+        # use ends in "…-v1:0".
+        assert path.startswith("/model/arn:aws:bedrock:")
+
+    def test_model_cannot_steer_the_path_the_proxy_signs(self, fake_sigv4_proxy):
+        """`model` comes from an unauthenticated request body, and the proxy runs
+        with no --name: it signs and forwards whatever path it is handed."""
+        server.invoke_bedrock("../../async-invoke#", "hello")
+        assert fake_sigv4_proxy["path"] == "/model/..%2F..%2Fasync-invoke%23/invoke"
+
+
+class TestReadBounded:
+    class _Trickle:
+        """A body that never ends — one byte per read, as a stalled proxy would."""
+
+        def read(self, _size):
+            return b"x"
+
+    def test_deadline_stops_a_trickling_response(self):
+        """BEDROCK_TIMEOUT_S is urllib's per-operation socket timeout, not a wall
+        clock: without a deadline this holds the single task slot indefinitely."""
+        with pytest.raises(TimeoutError):
+            server._read_bounded(self._Trickle(), server.MAX_RESPONSE_BYTES, time.monotonic() - 1)
+
+    def test_oversized_response_is_rejected(self):
+        with pytest.raises(ValueError, match="exceeded"):
+            server._read_bounded(self._Trickle(), 4, time.monotonic() + 30)
+
+    def test_reads_to_end_of_body(self):
+        chunks = iter([b"abc", b"def", b""])
+
+        class Body:
+            def read(self, _size):
+                return next(chunks)
+
+        assert server._read_bounded(Body(), 1024, time.monotonic() + 30) == b"abcdef"
+
+
+class TestBedrockErrorSummary:
+    def _http_error(self, code, headers, body):
+        return urllib.error.HTTPError("http://proxy/model/m/invoke", code, "Forbidden", headers, io.BytesIO(body))
+
+    def test_error_code_from_body(self):
+        """`str(HTTPError)` is only the status line, so "not authorised" and
+        "throttled" — the two likeliest failures — read identically without this."""
+        exc = self._http_error(
+            403, {}, json.dumps({"__type": "com.amazon.coral.service#AccessDeniedException"}).encode()
+        )
+        summary = server.bedrock_error_summary(exc)
+        assert "403" in summary
+        assert "AccessDeniedException" in summary
+
+    def test_error_code_from_header(self):
+        exc = self._http_error(400, {"x-amzn-errortype": "ThrottlingException:http://internal/"}, b"")
+        assert "ThrottlingException" in server.bedrock_error_summary(exc)
+
+    def test_message_is_not_echoed_back(self):
+        """An AccessDenied message names the role ARN the proxy signs with, and any
+        caller the NetworkPolicy allows can read /run's response."""
+        body = json.dumps(
+            {
+                "__type": "AccessDeniedException",
+                "message": "User: arn:aws:sts::123456789012:assumed-role/sigv4-proxy/x is not authorized",
+            }
+        ).encode()
+        summary = server.bedrock_error_summary(self._http_error(403, {}, body))
+        assert "assumed-role" not in summary
+        assert "AccessDeniedException" in summary
+
+    def test_unparseable_body_falls_back_to_the_status_line(self):
+        exc = self._http_error(500, {}, b"<html>gateway</html>")
+        assert server.bedrock_error_summary(exc) == str(exc)
+
 
 class TestRunTask:
     """Each stage's failure must be captured, never raised — callers need to see
@@ -230,6 +316,66 @@ class TestRunTask:
         assert result["cloned"] is True
         assert "sigv4-proxy unreachable" in result["errors"]["bedrock"]
 
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            http.client.IncompleteRead(b"11 bytes", 489),
+            http.client.RemoteDisconnected("remote end closed connection"),
+            TypeError("string indices must be integers"),
+        ],
+        ids=["truncated-body", "reset-status-line", "malformed-payload"],
+    )
+    def test_proxy_disconnect_mid_response_is_captured(self, monkeypatch, exc):
+        """A proxy restart mid-response must still produce the `errors` object. An
+        escaping exception closes the connection instead, and a closed connection
+        cannot be told apart from the pod being gone."""
+
+        def boom(model, prompt):
+            raise exc
+
+        monkeypatch.setattr(server, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(server, "top_level_entries", lambda dest: ["README.md"])
+        monkeypatch.setattr(server, "invoke_bedrock", boom)
+
+        result = server.run_task({"repo": "org/repo", "model": "m"})
+        assert result["cloned"] is True
+        assert result["errors"]["bedrock"]
+
+    def test_http_error_reports_the_aws_error_code(self, monkeypatch):
+        def boom(model, prompt):
+            raise urllib.error.HTTPError(
+                "http://proxy/model/m/invoke",
+                403,
+                "Forbidden",
+                {},
+                io.BytesIO(json.dumps({"__type": "AccessDeniedException"}).encode()),
+            )
+
+        monkeypatch.setattr(server, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(server, "top_level_entries", lambda dest: ["README.md"])
+        monkeypatch.setattr(server, "invoke_bedrock", boom)
+
+        result = server.run_task({"repo": "org/repo", "model": "m"})
+        assert "AccessDeniedException" in result["errors"]["bedrock"]
+
+    @pytest.mark.parametrize("ref", [None, 0, [], ""], ids=["null", "zero", "list", "empty"])
+    def test_non_string_ref_falls_back_to_main(self, monkeypatch, ref):
+        """`spec.get("ref", "main")` returns None for an explicit null, and None
+        would reach git as a command argument."""
+        seen = {}
+
+        def spy_clone(repo, resolved_ref, dest):
+            seen["ref"] = resolved_ref
+            return 1
+
+        monkeypatch.setattr(server, "clone_repo", spy_clone)
+        monkeypatch.setattr(server, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(server, "invoke_bedrock", lambda model, prompt: "ok")
+
+        result = server.run_task({"repo": "org/repo", "ref": ref, "model": "m"})
+        assert seen["ref"] == "main"
+        assert result["errors"] == {}
+
 
 @pytest.fixture
 def worker():
@@ -279,6 +425,72 @@ class TestHTTPSurface:
     def test_run_returns_the_task_result(self, worker, monkeypatch):
         monkeypatch.setattr(server, "run_task", lambda spec: {"cloned": True, "report": f"ran {spec['repo']}"})
         assert _post(f"{worker}/run", {"repo": "org/repo"}) == {"cloned": True, "report": "ran org/repo"}
+
+    @pytest.mark.parametrize("body", [[], None, 3, "text"], ids=["list", "null", "number", "string"])
+    def test_non_object_body_is_400(self, worker, body):
+        """These used to reach `spec.get("repo")` and raise AttributeError, so the
+        caller got no response at all — indistinguishable from the pod being gone."""
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{worker}/run", body)
+        assert exc.value.code == 400
+        assert "JSON object" in json.loads(exc.value.read())["error"]
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("ref", None), ("ref", 7), ("task", []), ("model", {})],
+        ids=["ref-null", "ref-number", "task-list", "model-object"],
+    )
+    def test_wrong_field_type_is_400(self, worker, field, value):
+        """Truth-testing would let 0 or [] through to a subprocess argument."""
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{worker}/run", {"repo": "org/repo", field: value})
+        assert exc.value.code == 400
+        assert f"'{field}' must be a string" in json.loads(exc.value.read())["error"]
+
+
+class TestRequestBodyLimits:
+    """The body is read before the task lock, on a thread ThreadingHTTPServer does
+    not cap, from a declared length the caller controls. /run is unauthenticated."""
+
+    @staticmethod
+    def _raw_post(worker, headers, body=b""):
+        """Hand-rolled request: urllib sets Content-Length itself, and these cases
+        are all about what a caller declares."""
+        port = int(worker.rsplit(":", 1)[1])
+        request = f"POST /run HTTP/1.1\r\nHost: [::1]:{port}\r\n"
+        request += "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+        with socket.create_connection(("::1", port), timeout=10) as sock:
+            sock.sendall(request.encode() + b"\r\n" + body)
+            # The worker answers HTTP/1.0 and closes, so read to EOF — the body
+            # arrives after the headers, in a later packet.
+            received = b""
+            while chunk := sock.recv(8192):
+                received += chunk
+        return received.decode(errors="replace")
+
+    def test_non_numeric_content_length_is_400(self, worker):
+        """This parse sat above the try, so a bad header raised ValueError uncaught
+        and answered nothing at all."""
+        response = self._raw_post(worker, {"Content-Length": "abc"})
+        assert "400" in response.splitlines()[0]
+        assert "invalid Content-Length" in response
+
+    def test_negative_content_length_is_400(self, worker):
+        """int() accepts -1 and read(-1) reads to end of file, so this parked a
+        handler thread with no ceiling for as long as the caller stayed connected."""
+        response = self._raw_post(worker, {"Content-Length": "-1"})
+        assert "400" in response.splitlines()[0]
+
+    def test_oversized_content_length_is_refused_before_reading(self, worker):
+        """Rejected on the declared length: no body is sent here at all, so a
+        response can only come from refusing before the read."""
+        response = self._raw_post(worker, {"Content-Length": str(server.MAX_BODY_BYTES + 1)})
+        assert "400" in response.splitlines()[0]
+
+    def test_handler_has_a_socket_timeout(self, worker):
+        """A stalled read must not outlive the timeout — otherwise a caller can hold
+        an unbounded number of handler threads open in a 4 GiB pod."""
+        assert 0 < server.Handler.timeout <= 60
 
 
 class TestConcurrency:
