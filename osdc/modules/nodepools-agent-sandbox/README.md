@@ -67,3 +67,9 @@ only when the AMI is rebuilt.
 Each rebuild re-resolves the base from the EKS SSM parameter, so rebuilding is
 the whole refresh procedure. Worth automating on a schedule if this fleet outlives
 the prototype.
+
+An EKS version bump needs a rebuild too, and nothing enforces it at launch time:
+the def selects on the `osdc.io/ami` tag only, so the `K8sVersion` recorded by the
+build is ignored and Karpenter would happily keep launching pre-upgrade nodes. The
+smoke tests fail on that skew (`test_ami_exists_in_region`) rather than the fleet
+catching it — see the TODO in `defs/ai-sandbox.yaml` for the fail-closed fix.
