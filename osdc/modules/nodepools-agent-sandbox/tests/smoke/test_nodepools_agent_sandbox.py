@@ -8,6 +8,7 @@ start) rather than installing it from userData at boot.
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -92,6 +93,11 @@ class TestAgentSandboxNodeClass:
         """The tag selector matches nothing until the AMI is built, and Karpenter
         then silently never provisions. Fail here with the fix instead.
 
+        Also guards the Kubernetes version: the def selects on osdc.io/ami alone,
+        so the K8sVersion the build records is never read back at launch and an EKS
+        bump would keep launching pre-upgrade nodes until the AMI is rebuilt (see
+        the TODO in defs/ai-sandbox.yaml).
+
         AMIs are regional, so this must query the cluster's region explicitly —
         mise pins AWS_REGION to the state-bucket region for the whole project.
         """
@@ -108,17 +114,29 @@ class TestAgentSandboxNodeClass:
                 "--filters",
                 "Name=tag:osdc.io/ami,Values=ai-sandbox-gvisor",
                 "Name=state,Values=available",
+                # Newest first: that is the one Karpenter launches, so it is the one
+                # whose K8sVersion has to match.
                 "--query",
-                "Images[].ImageId",
+                "reverse(sort_by(Images, &CreationDate))[].{id: ImageId, tags: Tags}",
                 "--output",
-                "text",
+                "json",
             ],
             capture_output=True,
             text=True,
             check=False,
         )
         assert proc.returncode == 0, f"aws ec2 describe-images failed: {proc.stderr.strip()}"
-        assert proc.stdout.strip(), (
+        images = json.loads(proc.stdout or "[]")
+        assert images, (
             f"No AMI tagged osdc.io/ami=ai-sandbox-gvisor in {region} — the ai-sandbox fleet "
             f"cannot launch a node there. Build it with: just build-agent-sandbox-ami <cluster>"
+        )
+
+        newest = images[0]
+        built_for = {t["Key"]: t["Value"] for t in newest.get("tags") or []}.get("K8sVersion")
+        expected = str(resolve_config("eks_version"))
+        assert built_for == expected, (
+            f"Newest ai-sandbox AMI {newest['id']} in {region} was built for k8s {built_for!r}, "
+            f"but the cluster runs {expected!r} — the fleet selects by tag only and would launch "
+            f"nodes on the stale version. Rebuild it with: just build-agent-sandbox-ami <cluster>"
         )

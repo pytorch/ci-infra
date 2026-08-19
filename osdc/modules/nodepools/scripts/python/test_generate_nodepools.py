@@ -314,6 +314,59 @@ class TestGenerateNodepoolYaml:
         ec2 = docs[1]
         assert "amiFamily" not in ec2["spec"]
 
+    def test_cpu_ec2nodeclass_ami_alias(self):
+        nodepool_def = _make_nodepool_def(gpu=False)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"alias": "al2023@latest"}]
+
+    def test_gpu_ec2nodeclass_ami_name_glob(self):
+        nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"name": "amazon-eks-node-al2023-x86_64-nvidia-*"}]
+
+    def test_ami_selector_tags_replace_alias(self):
+        """A def selecting its own AMI must not keep the stock alias alongside
+        it: the ai-sandbox fleet needs runsc baked in, and an alias term would
+        leave Karpenter free to launch a node without it.
+        """
+        nodepool_def = _make_nodepool_def(ami_selector_tags={"osdc.io/ami": "ai-sandbox-gvisor"})
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        assert ec2["spec"]["amiSelectorTerms"] == [{"tags": {"osdc.io/ami": "ai-sandbox-gvisor"}}]
+        assert ec2["spec"]["amiFamily"] == "AL2023"
+
+    def test_ami_selector_tags_override_gpu_name_glob(self):
+        """The override is applied after the GPU branch, so it wins there too."""
+        nodepool_def = _make_nodepool_def(
+            gpu=True,
+            instance_type="g4dn.12xlarge",
+            arch="amd64",
+            ami_selector_tags={"osdc.io/ami": "custom-gpu"},
+        )
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"tags": {"osdc.io/ami": "custom-gpu"}}]
+
+    def test_ami_selector_tags_sorted(self):
+        """Rendered in sorted key order — the generated/ YAML is committed, so
+        dict iteration order must not show up as a diff."""
+        nodepool_def = _make_nodepool_def(ami_selector_tags={"zzz": "3", "aaa": "1", "mmm": "2"})
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        tags = docs[1]["spec"]["amiSelectorTerms"][0]["tags"]
+        assert list(tags) == ["aaa", "mmm", "zzz"]
+
+    def test_empty_ami_selector_tags_keeps_alias(self):
+        nodepool_def = _make_nodepool_def(ami_selector_tags={})
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        assert ec2["spec"]["amiSelectorTerms"] == [{"alias": "al2023@latest"}]
+        assert "amiFamily" not in ec2["spec"]
+
     def test_cluster_name_placeholder(self):
         nodepool_def = _make_nodepool_def()
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
@@ -848,6 +901,20 @@ class TestBuildFleetNodepoolDef:
         assert "topology_manager_scope" not in result
         assert "user_data_script" not in result
         assert "node_compactor" not in result
+        assert "ami_selector_tags" not in result
+
+    def test_ami_selector_tags_passthrough(self):
+        """Set per instance entry in the fleet def — it has to reach
+        generate_nodepool_yaml or the fleet silently launches stock AL2023."""
+        fleet = {"name": "ai-sandbox", "arch": "amd64", "gpu": False}
+        inst = {
+            "type": "c7a.2xlarge",
+            "weight": 100,
+            "node_disk_size": 100,
+            "ami_selector_tags": {"osdc.io/ami": "ai-sandbox-gvisor"},
+        }
+        result = _build_fleet_nodepool_def(fleet, inst)
+        assert result["ami_selector_tags"] == {"osdc.io/ami": "ai-sandbox-gvisor"}
 
 
 # ============================================================================

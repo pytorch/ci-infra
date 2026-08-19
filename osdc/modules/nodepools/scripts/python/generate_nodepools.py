@@ -311,6 +311,8 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     #
     # Trade-off worth knowing: `alias: al2023@latest` picks up AL2023 CVE fixes
     # automatically on node rotation; a custom AMI only moves when it is rebuilt.
+    # The alias also tracks the cluster's Kubernetes version, which tags do not —
+    # a def using this knob owns keeping its image in step with an EKS bump.
     ami_selector_tags = nodepool_def.get("ami_selector_tags") or {}
     if ami_selector_tags:
         tag_lines = "\n".join(f'        {k}: "{v}"' for k, v in sorted(ami_selector_tags.items()))
