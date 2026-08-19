@@ -42,5 +42,13 @@ fleet:
       node_disk_size: 100
       # Select the gVisor AMI built by packer/, by tag rather than name glob so
       # the naming scheme can change without touching this def.
+      #
+      # TODO: this matches on osdc.io/ami alone, so the K8sVersion the build
+      # records is never read back at launch — after an EKS bump the fleet keeps
+      # launching pre-upgrade nodes until someone rebuilds the AMI. Accepted for
+      # the prototype (one AMI, and clusters.yaml has a single eks_version for
+      # every cluster); test_ami_exists_in_region fails on the skew meanwhile.
+      # Fail closed instead by adding K8sVersion here, which means plumbing the
+      # cluster's eks_version through the nodepool generator.
       ami_selector_tags:
         osdc.io/ami: ai-sandbox-gvisor
