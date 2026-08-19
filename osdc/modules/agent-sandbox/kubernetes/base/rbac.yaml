@@ -1,0 +1,62 @@
+# The dispatcher's Kubernetes permissions — the trust shift this design introduces.
+#
+# Creating a pod is a privileged act, so the boundary is drawn twice: this Role is
+# namespaced to ai-sandbox (never a ClusterRole), and it belongs to the dispatcher
+# alone. The task pods keep the sandbox-agent SA, which has no RBAC at all and no token
+# mounted, so nothing the untrusted side runs can reach the API server.
+#
+# pods/log is the result transport: task.py prints one line of JSON and exits, and the
+# dispatcher reads it back from the pod's log rather than needing a bucket, a database
+# or a credential to pass results around.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-dispatcher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-dispatcher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+# Every verb here maps to exactly one call the dispatcher makes; nothing is granted for
+# symmetry. No `list` on jobs — it only ever GETs the one it created, by name. No `get` on
+# pods — it lists by job-name label, then reads the log subresource, which is authorized
+# as get on pods/log. No `watch` anywhere — it polls.
+rules:
+  # POST .../jobs, GET .../jobs/sandbox-task-<id>, DELETE .../jobs/sandbox-task-<id>
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+  # GET .../pods?labelSelector=job-name=... — find the Job's pod. No create/delete: the
+  # Job controller owns pod lifecycle, and a dispatcher that could create a pod directly
+  # could create one without the gvisor RuntimeClass.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  # GET .../pods/<name>/log — the result transport.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sandbox-dispatcher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-dispatcher
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-dispatcher
+    namespace: ai-sandbox

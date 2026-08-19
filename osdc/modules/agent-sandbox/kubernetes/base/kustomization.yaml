@@ -1,6 +1,13 @@
-# Agent-sandbox Kubernetes resources (namespace-scoped + the cluster-scoped
-# gvisor RuntimeClass). deploy.sh substitutes __AGENT_IMAGE__ / __AWS_REGION__ in
-# sandbox-agent.yaml at apply time (kustomize can't read clusters.yaml).
+# Agent-sandbox Kubernetes resources (namespace-scoped + the cluster-scoped gvisor
+# RuntimeClass). deploy.sh substitutes __DISPATCHER_IMAGE__ / __AGENT_IMAGE__ /
+# __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ / __SIGV4_ROLE_ARN__ / __K8S_API_CIDR__
+# across this output at apply time (kustomize can read neither clusters.yaml, terraform
+# outputs, nor the cluster's own Service CIDR).
+#
+# There is no Deployment for the sandbox itself: the dispatcher creates one Job per
+# request, so task pods exist only while a task runs. The Job template lives in
+# dispatcher.py rather than here — it is built per request from the task image tag
+# deploy.sh substituted above.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -8,7 +15,9 @@ resources:
   - namespace.yaml
   - runtimeclass.yaml
   - serviceaccounts.yaml
+  - rbac.yaml
+  - quota.yaml
   - sigv4-proxy.yaml
   - proxy-pdb.yaml
-  - sandbox-agent.yaml
+  - dispatcher.yaml
   - networkpolicy.yaml

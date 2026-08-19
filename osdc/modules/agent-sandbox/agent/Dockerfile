@@ -1,14 +1,13 @@
-# Credential-free agent worker image for the sandbox prototype.
+# Credential-free sandbox task image.
 #
-# A long-running HTTP worker (server.py) callable over the network like
-# buildkitd. It clones public repos directly and calls Bedrock THROUGH the sigv4
-# proxy. The image holds no secrets and no AWS SDK — Bedrock is reached as plain
-# HTTP to the signing proxy, which owns the credential.
+# One task per pod: task.py clones a public repo directly and calls Bedrock THROUGH
+# the sigv4 proxy, prints the result as JSON, and exits. The dispatcher creates the
+# Job (../dispatcher) — nothing in this image listens on a socket, and no state
+# survives the pod. The image holds no secrets and no AWS SDK: Bedrock is reached as
+# plain HTTP to the signing proxy, which owns the credential.
 #
-# Build + push once to the in-cluster Harbor osdc project (see README):
-#   docker buildx build --platform linux/amd64 -t ci-agent-sandbox:prototype \
-#     -o type=docker,dest=/tmp/agent.tar modules/agent-sandbox/agent
-#   crane push /tmp/agent.tar <harbor>/osdc/ci-agent-sandbox:prototype
+# Built and pushed to the in-cluster Harbor osdc project by the module's deploy.sh
+# under a content-hash tag — not built by hand. See the module README.
 FROM public.ecr.aws/docker/library/debian:12-slim
 
 RUN apt-get update \
@@ -18,11 +17,13 @@ RUN apt-get update \
         python3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY server.py /usr/local/bin/server.py
-RUN chmod 0755 /usr/local/bin/server.py
+COPY sandbox.py task.py /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/sandbox.py /usr/local/bin/task.py
+
+# task.py imports sandbox.py from the same directory.
+ENV PYTHONPATH=/usr/local/bin
 
 # UID 1000, non-root. The pod securityContext enforces this too.
 USER 1000
 
-EXPOSE 8080
-ENTRYPOINT ["python3", "/usr/local/bin/server.py"]
+ENTRYPOINT ["python3", "/usr/local/bin/task.py"]

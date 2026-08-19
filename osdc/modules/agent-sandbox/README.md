@@ -9,11 +9,11 @@ It is **callable over the network like BuildKit**: a runner does
 allows the `arc-runners` namespace (no K8s RBAC on the caller) — exactly how a
 runner reaches `buildkitd` on `:1234`.
 
-This is a **Phase-1 PoC**: it proves the security spine (gVisor isolation +
-"use secrets without holding them" + git-clone/Bedrock through proxies +
-BuildKit-style network invocation). The propose/dispose output gate, VPC-layer
-egress lockdown, and a per-task-ephemeral (vs warm) worker are deferred (see
-*Limitations*).
+What works today: gVisor isolation on a dedicated fleet, "use secrets without holding
+them" via the signing proxy, BuildKit-style network invocation, and one ephemeral pod
+per request so tasks run in parallel with nothing carried over between them. What does
+not exist: an output gate on what the agent returns, and a network boundary that
+actually holds (see *Limitations*).
 
 ## Architecture
 
@@ -23,62 +23,87 @@ egress lockdown, and a per-task-ephemeral (vs warm) worker are deferred (see
                                                ▼
    ai-sandbox namespace
    ┌───────────────────────────────────────────────────────────────────────┐
-   │ [UNTRUSTED] sandbox-agent   Deployment, runtimeClassName: gvisor        │
-   │   • long-running HTTP worker, no credentials, no K8s token              │
-   │   • http ─────────► sigv4-proxy (signs Bedrock/AWS with IRSA)           │
+   │ [TRUSTED] sandbox-dispatcher   Deployment on base nodes                 │
+   │   • creates ONE Job per /run; RBAC: jobs + pods + pods/log, this ns     │
+   │   • no AWS identity, never clones, never prompts a model                │
+   │                       │ creates                                         │
+   │                       ▼                                                 │
+   │ [UNTRUSTED] sandbox-task-<id>   Job, runtimeClassName: gvisor           │
+   │   • one task then exits; no credentials, no K8s token                   │
+   │   • http ─────────► sigv4-proxy (signs Bedrock with IRSA)               │
    │        pinned to the ai-sandbox gVisor fleet                            │
    └───────────────────────────────────────────────────────────────────────┘
-     the credential never shares a node / gVisor sandbox with agent code.
+     the credential never shares a node / gVisor sandbox with agent code, and
+     the component that can create pods never runs any.
 ```
 
+Concurrency comes from Karpenter rather than from replicas: N concurrent requests are
+N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
+`MAX_CONCURRENT_TASKS` per dispatcher replica (2 x 6) and the namespace
+`ResourceQuota` (12 slots) behind it — past that a caller gets `429 at capacity`.
+
 - **Isolation:** `nodepools-agent-sandbox` nodes boot from a custom AMI with
-  gVisor (runsc) baked in; the `gvisor` RuntimeClass pins the worker there. IMDS
-  hop-limit 1 keeps the node role out of reach.
-- **Credential:** held by the proxy, never by the worker. `aws-sigv4-proxy` signs
-  AWS requests with a read-only IRSA role (terraform); the worker sends unsigned
-  HTTP. Public repos are cloned directly, so there is no GitHub credential at all.
+  gVisor (runsc) baked in; the `gvisor` RuntimeClass pins task pods there. IMDS
+  hop-limit 1 keeps the node role out of reach. Each request gets a fresh pod, so
+  nothing carries over between tasks.
+- **Credential:** held by the proxy, never by a task. `aws-sigv4-proxy` signs AWS
+  requests with a read-only IRSA role (terraform), pinned to Bedrock in this region
+  with `--host`/`--name`; tasks send unsigned HTTP. Public repos are cloned directly,
+  so there is no GitHub credential at all.
+- **Privilege:** the dispatcher can create Jobs in this namespace and nothing else —
+  no ClusterRole, no write on pods, no secrets. Task pods run as `sandbox-agent`,
+  which has no RBAC and no mounted token.
 - **Invocation:** `sandbox-agent` Service (`:8080`), reachable from `arc-runners`
   via `sandbox-agent-ingress` NetworkPolicy — BuildKit parity.
 
 ## Endpoints
 
-- `GET /healthz` → `{"status":"ok"}`
-- `POST /run` body `{"repo","ref","task","model"?}` →
-  `{"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
+- `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
+- `POST /run` body `{"repo","ref","task","model"?,"wait"?}` →
+  `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
 
+  Waits for the task by default, so a caller sees the result on the same connection —
+  budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
+  returns `202 {"task_id"}` instead.
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
+- `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
+  Results are kept in memory for an hour after the task finishes.
 
-## The agent image
+## The two images
 
-Built and pushed by hand to the in-cluster Harbor `osdc` project (public, so nodes
-pull it anonymously via the `harbor:30002` mirror), and referenced from
-`clusters.yaml` → `agent_sandbox.agent_image`. No secrets to create.
+`deploy.sh` builds both and pushes them to the in-cluster Harbor `osdc` project
+(public, so nodes pull anonymously via the `harbor:30002` mirror) — same pattern as
+`modules/zombie-cleanup`. Each tag is a content hash of its own directory, so an
+unchanged tree skips the build, a code change deploys a new immutable tag, and editing
+one image does not re-roll the other. Requires a local docker daemon.
 
-```bash
-docker buildx build --platform linux/amd64 -t ci-agent-sandbox:prototype \
-  -o type=docker,dest=/tmp/agent.tar modules/agent-sandbox/agent
-
-HARBOR_PASS=$(kubectl get secret harbor-admin-password -n harbor-system -o jsonpath='{.data.password}' | base64 -d)
-kubectl port-forward --address 127.0.0.1 svc/harbor -n harbor-system 8081:80 >/dev/null 2>&1 &
-crane auth login 127.0.0.1:8081 -u admin -p "$HARBOR_PASS"
-crane push /tmp/agent.tar 127.0.0.1:8081/osdc/ci-agent-sandbox:prototype
-```
+- `ci-agent-sandbox` (`agent/`) — the untrusted task: `task.py` runs one task and exits,
+  `sandbox.py` is the clone + Bedrock library. Holds nothing.
+- `ci-agent-sandbox-dispatcher` (`dispatcher/`) — the trusted side: the HTTP surface and
+  the Job creation. Separate image so its dependencies never ship inside the sandbox;
+  both are stdlib-only today.
 
 ## Deploy
 
 ```
 just deploy-module meta-staging-aws-ue1 nodepools-agent-sandbox   # gVisor fleet
-just deploy-module meta-staging-aws-ue1 agent-sandbox             # IRSA + proxies + worker
+just deploy-module meta-staging-aws-ue1 agent-sandbox             # IRSA + proxy + dispatcher
 ```
 
 ## Use it (from anywhere with cluster network access, e.g. a runner)
 
 ```
-curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
+# -m 900: the call waits for the task, and a cold fleet waits for a Karpenter node.
+curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -H 'Content-Type: application/json' \
   -d '{"repo":"pytorch/pytorch","ref":"main","task":"Summarize the build layout",
-       "model":"anthropic.claude-3-5-sonnet-20240620-v1:0"}'
+       "model":"us.anthropic.claude-haiku-4-5-20251001-v1:0"}'
+
+# Or don't hold the connection open:
+TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
+  -d '{"repo":"pytorch/pytorch","wait":false}' | jq -r .task_id)
+curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
 ```
 Any caller can pick the model per request. Omitting `model` falls back to
 `BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
@@ -86,7 +111,7 @@ Any caller can pick the model per request. Omitting `model` falls back to
 
 ## Capacity
 
-A sandbox slot is **2 vCPU / 4 GiB with requests == limits** (Guaranteed QoS), so
+A sandbox slot is **2 vCPU / 4 GiB / 20 GiB disk with requests == limits** (Guaranteed QoS), so
 capacity per node is a division rather than a guess — and one untrusted sandbox
 can't burst into another's CPU. **3 slots per `c7a.2xlarge`** fleet node:
 
@@ -102,8 +127,12 @@ memory, and `allocatable` already nets out kube-reserved, which scales with
 `maxPods`. Don't scale this table linearly when changing instance size.
 
 Memory is the tighter dimension: ~194 MiB spare beyond the 3rd slot, so a
-cluster-wide daemonset gaining ~200 MiB of requests silently costs a slot. The
-prototype runs one replica, so today that's 1 of 3 slots.
+cluster-wide daemonset gaining ~200 MiB of requests silently costs a slot.
+
+Concurrency is bounded by the `ResourceQuota` (12 slots = 4 fleet nodes), not by the
+node count: Karpenter adds a node when a task pod is pending and takes it back when the
+node empties. The trade is latency — a request that has to wait for a new node pays
+1–2 minutes before the task starts.
 
 ## Choosing the Bedrock model
 
@@ -160,7 +189,8 @@ just integration-test meta-staging-aws-ue1
 ```
 The `test-agent-sandbox` job runs on a normal runner and `curl`s the sandbox
 Service — asserting it is reachable from `arc-runners` (BuildKit parity) and that
-it clones a repo through the proxy without the runner or worker holding a token.
+it clones a public repo (directly, anonymously) and reaches Bedrock through the
+signing proxy, without the runner or worker holding a token.
 
 ## Limitations (prototype — read before trusting it)
 
@@ -168,17 +198,32 @@ it clones a repo through the proxy without the runner or worker holding a token.
   doesn't cover IPv4 egress (the same gap that made cache-enforcer's node iptables
   unreliable), so the proxies are the *credential* boundary, not a network one: a
   compromised agent still has no token to steal, but can still reach the internet.
-  The real boundary — a dedicated sandbox subnet with no NAT/IGW route +
-  Security-Groups-for-Pods — is Phase 2.
+  A boundary that would hold — a dedicated sandbox subnet with no NAT/IGW route +
+  Security-Groups-for-Pods — does not exist yet.
 - **The gVisor AMI must be built per region** before the fleet can launch a node
   (`just build-agent-sandbox-ami <cluster>`), and it pins the AL2023 base — unlike
   the `al2023@latest` fleets it does not pick up CVE fixes on node rotation.
-- **Warm worker, not per-task-ephemeral.** One long-running worker handles tasks
-  sequentially (like buildkitd), so there is no per-task isolation reset yet.
-  Per-task-ephemeral pods (a dispatcher that creates a Job per request) are Phase 2.
-- **Output is trusted as-is.** The propose/dispose validation + approval gate is
-  Phase 2.
-  `aws-sigv4-proxy:latest`) — digest-pin before non-prototype use.
+- **A cold fleet is slow to answer.** Task pods are created per request, so when no
+  fleet node has a free slot the caller waits on Karpenter (1–2 minutes) before the
+  clone even starts. Nothing keeps a node warm.
+- **A dispatcher restart loses in-flight waits.** Results live in the dispatcher's
+  memory, so a rollout or crash drops the `/status` entry for a task still running; the
+  Job finishes regardless and the caller has to retry.
+- **Output is trusted as-is.** Nothing validates or gates what a task returns before a
+  caller acts on it.
+- **The proxy image floats** (`aws-sigv4-proxy:latest`) — digest-pin before
+  non-prototype use.
+- **Callers are unauthenticated and unbounded.** `/run` has no notion of who is
+  asking: any pod in `arc-runners` can call it, and the NetworkPolicy is the only
+  gate. With one serial worker, a caller looping `/run` holds the single slot for up
+  to the clone plus invoke timeout and keeps every other consumer on `429` — visible
+  as a refusal rather than a hang, but still a denial of service. Fine while there
+  is one consumer. A caller identity and per-request ephemerality are the same piece
+  of work and neither exists — do it before a second consumer does.
+- **The clone reaches the internet directly.** `sandbox-agent-egress` allows TCP 443
+  to any address because `NetworkPolicy` selects on CIDR and GitHub's ranges move.
+  Closing it means git behind a proxy the way Bedrock is, landing together with the
+  no-NAT subnet — neither exists, and either alone breaks cloning.
 - **Repo context is shallow** — the prompt carries the file count and the
   top-level listing, enough to keep answers grounded, but no file contents. Real
   tasks need reading files (and a tool loop to choose which); today the Bedrock
