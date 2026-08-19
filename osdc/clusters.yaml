@@ -262,15 +262,27 @@ clusters:
         arm64_max: 8
     pypi_cache:
       replicas: 1
+    agent_sandbox:
+      # PROTOTYPE. Built + pushed to the in-cluster Harbor `osdc` project; nodes
+      # pull it via the harbor:30002 mirror (see modules/agent-sandbox/README.md).
+      agent_image: "harbor:30002/osdc/ci-agent-sandbox:prototype"
+      # Bedrock model the agent invokes. Must be a cross-region inference profile
+      # ID (`us.` prefix), not a bare foundation-model ID: every Anthropic model
+      # in us-east-1 is INFERENCE_PROFILE-only, and the Claude 3 generation that
+      # still advertises ON_DEMAND is refused as provider-legacy. Haiku 4.5 is
+      # the cheapest active model.
+      default_model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     modules:
       - karpenter
       - arc
       - hf-cache
       - nodepools
+      - nodepools-agent-sandbox
       - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
+      - agent-sandbox
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
