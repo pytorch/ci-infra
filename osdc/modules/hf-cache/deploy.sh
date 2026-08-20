@@ -39,15 +39,14 @@ VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")
 # <buffer-size> is rclone's per-open-file read-ahead; rclone RAM ~= buffer-size x
 # concurrent open files. The two tight tiers run 0 (read-ahead off; reads served from
 # the vfs-cache-mode full on-disk cache): the packed CPU catch-all (48xl/metal, many
-# runner pods on one mount) and the 640Mi 1-GPU tier, where even 1M x ~146 shards
-# (~146MB) eats headroom rclone's heap/metadata needs. (1-GPU is 640Mi not 1Gi: 1Gi
-# strands the a10g/l4/t4 runners on the 8xl 1-GPU nodes; 640Mi still fits per
-# analyze_node_utilization.) The roomier multi-GPU tiers (1-4Gi) keep 4M for prefetch.
-# FOLLOW-UP: the GPU-only PR drops CPU (nvidia.com/gpu nodeSelector); then collapse the
-# first two rows into "hf-cache-mount NotIn 2,4,8 640Mi" (1-GPU + rest, both 640Mi).
+# runner pods on one mount) and the 1-GPU tier, where even 1M x ~146 shards
+# (~146MB) eats headroom rclone's heap/metadata needs.
+# The roomier multi-GPU tiers (1-4Gi) keep 4M for prefetch.
+# 1-GPU is 1Gi: 640Mi OOM-killed the tier. Paired with a 1Gi trim in the a10g/l4/t4
+# runner defs -- without it they no longer fit the 8xl 1-GPU nodes.
 MOUNT_TIERS=(
   "hf-cache-mount NotIn 1,2,4,8 640Mi 0"
-  "hf-cache-mount-gpu1 In 1 640Mi 0"
+  "hf-cache-mount-gpu1 In 1 1Gi 0"
   "hf-cache-mount-gpu2 In 2 1Gi 4M"
   "hf-cache-mount-gpu4 In 4 2Gi 4M"
   "hf-cache-mount-gpu8 In 8 4Gi 4M"

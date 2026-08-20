@@ -63,7 +63,7 @@ TEMPLATED_DAEMONSETS: list[DaemonSetOverhead] = [
 ]
 
 # Reserved hf-cache memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
-HF_CACHE_TIER_MIB = {1: 640, 2: 1024, 4: 2048, 8: 4096}
+HF_CACHE_TIER_MIB = {1: 1024, 2: 1024, 4: 2048, 8: 4096}
 
 
 def hf_cache_gpu_topup_mib(gpu_count: int) -> int:

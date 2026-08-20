@@ -144,9 +144,9 @@ spec:
               #     served from the vfs-cache-mode full on-disk cache. High pod density
               #     means many concurrent readers on one mount, so any non-zero buffer
               #     OOMs the small reserve.
-              #   1-GPU tier (640Mi) → 0: like CPU. rclone RAM ~= buffer-size x concurrent
+              #   1-GPU tier (1Gi) → 0: like CPU. rclone RAM ~= buffer-size x concurrent
               #     open files, so even 1M x ~146 shards (~146MB) eats headroom the rclone
-              #     heap/metadata needs at 512Mi; read-ahead off, served from the disk cache.
+              #     heap/metadata needs; read-ahead off, served from the disk cache.
               #   multi-GPU tiers (1-4Gi) → 4M: roomier reserve, so keep more prefetch.
               rclone mount \
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
