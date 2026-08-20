@@ -44,11 +44,11 @@ The SDK ships inside the `gpu-dev` package: `pip install gpu-dev`, then `from gp
 
 ```bash
 # Install directly from GitHub (recommended)
-python3 -m pip install --upgrade "git+https://github.com/wdvr/osdc.git"
+python3 -m pip install --upgrade "git+https://github.com/pytorch/ci-infra.git#subdirectory=gpu-dev"
 
 # Or install from local clone
-git clone https://github.com/wdvr/osdc.git
-cd osdc
+git clone https://github.com/pytorch/ci-infra.git
+cd ci-infra/gpu-dev
 pip install -e .
 ```
 
@@ -683,7 +683,7 @@ gpu-dev disk list-content <disk-name>
 ### Getting Help
 
 - Use `gpu-dev help` or `gpu-dev <command> --help`
-- Report issues: https://github.com/wdvr/osdc/issues
+- Report issues: https://github.com/pytorch/ci-infra/issues
 
 ---
 

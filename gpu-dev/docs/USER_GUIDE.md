@@ -65,8 +65,8 @@ gpu-dev connect
 pip install gpu-dev
 
 # Or install from a local clone
-git clone https://github.com/wdvr/osdc.git
-cd osdc
+git clone https://github.com/pytorch/ci-infra.git
+cd ci-infra/gpu-dev
 pip install -e .
 ```
 

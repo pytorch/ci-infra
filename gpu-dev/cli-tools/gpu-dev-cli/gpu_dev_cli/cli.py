@@ -3502,7 +3502,8 @@ def _maybe_show_sdk_tip() -> None:
             rprint(
                 "\n[bold cyan]✨ NEW:[/bold cyan] use the [bold]gpu_dev[/bold] Python SDK for "
                 "sub-second reservations + repro GitHub issues →\n"
-                "   [underline]https://github.com/wdvr/osdc/blob/main/docs/SDK_REPRO.md[/underline]")
+                "   [underline]https://github.com/pytorch/ci-infra/blob/main/"
+                "gpu-dev/docs/SDK_REPRO.md[/underline]")
     except Exception:
         pass
 

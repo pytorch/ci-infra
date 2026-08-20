@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OSDC Presentation</title>
+    <title>gpu-dev Presentation</title>
     <style>
       * {
         margin: 0;
@@ -99,6 +99,14 @@
         font-size: 1.8rem;
         font-weight: 400;
         color: rgba(255, 255, 255, 0.9);
+        text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
+      }
+
+      .title-overlay .renamed {
+        margin-top: 14px;
+        font-size: 1rem;
+        font-weight: 400;
+        color: rgba(255, 255, 255, 0.6);
         text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
       }
 
@@ -307,9 +315,18 @@
         <video autoplay muted playsinline class="title-video" id="titleVideo">
           <source src="title-vid.mp4" type="video/mp4" />
         </video>
+        <!--
+          Retitled during the wdvr/osdc -> pytorch/ci-infra import. Presented as
+          "Open Source Developer Cloud", which is also how the unrelated `osdc/`
+          CI-runner platform at the root of this repo describes itself, so the
+          two were indistinguishable by search. See CLAUDE.md here.
+        -->
         <div class="title-overlay">
-          <h1>Open Source Developer Cloud</h1>
+          <h1>gpu-dev — GPU Developer Cloud</h1>
           <div class="presenters">Wouter Devriendt</div>
+          <div class="renamed">
+            Presented as “Open Source Developer Cloud”; renamed to gpu-dev
+          </div>
         </div>
       </div>
 
@@ -380,7 +397,7 @@
       <div class="slide feedback-slide">
         <div class="feedback-header">
           <h1>User Feedback</h1>
-          <p>What developers are saying about OSDC</p>
+          <p>What developers are saying about gpu-dev</p>
         </div>
         <div class="feedback-content">
           <img src="./feedback.png" alt="User Feedback" />
@@ -390,8 +407,8 @@
       <!-- Slide 13: Future Plans -->
       <div class="slide">
         <iframe
-          src="./osdc-future-plans.html"
-          title="OSDC Future Plans"
+          src="./future-plans.html"
+          title="gpu-dev Future Plans"
         ></iframe>
       </div>
 
@@ -407,9 +424,9 @@
             <li>
               All open source:
               <a
-                href="https://github.com/wdvr/osdc"
+                href="https://github.com/pytorch/ci-infra/tree/main/gpu-dev"
                 target="_blank"
-                >github.com/wdvr/osdc</a
+                >github.com/pytorch/ci-infra</a
               >
             </li>
             <li>

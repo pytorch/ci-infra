@@ -1,5 +1,15 @@
 # Agent notes
 
+**Naming.** This deck was written under the project's former name, "OSDC" /
+"Open Source Developer Cloud". It was rebranded to **gpu-dev** during the
+wdvr/osdc -> pytorch/ci-infra import, because the old name is also how the
+unrelated `osdc/` directory at the repo root (the Kubernetes CI-runner
+platform) describes itself. The title slide records the former name.
+
+Only text was rebranded. The binary assets (`title-vid.mp4`, `feedback.png`,
+`problem.png`, `weneedgpus.png`) are unchanged from upstream — checked, none of
+them show the old name.
+
 the first part of this doc is the devs description of the repo. Everything under the 'AGENT SECTION' is for you, the agent, to update state, tricky things, what we're working on and more.
 This will help both you, the agent, but also other agents down the road that share the responsibility of this repo management to navigate the repo.
 
@@ -9,7 +19,7 @@ The authoritative list is in [`../CLAUDE.md`](../CLAUDE.md); it is reproduced
 here so this file is never the weaker copy.
 
 - NEVER run `terraform`. This project uses OpenTofu; running `terraform` against a
-  tofu state corrupts it and there is no recovery (see ../osdc/CLAUDE.md).
+  tofu state corrupts it and there is no recovery (see ../../osdc/CLAUDE.md).
 - NEVER run `tofu apply` or any other destructive tofu command.
 - You may run read-only tofu commands: `tofu plan`, `tofu state show`, etc.
 - You can run AWS CLI commands for read-only resource fetching and analysis

@@ -1,9 +1,9 @@
 # Agent notes — gpu-dev (GPU developer-server platform)
 
-This is NOT the sibling `osdc/` directory. Both are branded "Open Source Dev
-Cloud" and share no code: `gpu-dev/` is the GPU developer-server platform behind
-the `gpu-dev` CLI; `osdc/` is the Kubernetes CI-runner platform. Separate AWS
-state, separate clusters. Never plan or apply against one from the other.
+This is NOT the sibling `osdc/` directory. `gpu-dev/` is the GPU developer-server
+platform behind the `gpu-dev` CLI; `osdc/` is the Kubernetes CI-runner platform.
+Separate AWS state, separate clusters. Never plan or apply against one from the
+other.
 
 the first part of this doc is the devs description of the repo. Everything under the 'AGENT SECTION' is for you, the agent, to update state, tricky things, what we're working on and more.
 This will help both you, the agent, but also other agents down the road that share the responsibility of this repo management to navigate the repo.
