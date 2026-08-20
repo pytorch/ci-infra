@@ -107,6 +107,9 @@ spec:
             # not k8s Mi/Gi), so it tracks __RCLONE_MEMORY_LIMIT__ without runtime arithmetic.
             - name: GOMEMLIMIT
               value: "__GOMEMLIMIT__"
+            # Pre-Go-1.25 image: unset, this takes the host vCPU count, not limits.cpu.
+            - name: GOMAXPROCS
+              value: "2"
           command:
             - /bin/sh
             - -c
