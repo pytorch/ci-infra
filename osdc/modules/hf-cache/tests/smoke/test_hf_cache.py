@@ -7,6 +7,8 @@ rendered with the /mnt/hf_cache mount.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from helpers import assert_daemonset_healthy, filter_daemonsets, run_kubectl
 
@@ -102,6 +104,19 @@ class TestHfCacheMountDaemonSet:
         assert 0 < gml_mib < limit_mib, (
             f"GOMEMLIMIT ({gml_mib}MiB) must be >0 and below the container limit ({limit}) — "
             "a soft ceiling with headroom, not the hard cap."
+        )
+
+    def test_gomaxprocs_pinned_to_cpu_limit(self, mount_pod_spec: dict) -> None:
+        """Unset, Go takes the host vCPU count rather than limits.cpu."""
+        rclone = mount_pod_spec["containers"][0]
+        gomaxprocs = next((e.get("value") for e in rclone.get("env", []) if e["name"] == "GOMAXPROCS"), None)
+        assert gomaxprocs is not None, "rclone must pin GOMAXPROCS."
+        assert gomaxprocs.isdigit(), f"GOMAXPROCS must be an integer; got {gomaxprocs!r}."
+
+        cpu_limit = rclone.get("resources", {}).get("limits", {}).get("cpu", "")
+        cpu_cores = int(cpu_limit[:-1]) / 1000 if cpu_limit.endswith("m") else float(cpu_limit)
+        assert int(gomaxprocs) <= max(2, math.ceil(cpu_cores)), (
+            f"GOMAXPROCS ({gomaxprocs}) exceeds the CPU limit ({cpu_limit})."
         )
 
     def test_hostpath_bidirectional(self, mount_pod_spec: dict) -> None:
