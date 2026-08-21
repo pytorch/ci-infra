@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-dev"
-version = "0.7.15"
+version = "0.7.16"
 description = "CLI + Python SDK for PyTorch GPU developer server reservations"
 authors = [{name = "PyTorch Team"}]
 readme = "cli-tools/gpu-dev-cli/README.md"
