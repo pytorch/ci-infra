@@ -187,7 +187,7 @@ class TestLoadRunnerPodOverhead:
         )
         # Consumer disagrees on runner_cpu_m so we can verify it was walked.
         _write_generated_yaml(
-            consumer / "modules" / "arc-runners-b200" / "generated" / "r.yaml",
+            consumer / "modules" / "arc-runners-h100" / "generated" / "r.yaml",
             runner_cpu="900m",
         )
         result = load_runner_pod_overhead(upstream, consumer)

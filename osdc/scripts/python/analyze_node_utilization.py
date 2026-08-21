@@ -519,7 +519,7 @@ def main(argv: list[str] | None = None) -> int:
     # Collect runner + nodepool defs from upstream and any peer/consumer modules.
     # The walk also fires when consumer_root == upstream_dir (single-repo OSDC
     # layout), which lets us discover sibling fixed-capacity modules like
-    # arc-runners-b200 / nodepools-b200 that live next to the upstream defaults.
+    # arc-runners-h100 / nodepools-h100 that live next to the upstream defaults.
     # load_runner_defs / load_nodepool_defs dedupe by resolved path, so the
     # explicit upstream entries are safe even when the walk re-yields them.
     runner_dirs = [

@@ -57,7 +57,7 @@ Node `ip-10-8-105-26` (`p5.48xlarge`, 8× H100 80GB) on cluster `meta-prod-aws-u
   documented-unreliable; the export/import round-trip is the authoritative test).
 
 ### Requirements for single-node fabric handles on H100
-1. **NVSwitch node** — `p5` (H100) and `p6-b200` (B200) qualify; each is an 8-GPU intra-node
+1. **NVSwitch node** — `p5` (H100) qualifies; it is an 8-GPU intra-node
    NVSwitch island.
 2. **Fabric Manager running** — `nv-fabricmanager`; already running via the EKS NVIDIA AMI,
    which is why fabric `State` is `Completed`. FM configures NVSwitch/fabric; it does **not**
@@ -80,8 +80,7 @@ Node `ip-10-8-105-26` (`p5.48xlarge`, 8× H100 80GB) on cluster `meta-prod-aws-u
 
 ## The documented Fabric Manager / IMEX race
 
-`modules/nodepools-h100/scripts/h100-node-setup.sh:122-143` (identical block in
-`modules/nodepools-b200/scripts/b200-node-setup.sh`), added by osdc#552 (2026-05-12) after
+`modules/nodepools-h100/scripts/h100-node-setup.sh:122-143`, added by osdc#552 (2026-05-12) after
 osdc#541's eager approach caused a 100% H100 node-kill rate:
 
 - **The race:** starting `nvidia-fabricmanager` from cloud-init races the GPUs' on-die
@@ -176,8 +175,6 @@ makes it accessible to non-root runner UIDs (e.g. uid 1000) as well.
 
 ## Hardware scope
 - **H100 (`p5.48xlarge`): verified.**
-- **B200 (`p6-b200.48xlarge`): expected identical** (same NVSwitch single-node architecture,
-  same AMI and node bootstrap) but not yet tested.
 - **GB200 NVL72 (cross-node MNNVL):** a different regime that *does* need the `nvidia-imex`
   daemon; not present in OSDC and not required for single-node fabric handles. On AWS this is
   P6e-GB200 UltraServers (Capacity Blocks only) — overkill for exercising this code path.

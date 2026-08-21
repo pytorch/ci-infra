@@ -6,7 +6,7 @@ Per-unit cost estimates for metrics cardinality and log volume. For architecture
 > - **Per-source whitelists landed after the original calculation.** node-exporter is now ~4 series per node (was estimated at 200–400) and cAdvisor is restricted to control-plane namespaces (was estimated at 30–50 cluster-wide).
 > - **The kubelet ServiceMonitor is currently disabled** on IPv6-only EKS (`modules/monitoring/helm/values.yaml` `kubelet.enabled: false`). Both cAdvisor and `kubelet_*` series produce **zero** today. The per-source descriptions below describe the planned post-IPv6 state, not current behavior. See `observability.md` "Disabled scrapers (IPv6 migration)".
 > - **`meta-prod-aws-ue2` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 10 (5/arch × 2), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
-> - **Scale-set count is 50**, not 40 (42 upstream + 4 B200 + 4 H100).
+> - **Scale-set count is 46**, not 40 (42 upstream + 4 H100).
 > - **`gha_capacity_*` family count is 16**, not 15.
 >
 > Re-validate against live Grafana Cloud Mimir before relying on aggregate numbers (e.g. `count by (__name__) ({cluster="meta-prod-aws-ue2"})`).
@@ -108,7 +108,6 @@ Container stdout/stderr is **not** shipped. Anything below assumes the journal +
 
 ### Per Node (Journal Overhead)
 
-<<<<<<< HEAD
 | Component | Raw rate | After pipeline | ~Per job lifecycle (30 min) |
 |-----------|----------|:-:|:-:|
 | **Runner pod** (ARC orchestrator) | ~10-50 lines/min | ~2-10 lines/min | 50-300 lines (~0.01-0.06 MB) |
@@ -162,9 +161,6 @@ Subset-scoped DaemonSets (not on every Karpenter node):
 These run on tainted `CriticalAddonsOnly` base nodes. Rates are **per replica** — multiply by actual replica count for each service.
 
 | Source | ~Lines/min per replica | Notes |
-=======
-| Source | ~Lines/min per node | Notes |
->>>>>>> main
 |--------|:---:|-------|
 | **kubelet** (journal) | 30-100 | Pod lifecycle, volume mounts, probes |
 | **containerd** (journal) | 20-80 | Container start/stop, image pulls |
@@ -212,7 +208,7 @@ Where `events_GB` depends on cluster activity level (see events table above). Bo
 
 Peak active series estimate for the `meta-prod-aws-ue2` cluster, derived from the fleet simulation in [current_runner_load_distribution.md](current_runner_load_distribution.md) and the per-unit rates above. Represents the worst-case simultaneous peak where every runner type hits its individual peak concurrency at the same time.
 
-**Date:** 2026-03-24 (input data); per-source descriptions and module/scale-set composition refreshed 2026-05-06. The aggregate totals below have **not** been recomputed against the current whitelists — see the stale-estimates warning at the top of this doc. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the fleet simulation). Actual cardinality will also be higher due to unmapped runner types, B200/H100 GPU runners (local `arc-runners-b200`/`arc-runners-h100` modules, not in fleet simulation), and other repos sharing the cluster.
+**Date:** 2026-03-24 (input data); per-source descriptions and module/scale-set composition refreshed 2026-05-06. The aggregate totals below have **not** been recomputed against the current whitelists — see the stale-estimates warning at the top of this doc. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the fleet simulation). Actual cardinality will also be higher due to unmapped runner types, H100 GPU runners (local `arc-runners-h100` module, not in fleet simulation), and other repos sharing the cluster.
 
 ### Input data
 
@@ -222,10 +218,10 @@ From the fleet simulation:
 |---|---|---|
 | Runner pods at peak | 7,367 | Sum of per-type peak concurrency |
 | CPU-only runner nodes | 680 | c7a.48xlarge (267) + c7i.metal-24xl (36) + m6i.32xlarge (27) + m7i.48xlarge (48) + m8g.16xlarge (29) + m8g.48xlarge (15) + r7a.48xlarge (138) + r7g.16xlarge (120) |
-| GPU runner nodes | 1,433 | g4dn.12xlarge (157) + g4dn.8xlarge (89) + g4dn.metal (79) + g5.12xlarge (58) + g5.48xlarge (40) + g5.8xlarge (596) + g6.12xlarge (26) + g6.8xlarge (388). H100 (`p5.48xlarge`) and B200 nodes are not in the fleet simulation and are not counted here. |
-| Total GPUs | 2,989 | Across all GPU node types in the fleet simulation (excludes H100/B200) |
+| GPU runner nodes | 1,433 | g4dn.12xlarge (157) + g4dn.8xlarge (89) + g4dn.metal (79) + g5.12xlarge (58) + g5.48xlarge (40) + g5.8xlarge (596) + g6.12xlarge (26) + g6.8xlarge (388). H100 (`p5.48xlarge`) nodes are not in the fleet simulation and are not counted here. |
+| Total GPUs | 2,989 | Across all GPU node types in the fleet simulation (excludes H100) |
 | Base infra nodes | 6 | `clusters.yaml` defaults → `base_node_count: 6` (m7i.12xlarge per `base_node_instance_type`; `meta-prod-aws-ue2` has no override) |
-| Runner scale sets | 50 | 42 upstream (`modules/arc-runners/defs/`) + 4 B200 (`modules/arc-runners-b200/defs/`) + 4 H100 (`modules/arc-runners-h100/defs/`) |
+| Runner scale sets | 46 | 42 upstream (`modules/arc-runners/defs/`) + 4 H100 (`modules/arc-runners-h100/defs/`) |
 
 From `clusters.yaml` defaults plus `meta-prod-aws-ue2` overrides:
 
@@ -266,7 +262,7 @@ Using midpoint of per-replica ranges from the [cluster-wide reference table](#cl
 
 ### Peak cardinality calculation
 
-Applying the [scaling formula](#scaling-formula-metrics). **The numerical totals below are stale** — they predate the metric whitelisting work (PR #418, #428) that landed after this calculation, and they use the old scale-set count (40 → now 50) and the off-by-one DCGM constant (26 → actual 25). The structure is preserved for reference; re-validate against live Mimir before relying on these numbers.
+Applying the [scaling formula](#scaling-formula-metrics). **The numerical totals below are stale** — they predate the metric whitelisting work (PR #418, #428) that landed after this calculation, and they use the old scale-set count (40 → now 46) and the off-by-one DCGM constant (26 → actual 25). The structure is preserved for reference; re-validate against live Mimir before relying on these numbers.
 
 ```
 Total series ≈ C_fixed
@@ -281,14 +277,14 @@ Total series ≈ C_fixed
              + 680 × 715                =    486,200   (stale: per-node node-exporter now ~4; cAdvisor currently 0)
              + 1,433 × 715 + 25 × 2,989 =  1,099,320   (stale: per-node node-exporter now ~4; cAdvisor currently 0; H100 GPUs not counted)
              + 6 × 1,515               =      9,090   (stale: per-node multiplier overstated; base node count refreshed 5 → 6)
-             + 50 × 85                  =      4,250   (was 40 × 85 = 3,400 before H100 module + 6 added scale sets)
+             + 46 × 85                  =      3,910   (was 40 × 85 = 3,400 before H100 module + 2 added scale sets)
 
            ≈ stale; do not rely on aggregate totals
 ```
 
 ### Summary
 
-> **Stale table — do not rely on these numbers.** The "Runner pods (cAdvisor)" line is now 0 (cAdvisor restricted to control-plane namespaces). The GPU/CPU runner node lines are overstated by 1–2 orders of magnitude (node-exporter now ~2 series per node, not ~300). The "Scale sets" line at 50 × ~85 ≈ ~4,250 (was 40 × 85 in this table). Totals not recomputed — see warning at top of doc.
+> **Stale table — do not rely on these numbers.** The "Runner pods (cAdvisor)" line is now 0 (cAdvisor restricted to control-plane namespaces). The GPU/CPU runner node lines are overstated by 1–2 orders of magnitude (node-exporter now ~2 series per node, not ~300). The "Scale sets" line at 46 × ~85 ≈ ~3,910 (was 40 × 85 in this table). Totals not recomputed — see warning at top of doc.
 
 | Component | ~Active Series (stale) | % of Total (stale) |
 |---|---|---|
@@ -300,7 +296,7 @@ Total series ≈ C_fixed
 | Cluster-wide fixed | ~1,100 | 0.1% |
 | **Total at peak** | **~1,895,000** | |
 
-**~1.9M active series** at simultaneous peak. **WARNING:** this total is stale and overstated — see the warning at the top of this doc; the per-source whitelisting work landed after this calculation was made. GPU runner nodes dominate the (stale) breakdown due to DCGM per-GPU metrics. The ARC listener line grew from ~300 to ~4,250 series with the proactive-capacity metrics at the 50-scale-set count for `meta-prod-aws-ue2` (50 × ~85), but is still a small fraction of total. Re-validate against live Mimir before relying on these numbers.
+**~1.9M active series** at simultaneous peak. **WARNING:** this total is stale and overstated — see the warning at the top of this doc; the per-source whitelisting work landed after this calculation was made. GPU runner nodes dominate the (stale) breakdown due to DCGM per-GPU metrics. The ARC listener line grew from ~300 to ~3,910 series with the proactive-capacity metrics at the 46-scale-set count for `meta-prod-aws-ue2` (46 × ~85), but is still a small fraction of total. Re-validate against live Mimir before relying on these numbers.
 
 ### Scaling at sub-peak load
 
@@ -318,7 +314,7 @@ Active series scale roughly linearly with fleet size. Using the fleet estimates 
 
 Estimated daily log volume (GB/day) sent to Grafana Cloud Loki, derived from the fleet simulation in [current_runner_load_distribution.md](current_runner_load_distribution.md) and the per-unit rates above.
 
-**Date:** 2026-03-24 (input data); per-source descriptions refreshed 2026-06-25. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the fleet simulation). Actual volume will also be higher due to unmapped runner types, B200/H100 GPU runners, and other repos sharing the cluster.
+**Date:** 2026-03-24 (input data); per-source descriptions refreshed 2026-06-25. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the fleet simulation). Actual volume will also be higher due to unmapped runner types, H100 GPU runners, and other repos sharing the cluster.
 
 ### Input data
 

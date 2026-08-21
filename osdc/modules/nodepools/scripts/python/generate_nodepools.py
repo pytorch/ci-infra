@@ -216,7 +216,7 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     fleet_name = nodepool_def.get("fleet_name")
     weight = nodepool_def.get("weight")
 
-    # Per-def kubelet topology overrides (e.g. B200 needs single-numa-node/pod)
+    # Per-def kubelet topology overrides (e.g. multi-NUMA GPU nodes need single-numa-node/pod)
     topology_policy = nodepool_def.get("topology_manager_policy", "best-effort")
     topology_scope = nodepool_def.get("topology_manager_scope", "container")
 
