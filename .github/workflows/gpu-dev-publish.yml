@@ -63,7 +63,10 @@ jobs:
         if: github.ref_type == 'tag'
         run: |
           V=${GITHUB_REF#refs/tags/gpu-dev/v}
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/gpu-dev/$V/json")
+          # `|| CODE=000`: the default shell is `bash -e`, which would abort on a
+          # curl transport failure before the warn branch below could run.
+          CODE=$(curl -sS --max-time 20 --retry 3 -o /dev/null \
+            -w '%{http_code}' "https://pypi.org/pypi/gpu-dev/$V/json") || CODE=000
           case "$CODE" in
             404) echo "gpu-dev $V is not on PyPI yet" ;;
             200) echo "::error::gpu-dev $V is already on PyPI and versions are immutable; bump and re-tag"
