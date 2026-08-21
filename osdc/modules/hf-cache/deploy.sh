@@ -30,6 +30,10 @@ RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.6
 TAINT_REMOVER_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.taint_remover_image \
   "public.ecr.aws/amazonlinux/amazonlinux:2023")
 VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")
+# Per-socket TCP receive-buffer ceiling for the rclone pod netns; socket memory is what
+# OOM-kills the mount (see mount-daemonset.yaml.tpl). 512Ki x ~280 conns keeps sock well
+# inside the smallest tier; intra-region S3 BDP needs far less.
+TCP_RMEM_MAX=$(uv run "$CFG" "$CLUSTER" hf_cache.tcp_rmem_max "524288")
 # rclone RSS scales with job concurrency ~ GPU count, so memory is tiered by
 # instance-gpu-count and reserved (request == limit). One DaemonSet per tier; the
 # affinity keeps them exclusive. Fields:
@@ -119,6 +123,7 @@ render_mount_ds() {
     -e "s|__RCLONE_MEMORY_LIMIT__|${4}|g" \
     -e "s|__GOMEMLIMIT__|${gomemlimit}|g" \
     -e "s|__BUFFER_SIZE__|${5}|g" \
+    -e "s|__TCP_RMEM_MAX__|${TCP_RMEM_MAX}|g" \
     "$MODULE_DIR/kubernetes/mount-daemonset.yaml.tpl"
 }
 
