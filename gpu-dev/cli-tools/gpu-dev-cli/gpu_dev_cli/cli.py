@@ -2026,7 +2026,7 @@ def submit(ctx, gpu_type, gpus, hours, disk, ref, no_persistent_disk, spot, dock
 
     try:
         if timeout >= 60:
-            wait_str = f"up to {timeout//60}h{(" " + str(timeout%60) + "m") if timeout%60 else ""}"
+            wait_str = f"up to {timeout//60}h{(' ' + str(timeout%60) + 'm') if timeout%60 else ''}"
         else:
             wait_str = f"up to {timeout}m"
         rprint(f"[cyan]⏳ Waiting for reservation {short_id} to become active ({wait_str}; can queue when cluster is full)...[/cyan]")
