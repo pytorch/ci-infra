@@ -36,6 +36,7 @@ CPU_DISRUPTION_BUDGET=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_disrup
 CPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_consolidate_after "20m")
 BAREMETAL_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.baremetal_consolidate_after "")
 COMPACTOR_ENABLED=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.enabled "false")
+FAST_IMAGE_PULL=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.fast_image_pull "false")
 ENABLED_MODULES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" enabled-modules)
 
 # Cluster-level capacity_reservation_ids override, namespaced per module name
@@ -55,6 +56,7 @@ NODEPOOLS_DEFS_DIR="$DEFS_DIR" \
   NODEPOOLS_CPU_CONSOLIDATE_AFTER="$CPU_CONSOLIDATE_AFTER" \
   NODEPOOLS_BAREMETAL_CONSOLIDATE_AFTER="$BAREMETAL_CONSOLIDATE_AFTER" \
   NODEPOOLS_COMPACTOR_ENABLED="$COMPACTOR_ENABLED" \
+  NODEPOOLS_FAST_IMAGE_PULL="$FAST_IMAGE_PULL" \
   NODEPOOLS_ENABLED_MODULES="$ENABLED_MODULES" \
   NODEPOOLS_CAPACITY_RESERVATION_IDS_OVERRIDE="$CAPACITY_RESERVATION_IDS_OVERRIDE" \
   uv run "$MODULE_DIR/scripts/python/generate_nodepools.py"

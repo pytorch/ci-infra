@@ -164,6 +164,7 @@ clusters:
     nodepools:
       gpu_consolidate_after: "10s"
       cpu_consolidate_after: "10s"
+      fast_image_pull: true  # staging-only soak; see docs/fast-image-pull.md
     arc-runners:
       # Org-wide (was github.com/pytorch/pytorch-canary). A repo-scoped URL forces
       # runner_group → "default" in generate_runners.py, so the org URL is required
@@ -241,6 +242,7 @@ clusters:
     nodepools:
       gpu_consolidate_after: "10s"
       cpu_consolidate_after: "10s"
+      fast_image_pull: true  # staging-only soak; see docs/fast-image-pull.md
     arc-runners:
       # Org-wide (was github.com/pytorch/pytorch-canary). A repo-scoped URL forces
       # runner_group → "default" in generate_runners.py, so the org URL is required
@@ -329,6 +331,7 @@ clusters:
     nodepools:
       gpu_consolidate_after: "10s"
       cpu_consolidate_after: "10s"
+      fast_image_pull: true  # staging-only soak; see docs/fast-image-pull.md
     arc-runners:
       # Org-wide (was github.com/pytorch/pytorch-canary). A repo-scoped URL forces
       # runner_group → "default" in generate_runners.py, so the org URL is required
