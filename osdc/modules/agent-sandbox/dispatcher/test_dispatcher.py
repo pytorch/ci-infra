@@ -130,6 +130,87 @@ class TestJobManifest:
         assert labels["app"] == "sandbox-task"
 
 
+class TestGpuJobManifest:
+    """The GPU Job is where the isolation trade-off is encoded, so assert its shape: the
+    wrong RuntimeClass lands the pod on a fleet whose AMI has no nvproxy, and a missing
+    device request lets two tasks share one GPU."""
+
+    def _gpu_pod_spec(self):
+        return dispatcher.job_manifest("abc123abc123", {"repo": "org/repo", "gpu": True})["spec"]["template"]["spec"]
+
+    def test_uses_the_gpu_runtime_class(self):
+        assert self._gpu_pod_spec()["runtimeClassName"] == dispatcher.GPU_RUNTIME_CLASS
+
+    def test_cpu_task_keeps_the_cpu_runtime_class(self):
+        spec = dispatcher.job_manifest("abc123abc123", {"repo": "org/repo"})["spec"]["template"]["spec"]
+        assert spec["runtimeClassName"] == dispatcher.RUNTIME_CLASS
+
+    def test_requests_exactly_one_gpu_in_requests_and_limits(self):
+        """Extended resources must match on both sides, and this single device is what
+        pins the fleet to one task per node."""
+        resources = self._gpu_pod_spec()["containers"][0]["resources"]
+        assert resources["requests"]["nvidia.com/gpu"] == "1"
+        assert resources["limits"]["nvidia.com/gpu"] == "1"
+
+    def test_cpu_task_requests_no_gpu(self):
+        spec = dispatcher.job_manifest("abc123abc123", {"repo": "org/repo"})["spec"]["template"]["spec"]
+        assert "nvidia.com/gpu" not in spec["containers"][0]["resources"]["requests"]
+
+    def test_gpu_slot_is_bigger_than_the_cpu_slot(self):
+        gpu = self._gpu_pod_spec()["containers"][0]["resources"]["requests"]
+        assert gpu["cpu"] == dispatcher.GPU_SLOT_CPU
+        assert gpu["memory"] == dispatcher.GPU_SLOT_MEMORY
+        assert gpu["ephemeral-storage"] == dispatcher.GPU_SLOT_DISK
+
+    def test_requests_equal_limits_and_no_identity(self):
+        """Everything the CPU task guarantees still holds on the GPU path."""
+        spec = self._gpu_pod_spec()
+        assert spec["containers"][0]["resources"]["requests"] == spec["containers"][0]["resources"]["limits"]
+        assert spec["serviceAccountName"] == "sandbox-agent"
+        assert spec["automountServiceAccountToken"] is False
+
+    def test_task_is_told_it_has_a_gpu(self):
+        """SANDBOX_GPU is what makes the task report nvidia-smi back, which is the only
+        end-to-end evidence that nvproxy handed it a device."""
+        env = {e["name"]: e["value"] for e in self._gpu_pod_spec()["containers"][0]["env"]}
+        assert env["SANDBOX_GPU"] == "1"
+        cpu_spec = dispatcher.job_manifest("abc123abc123", {"repo": "org/repo"})["spec"]["template"]["spec"]
+        cpu_env = {e["name"]: e["value"] for e in cpu_spec["containers"][0]["env"]}
+        assert cpu_env["SANDBOX_GPU"] == ""
+
+
+class TestGpuCapacity:
+    def test_gpu_and_cpu_capacity_are_counted_separately(self, monkeypatch):
+        """A GPU node is one task and costs real money, so CPU work must not consume the
+        GPU cap and a full GPU cap must not block CPU tasks."""
+        monkeypatch.setattr(dispatcher, "MAX_CONCURRENT_TASKS", 2)
+        monkeypatch.setattr(dispatcher, "MAX_CONCURRENT_GPU_TASKS", 1)
+        dispatcher._TASKS.clear()
+
+        assert dispatcher.start_task(gpu=True) is not None
+        assert dispatcher.start_task(gpu=True) is None, "GPU cap is 1"
+        assert dispatcher.start_task(gpu=False) is not None, "CPU work must not be blocked by the GPU cap"
+        assert dispatcher.start_task(gpu=False) is not None
+        assert dispatcher.start_task(gpu=False) is None, "CPU cap is 2"
+
+    def test_healthz_reports_both(self, server):
+        dispatcher._TASKS.clear()
+        dispatcher.start_task(gpu=True)
+        body = _get(f"{server}/healthz")
+        assert body["gpu_in_flight"] == 1
+        assert body["in_flight"] == 0
+        assert body["gpu_capacity"] == dispatcher.MAX_CONCURRENT_GPU_TASKS
+
+    def test_over_gpu_capacity_is_429(self, server, monkeypatch):
+        monkeypatch.setattr(dispatcher, "MAX_CONCURRENT_GPU_TASKS", 1)
+        dispatcher._TASKS.clear()
+        assert dispatcher.start_task(gpu=True) is not None
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"repo": "org/repo", "gpu": True})
+        assert exc.value.code == 429
+        assert "GPU tasks" in json.loads(exc.value.read())["error"]
+
+
 class TestRunToCompletion:
     def test_creates_one_job_and_returns_the_parsed_result(self, fake_k8s):
         result = dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
@@ -238,8 +319,8 @@ class TestHTTPSurface:
 
     @pytest.mark.parametrize(
         ("field", "value"),
-        [("ref", None), ("task", []), ("model", {}), ("wait", "yes")],
-        ids=["ref-null", "task-list", "model-object", "wait-string"],
+        [("ref", None), ("task", []), ("model", {}), ("wait", "yes"), ("gpu", "yes")],
+        ids=["ref-null", "task-list", "model-object", "wait-string", "gpu-string"],
     )
     def test_wrong_field_type_is_400(self, server, field, value):
         with pytest.raises(urllib.error.HTTPError) as exc:

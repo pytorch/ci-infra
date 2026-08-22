@@ -1,0 +1,40 @@
+# Karpenter NodePool fleet: ai-sandbox-gpu — the GPU half of the agent sandbox.
+#
+# Separate from every CI fleet on purpose. gVisor's nvproxy forwards NVIDIA ioctls
+# straight to the host driver, so untrusted agent code can reach the GPU driver — a
+# driver bug is a node takeover. Keeping these nodes single-purpose means the blast
+# radius is other sandbox tasks, never a build or test job. docs/agent-sandbox-gpu-gvisor.md
+# has the threat model.
+#
+# The AMI must exist in the cluster's region before this fleet can launch a node:
+#   just build-agent-sandbox-gpu-ami <cluster>
+# It pins BOTH the AL2023 NVIDIA base (hence the driver) and the gVisor release, because
+# nvproxy only supports an explicit list of driver versions. Neither moves alone.
+#
+# Sizing: one task per node, enforced by the GPU itself. g6.4xlarge has exactly one L4,
+# and a task requests nvidia.com/gpu: 1, so a second task cannot land here no matter what
+# CPU and memory say. That is deliberate — it removes cross-task VRAM residue and GPU
+# side channels, which the 3-slots-per-node packing on the CPU fleet would reintroduce.
+#
+# g6.4xlarge: 1x L4 (24 GiB VRAM), 16 vCPU, 64 GiB, 600 GB NVMe. Same L4 the g6 CI fleet
+# uses, so it adds no new instance family to the account.
+fleet:
+  name: ai-sandbox-gpu
+  arch: amd64
+  gpu: true
+  instances:
+    - type: g6.4xlarge
+      weight: 100
+      node_disk_size: 600
+      has_nvme: true
+      # Select the gVisor+nvproxy AMI built by packer/, by tag rather than name glob so
+      # the naming scheme can change without touching this def. This overrides the
+      # generator's stock NVIDIA name glob.
+      #
+      # TODO: matches on osdc.io/ami alone, so neither the K8sVersion nor the NVIDIA
+      # driver the build recorded is read back at launch. Same gap as the CPU fleet, and
+      # it bites harder here: an AMI rebuilt onto an unsupported driver would launch
+      # nodes whose sandboxes cannot start. test_gpu_ami_exists_in_region checks both
+      # tags meanwhile.
+      ami_selector_tags:
+        osdc.io/ami: ai-sandbox-gpu-gvisor

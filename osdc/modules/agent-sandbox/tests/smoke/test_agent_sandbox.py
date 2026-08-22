@@ -217,6 +217,36 @@ class TestDispatcherRBAC:
         assert self._can_i("create", "jobs", subject, NAMESPACE) == "no"
 
 
+class TestGvisorGpuRuntimeClass:
+    """The GPU class is what routes a GPU task to the fleet whose AMI has nvproxy enabled.
+    A GPU pod on the CPU class would start and then find no device."""
+
+    def test_gpu_runtimeclass_exists(self) -> None:
+        rc = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])
+        assert rc["handler"] == "runsc", f"gvisor-gpu must use handler 'runsc', got {rc.get('handler')!r}."
+
+    def test_gpu_runtimeclass_pins_the_gpu_fleet(self) -> None:
+        """Separate fleet is the containment story: nvproxy exposes the host NVIDIA driver
+        to untrusted code, so those nodes must never be shared with CI work."""
+        rc = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])
+        node_selector = rc.get("scheduling", {}).get("nodeSelector", {})
+        assert node_selector.get("node-fleet") == "ai-sandbox-gpu", (
+            f"gvisor-gpu must pin node-fleet=ai-sandbox-gpu, got {node_selector!r}."
+        )
+
+    def test_gpu_runtimeclass_tolerates_the_gpu_taint(self) -> None:
+        rc = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])
+        keys = {t.get("key") for t in rc.get("scheduling", {}).get("tolerations", [])}
+        assert {"node-fleet", "instance-type", "nvidia.com/gpu"} <= keys, (
+            f"gvisor-gpu must tolerate the fleet, instance-type and nvidia.com/gpu taints; got {keys}."
+        )
+
+    def test_cpu_and_gpu_classes_target_different_fleets(self) -> None:
+        cpu = run_kubectl(["get", "runtimeclass", "gvisor"])["scheduling"]["nodeSelector"]["node-fleet"]
+        gpu = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])["scheduling"]["nodeSelector"]["node-fleet"]
+        assert cpu != gpu, f"the two RuntimeClasses must not share a fleet; both pin {cpu!r}."
+
+
 class TestAgentSandboxServiceAccounts:
     def test_sigv4_proxy_sa_has_irsa(self) -> None:
         """sigv4-proxy signs AWS/Bedrock with a read-only IRSA role."""

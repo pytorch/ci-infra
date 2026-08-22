@@ -86,6 +86,10 @@ INSTANCE_SPECS: dict[str, dict] = {
     "g5.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g5.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
+    # The agent sandbox's GPU fleet (modules/nodepools-agent-sandbox/defs/ai-sandbox-gpu.yaml).
+    # Smallest g6 with a full L4 and enough CPU/RAM to be useful, and one GPU is what pins
+    # that fleet to one task per node.
+    "g6.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 60620, "gpu": 1, "arch": "amd64"},
     "g6.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g6.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
@@ -186,6 +190,7 @@ ENI_MAX_PODS: dict[str, int] = {
     "g5.12xlarge": 737,
     "g5.24xlarge": 737,
     "g5.48xlarge": 345,
+    "g6.4xlarge": 234,
     "g6.8xlarge": 234,
     # Fleet fallback sizes — g6
     "g6.16xlarge": 234,
