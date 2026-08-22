@@ -228,6 +228,75 @@ class TestEKSIPv6Config:
 
 
 # ============================================================================
+# VPC Endpoints
+# ============================================================================
+
+
+class TestS3GatewayEndpoint:
+    """Verify the S3 gateway endpoint keeps in-region S3 off the NAT gateways.
+
+    See docs/s3-gateway-endpoint.md.
+    """
+
+    @pytest.fixture(scope="class")
+    def s3_endpoint(self, eks_cluster_info, cluster_config):
+        region = cluster_config["cluster"].get("region", "us-west-2")
+        vpc_id = eks_cluster_info["cluster"]["resourcesVpcConfig"]["vpcId"]
+        result = run_aws(
+            [
+                "ec2",
+                "describe-vpc-endpoints",
+                "--region",
+                region,
+                "--filters",
+                f"Name=vpc-id,Values={vpc_id}",
+                f"Name=service-name,Values=com.amazonaws.{region}.s3",
+            ]
+        )
+        endpoints = result.get("VpcEndpoints", [])
+        assert endpoints, (
+            f"No S3 VPC endpoint in {vpc_id} ({region}). Every in-region S3 byte — Harbor layer "
+            f"pulls, hf-cache reads — is billed as NAT gateway data processing at $0.045/GB."
+        )
+        return endpoints[0]
+
+    def test_endpoint_is_gateway_type(self, s3_endpoint):
+        # An Interface endpoint resolves the same way but bills per hour and
+        # per GB, so it would leave most of the saving on the table.
+        endpoint_type = s3_endpoint.get("VpcEndpointType")
+        assert endpoint_type == "Gateway", f"S3 VPC endpoint type is {endpoint_type!r}, expected 'Gateway'"
+
+    def test_endpoint_is_available(self, s3_endpoint):
+        state = s3_endpoint.get("State")
+        assert state == "available", f"S3 VPC endpoint {s3_endpoint.get('VpcEndpointId')} state is {state!r}"
+
+    def test_endpoint_covers_every_private_route_table(self, s3_endpoint, eks_cluster_info, cluster_config):
+        # A route table the endpoint misses has no symptom other than the bill.
+        region = cluster_config["cluster"].get("region", "us-west-2")
+        vpc_id = eks_cluster_info["cluster"]["resourcesVpcConfig"]["vpcId"]
+        result = run_aws(
+            [
+                "ec2",
+                "describe-route-tables",
+                "--region",
+                region,
+                "--filters",
+                f"Name=vpc-id,Values={vpc_id}",
+                "Name=tag:Name,Values=*-private-*",
+            ]
+        )
+        private_rtb_ids = {rtb["RouteTableId"] for rtb in result.get("RouteTables", [])}
+        assert private_rtb_ids, f"No private route tables found in {vpc_id}"
+
+        associated = set(s3_endpoint.get("RouteTableIds", []))
+        missing = private_rtb_ids - associated
+        assert not missing, (
+            f"S3 gateway endpoint {s3_endpoint.get('VpcEndpointId')} is not associated with private "
+            f"route table(s) {sorted(missing)}; nodes in those subnets still reach S3 over the NAT gateway."
+        )
+
+
+# ============================================================================
 # ECR Images
 # ============================================================================
 
