@@ -6,13 +6,13 @@
 """Generate BuildKit Deployment and NodePool YAMLs with dynamic pod sizing.
 
 An arch's instance types are given as "type:pods_per_node" pairs, e.g.
-"m6id.24xlarge:2,m6id.12xlarge:1". A NodePool may span several sizes so
-Karpenter has a fallback when one runs out of on-demand capacity.
+"m6id.24xlarge:2,m6id.12xlarge:1". Each pair becomes its own weighted
+NodePool, so Karpenter has a fallback when the preferred size runs out of
+on-demand capacity.
 
-One Deployment means one pod spec, so the pairs are constraints rather than
-per-node settings: the pod takes the smallest size any pair allows, which
-guarantees every type holds at least its declared count. Actual placement is
-then plain bin-packing. Generation fails if a type cannot hold what it
+One Deployment means one pod spec. The first pair is the primary and sets that
+size; the rest are fallbacks, tried in listed order and only when the one above
+cannot provision. Generation fails if a fallback cannot hold the count it
 declared.
 
 Reads instance types, replicas, and pods_per_node via CLI arguments
@@ -70,6 +70,15 @@ DAEMONSET_OVERHEAD_MEM_MI = 440  # 440Mi total across all DaemonSets
 MARGIN = 0.90
 
 
+def allocatable_resources(instance_type: str) -> tuple[int, int]:
+    """Allocatable CPU (milli) and memory (MiB) after kubelet reserve."""
+    spec = INSTANCE_SPECS[instance_type]
+    vcpu = spec["vcpu"]
+    max_pods = ENI_MAX_PODS.get(instance_type, vcpu)  # fallback to vcpu if unknown
+    reserved_cpu_m, reserved_mem_mi = kubelet_reserved(vcpu, spec["memory_gib"], max_pods)
+    return vcpu * 1000 - reserved_cpu_m, spec["memory_mi"] - reserved_mem_mi
+
+
 def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
     """Compute per-pod CPU and memory for Guaranteed QoS.
 
@@ -78,16 +87,7 @@ def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
       usable = allocatable - daemonset_overhead
       per_pod = floor(usable * margin / pods_per_node)
     """
-    spec = INSTANCE_SPECS[instance_type]
-    vcpu = spec["vcpu"]
-    memory_gib = spec["memory_gib"]
-    memory_mi = spec["memory_mi"]
-
-    max_pods = ENI_MAX_PODS.get(instance_type, vcpu)  # fallback to vcpu if unknown
-    reserved_cpu_m, reserved_mem_mi = kubelet_reserved(vcpu, memory_gib, max_pods)
-
-    allocatable_cpu_m = vcpu * 1000 - reserved_cpu_m
-    allocatable_mem_mi = memory_mi - reserved_mem_mi
+    allocatable_cpu_m, allocatable_mem_mi = allocatable_resources(instance_type)
 
     usable_cpu_m = allocatable_cpu_m - DAEMONSET_OVERHEAD_CPU_M
     usable_mem_mi = allocatable_mem_mi - DAEMONSET_OVERHEAD_MEM_MI
@@ -132,39 +132,37 @@ def parse_instance_plan(value: str, default_pods_per_node: int) -> list[tuple[st
 
 
 def plan_pod_resources(plan: list[tuple[str, int]]) -> dict:
-    """Size the pod so every declared (type, pods_per_node) is satisfied.
+    """Size the pod off the primary entry and verify the fallbacks can hold it.
 
-    One Deployment means one pod spec, so each entry is a constraint and the
-    pod takes the smallest size any of them allows. Because the result is <=
-    every per-entry size, each type is then guaranteed to hold at least its
-    declared pod count.
+    One Deployment means one pod spec. The first entry is the primary: it alone
+    sets the pod size. Every later entry is a fallback and must hold at least
+    its declared count of that pod, or generation fails — so a denser
+    pods_per_node on a fallback cannot silently shrink the pod fleet-wide.
     """
-    sized = [compute_pod_resources(instance_type, count) for instance_type, count in plan]
-    for (instance_type, count), res in zip(plan, sized, strict=True):
-        if res["cpu"] < 1 or res["memory_gi"] < 1:
+    primary_type, primary_count = plan[0]
+    res = compute_pod_resources(primary_type, primary_count)
+    if res["cpu"] < 1 or res["memory_gi"] < 1:
+        raise ValueError(
+            f"{primary_type} split {primary_count} ways leaves {res['cpu']} vCPU / "
+            f"{res['memory_gi']}Gi per pod — too small to schedule"
+        )
+
+    for instance_type, count in plan[1:]:
+        fits = pods_that_fit(instance_type, res["cpu"], res["memory_gi"])
+        if fits < count:
             raise ValueError(
-                f"{instance_type} split {count} ways leaves {res['cpu']} vCPU / "
-                f"{res['memory_gi']}Gi per pod — too small to schedule"
+                f"{instance_type} holds {fits} pod(s) of {res['cpu']} vCPU / {res['memory_gi']}Gi "
+                f"(sized from {primary_type}:{primary_count}), but declares {count}. "
+                f"Lower its count, or make it the first entry to size the pod off it instead."
             )
-    smallest_cpu = min(res["cpu"] for res in sized)
-    smallest_mem = min(res["memory_gi"] for res in sized)
-    # Report allocatable for the first entry — it is the reference node.
-    return {
-        "cpu": smallest_cpu,
-        "memory_gi": smallest_mem,
-        "allocatable_cpu_m": sized[0]["allocatable_cpu_m"],
-        "allocatable_mem_mi": sized[0]["allocatable_mem_mi"],
-    }
+    return res
 
 
 def pods_that_fit(instance_type: str, cpu: int, memory_gi: int) -> int:
     """How many pods of the given size fit on one node of instance_type."""
-    spec = INSTANCE_SPECS[instance_type]
-    vcpu = spec["vcpu"]
-    max_pods = ENI_MAX_PODS.get(instance_type, vcpu)
-    reserved_cpu_m, reserved_mem_mi = kubelet_reserved(vcpu, spec["memory_gib"], max_pods)
-    usable_cpu_m = vcpu * 1000 - reserved_cpu_m - DAEMONSET_OVERHEAD_CPU_M
-    usable_mem_mi = spec["memory_mi"] - reserved_mem_mi - DAEMONSET_OVERHEAD_MEM_MI
+    allocatable_cpu_m, allocatable_mem_mi = allocatable_resources(instance_type)
+    usable_cpu_m = allocatable_cpu_m - DAEMONSET_OVERHEAD_CPU_M
+    usable_mem_mi = allocatable_mem_mi - DAEMONSET_OVERHEAD_MEM_MI
     return min(usable_cpu_m // (cpu * 1000), usable_mem_mi // (memory_gi * 1024))
 
 
@@ -277,8 +275,8 @@ spec:
           operator: Equal
           value: "true"
           effect: NoSchedule
-        # Exists, not Equal: the pool spans instance sizes, and pre-existing
-        # nodes still carry an instance-type taint from the single-size pool.
+        # Exists, not Equal: where an instance-type taint is present its value
+        # is the node's own size, so one pod spec cannot name them all.
         - key: instance-type
           operator: Exists
           effect: NoSchedule
@@ -410,7 +408,12 @@ def generate_nodepools_yaml(
     amd64_plan = parse_instance_plan(amd64_instance, amd64_pods_per_node)
 
     def _nodepool_limits(instance_type, replicas, pods_per_node):
-        """Compute NodePool resource limits with headroom."""
+        """Compute NodePool resource limits with headroom.
+
+        Sized per pool: each one must be able to absorb the whole replica count
+        on its own, because a fallback only gets used when the primary cannot
+        provision at all.
+        """
         spec = INSTANCE_SPECS[instance_type]
         # Nodes needed = ceil(replicas / pods_per_node)
         # Add 100% headroom for rolling updates
@@ -420,18 +423,17 @@ def generate_nodepools_yaml(
         memory_limit_gi = max_nodes * spec["memory_gib"]
         return cpu_limit, memory_limit_gi
 
-    def _nodepool_block(arch, instance_types, cpu_limit, memory_limit_gi):
-        instance_type = instance_types[0]
-        type_values = "\n".join(f"            - {t}" for t in instance_types)
-        return f"""# Karpenter NodePool + EC2NodeClass: buildkit-{arch}
+    def _nodepool_block(arch, instance_type, name, weight, cpu_limit, memory_limit_gi):
+        return f"""# Karpenter NodePool: {name} ({instance_type})
 # Auto-generated from generate_buildkit.py — do not edit by hand.
-# Instance types: {", ".join(instance_types)}
 
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
-  name: buildkit-{arch}
+  name: {name}
 spec:
+  weight: {weight}
+
   limits:
     cpu: "{cpu_limit}"
     memory: "{memory_limit_gi}Gi"
@@ -460,8 +462,7 @@ spec:
           values: ["on-demand"]
         - key: node.kubernetes.io/instance-type
           operator: In
-          values:
-{type_values}
+          values: ["{instance_type}"]
 
       nodeClassRef:
         group: karpenter.k8s.aws
@@ -472,8 +473,12 @@ spec:
         - key: workload/buildkit-{arch}
           value: "true"
           effect: NoSchedule
+"""
 
----
+    def _nodeclass_block(arch):
+        return f"""# Karpenter EC2NodeClass: buildkit-{arch}
+# Auto-generated from generate_buildkit.py — do not edit by hand.
+
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
@@ -545,23 +550,28 @@ spec:
     Name: "CLUSTER_NAME_PLACEHOLDER-buildkit-{arch}"
     ManagedBy: "karpenter"
     NodePool: "buildkit-{arch}"
-    InstanceType: "{instance_type}"
     Architecture: "{arch}\""""
 
-    # Limits are sized off the first entry. Total node CPU/memory for a fixed
-    # pod size is the same whatever mix of sizes Karpenter picks.
-    arm64_cpu_limit, arm64_mem_limit = _nodepool_limits(arm64_plan[0][0], arm64_replicas, arm64_plan[0][1])
-    amd64_cpu_limit, amd64_mem_limit = _nodepool_limits(amd64_plan[0][0], amd64_replicas, amd64_plan[0][1])
+    def _arch_blocks(arch, plan, replicas):
+        """One weighted NodePool per instance type, sharing one EC2NodeClass.
 
-    log_info(
-        f"NodePool limits — arm64: {arm64_cpu_limit} CPU, {arm64_mem_limit}Gi | "
-        f"amd64: {amd64_cpu_limit} CPU, {amd64_mem_limit}Gi"
-    )
+        Karpenter tries NodePools in weight order and only falls through when
+        the one above cannot provision, so the primary entry is what a normal
+        scale-up uses and the rest are reached on ICE or limits. A single pool
+        spanning both sizes would instead pick per pending pod on price, which
+        for price-proportional sizes means the smallest one every time.
+        """
+        blocks = []
+        for i, (instance_type, pods_per_node) in enumerate(plan):
+            name = "buildkit-" + arch if i == 0 else f"buildkit-{arch}-{instance_type.replace('.', '-')}"
+            cpu_limit, mem_limit = _nodepool_limits(instance_type, replicas, pods_per_node)
+            blocks.append(_nodepool_block(arch, instance_type, name, max(1, 100 - 10 * i), cpu_limit, mem_limit))
+            log_info(f"NodePool {name} — {instance_type}, limits {cpu_limit} CPU / {mem_limit}Gi")
+        blocks.append(_nodeclass_block(arch))
+        return blocks
 
-    arm64_block = _nodepool_block("arm64", [t for t, _ in arm64_plan], arm64_cpu_limit, arm64_mem_limit)
-    amd64_block = _nodepool_block("amd64", [t for t, _ in amd64_plan], amd64_cpu_limit, amd64_mem_limit)
-
-    return arm64_block + "\n\n---\n" + amd64_block + "\n"
+    blocks = _arch_blocks("arm64", arm64_plan, arm64_replicas) + _arch_blocks("amd64", amd64_plan, amd64_replicas)
+    return "\n---\n".join(blocks) + "\n"
 
 
 def generate_autoscaling_yaml(
@@ -677,6 +687,14 @@ def main():
             if INSTANCE_SPECS[it]["arch"] != arch:
                 log_error(f"{it} is not an {arch} instance type")
                 return 1
+        # Surface an unschedulable pod size or an over-declared fallback here,
+        # where it prints as a clean error rather than a traceback out of
+        # generate_deployment_yaml further down.
+        try:
+            plan_pod_resources(plan)
+        except ValueError as exc:
+            log_error(str(exc))
+            return 1
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
