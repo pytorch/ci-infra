@@ -39,6 +39,17 @@ SLOT_CPU = os.environ.get("TASK_CPU", "2")
 SLOT_MEMORY = os.environ.get("TASK_MEMORY", "4Gi")
 SLOT_DISK = os.environ.get("TASK_EPHEMERAL_STORAGE", "20Gi")
 
+# A GPU task takes a whole fleet node. g6.4xlarge is 16 vCPU / 64 GiB with one L4, and the
+# nvidia.com/gpu: 1 request is what actually enforces one-task-per-node — CPU and memory
+# only have to be small enough to schedule alongside the daemonsets.
+GPU_SLOT_CPU = os.environ.get("GPU_TASK_CPU", "12")
+GPU_SLOT_MEMORY = os.environ.get("GPU_TASK_MEMORY", "48Gi")
+GPU_SLOT_DISK = os.environ.get("GPU_TASK_EPHEMERAL_STORAGE", "100Gi")
+# Separate RuntimeClass, not a flag on the CPU one: scheduling.nodeSelector is part of the
+# class, so one class cannot target both fleets.
+RUNTIME_CLASS = os.environ.get("RUNTIME_CLASS", "gvisor")
+GPU_RUNTIME_CLASS = os.environ.get("GPU_RUNTIME_CLASS", "gvisor-gpu")
+
 MAX_LOG_BYTES = 1024 * 1024
 # How much of a non-2xx body to READ, not how much of it survives into the error: the
 # quote itself is bounded by ERROR_QUOTE_CHARS below. Same number as the request-body cap
@@ -132,7 +143,26 @@ def job_manifest(task_id: str, grant) -> dict:
     backoffLimit 0 on purpose — a retry would clone and prompt the model a second time
     and bill for it, and the result object already carries per-stage errors, so a
     failure here is worth surfacing rather than repeating.
+
+    `grant.gpu` swaps the RuntimeClass and the slot. Only the RuntimeClass decides which
+    fleet the pod lands on (its scheduling block stamps the nodeSelector and tolerations),
+    and only the GPU fleet's AMI has nvproxy enabled — so a GPU task on the CPU class
+    would start and then find no device.
+
+    Read off the Grant and not the request for the same reason the repository and the
+    model are: a GPU is a capability, not a selector. authorize.py decides whether this
+    caller may have one; by the time it reaches here the decision is already made.
     """
+    gpu = bool(grant.gpu)
+    slot = {
+        "cpu": GPU_SLOT_CPU if gpu else SLOT_CPU,
+        "memory": GPU_SLOT_MEMORY if gpu else SLOT_MEMORY,
+        "ephemeral-storage": GPU_SLOT_DISK if gpu else SLOT_DISK,
+    }
+    if gpu:
+        # Extended resources must be equal in requests and limits, and this single
+        # device is what makes the node one-task-at-a-time.
+        slot["nvidia.com/gpu"] = "1"
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -149,9 +179,9 @@ def job_manifest(task_id: str, grant) -> dict:
                 "metadata": {"labels": {"app": "sandbox-task", "osdc.io/module": "agent-sandbox"}},
                 "spec": {
                     "restartPolicy": "Never",
-                    # gvisor pins the pod to the ai-sandbox fleet and runs it under
-                    # runsc; the SA has no RBAC and no token mounted.
-                    "runtimeClassName": "gvisor",
+                    # The RuntimeClass pins the pod to its fleet and runs it under runsc;
+                    # the SA has no RBAC and no token mounted either way.
+                    "runtimeClassName": GPU_RUNTIME_CLASS if gpu else RUNTIME_CLASS,
                     "serviceAccountName": "sandbox-agent",
                     "automountServiceAccountToken": False,
                     "containers": [
@@ -167,6 +197,7 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "SANDBOX_REF", "value": grant.ref},
                                 {"name": "SANDBOX_TASK", "value": grant.task},
                                 {"name": "SANDBOX_MODEL", "value": grant.model},
+                                {"name": "SANDBOX_GPU", "value": "1" if gpu else ""},
                             ],
                             "securityContext": {
                                 "runAsNonRoot": True,
@@ -177,18 +208,7 @@ def job_manifest(task_id: str, grant) -> dict:
                             # a division, not a guess, and disk is the dimension the
                             # caller picks — an uncapped clone evicts its own pod
                             # instead of pushing the node into DiskPressure.
-                            "resources": {
-                                "requests": {
-                                    "cpu": SLOT_CPU,
-                                    "memory": SLOT_MEMORY,
-                                    "ephemeral-storage": SLOT_DISK,
-                                },
-                                "limits": {
-                                    "cpu": SLOT_CPU,
-                                    "memory": SLOT_MEMORY,
-                                    "ephemeral-storage": SLOT_DISK,
-                                },
-                            },
+                            "resources": {"requests": dict(slot), "limits": dict(slot)},
                         }
                     ],
                 },

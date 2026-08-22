@@ -2,9 +2,14 @@
 
 Endpoints:
   GET  /healthz      -> {"status": "ok"}
-  POST /run          -> body {"ref"?,"task"?,"wait"?}
+  POST /run          -> body {"ref"?,"task"?,"wait"?,"gpu"?}
                         wait=true (default): blocks, returns the task result
                         wait=false: returns {"task_id": ...} immediately
+                        gpu=true: runs on the ai-sandbox-gpu fleet with one L4 attached,
+                        under the gvisor-gpu RuntimeClass. Capacity is counted separately
+                        and is far smaller. Allowed only for callers the policy permits —
+                        asking without permission is a 403, not a CPU task. See
+                        docs/agent-sandbox-gpu-gvisor.md for what nvproxy gives up.
                         `repo` and `model` are still ACCEPTED, but they are policy, not
                         request: authorize.py decides both, and a supplied value that
                         disagrees is a 403 rather than a substitution.
@@ -91,7 +96,13 @@ class Handler(BaseHTTPRequestHandler):
             # from a wedged dispatcher: this says which one it is without kubectl.
             self._send(
                 200,
-                {"status": "ok", "in_flight": tasks.slots_in_use(), "capacity": tasks.MAX_CONCURRENT_TASKS},
+                {
+                    "status": "ok",
+                    "in_flight": tasks.slots_in_use(False),
+                    "capacity": tasks.MAX_CONCURRENT_TASKS,
+                    "gpu_in_flight": tasks.slots_in_use(True),
+                    "gpu_capacity": tasks.MAX_CONCURRENT_GPU_TASKS,
+                },
             )
             return
         if self.path.startswith("/status/"):
@@ -141,8 +152,9 @@ class Handler(BaseHTTPRequestHandler):
         for key in ("repo", "ref", "task", "model"):
             if key in spec and not isinstance(spec[key], str):
                 raise ValueError(f"'{key}' must be a string")
-        if "wait" in spec and not isinstance(spec["wait"], bool):
-            raise ValueError("'wait' must be a boolean")
+        for flag in ("wait", "gpu"):
+            if flag in spec and not isinstance(spec[flag], bool):
+                raise ValueError(f"'{flag}' must be a boolean")
         return spec
 
     def _caller(self) -> str:
@@ -170,6 +182,15 @@ class Handler(BaseHTTPRequestHandler):
             # The migration window. Unauthenticated callers get the v1 policy's Grant,
             # which is the same clone target and model an authorized caller would get —
             # so flipping REQUIRE_AUTH changes who may call, never what a call can do.
+            #
+            # WITH ONE EXCEPTION, and it is deliberate: no GPU. The GPU capability is
+            # granted per named caller in ALLOWED_CALLERS, and "unauthenticated" is not
+            # one — handing it out here would make the migration window the way to get a
+            # GPU without presenting a token, which is the opposite of what gating it on
+            # caller identity is for. Denied rather than downgraded, the same as in
+            # authorize(), so the caller learns it was refused.
+            if spec.get("gpu"):
+                raise authorize.Denied("a GPU task requires an authenticated caller")
             return authorize.Grant(
                 caller="unauthenticated",
                 workflow_ref="",
@@ -177,6 +198,7 @@ class Handler(BaseHTTPRequestHandler):
                 model=authorize.V1_MODEL,
                 task=spec.get("task", ""),
                 ref=spec.get("ref", ""),
+                gpu=False,
             )
         claims = oidc.verify(oidc.bearer_token(header))
         return authorize.authorize(claims, spec)
@@ -226,9 +248,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": "AGENT_IMAGE not set — deploy.sh did not substitute the task image"})
             return
 
-        task_id = tasks.start_task(grant.caller)
+        # grant.gpu, not spec["gpu"] — authorize() has already refused a caller that asked
+        # for a GPU without permission, so reading the request here would let a denied
+        # caller occupy the GPU slot it was not granted.
+        gpu = grant.gpu
+        task_id = tasks.start_task(grant.caller, gpu)
         if task_id is None:
-            self._send(429, {"error": f"at capacity: {tasks.MAX_CONCURRENT_TASKS} tasks in flight"})
+            cap = tasks.MAX_CONCURRENT_GPU_TASKS if gpu else tasks.MAX_CONCURRENT_TASKS
+            kind = "GPU tasks" if gpu else "tasks"
+            self._send(429, {"error": f"at capacity: {cap} {kind} in flight"})
             return
 
         # One line per admitted task, so who dispatched what is answerable from the pod

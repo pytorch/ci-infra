@@ -51,9 +51,12 @@ def _load_entrypoint():
 entrypoint = _load_entrypoint()
 
 
-def a_grant(task="", ref="", model="", caller="unauthenticated"):
+def a_grant(task="", ref="", model="", caller="unauthenticated", gpu=False):
     """The Grant an unauthenticated caller gets today. job_manifest takes one of these
-    rather than a request body, which is the layering rule made unavoidable."""
+    rather than a request body, which is the layering rule made unavoidable.
+
+    `gpu` defaults False because that is what the policy hands almost every run; the GPU
+    tests pass it explicitly so the capability is never granted by accident here."""
     return authorize.Grant(
         caller=caller,
         workflow_ref="",
@@ -61,7 +64,37 @@ def a_grant(task="", ref="", model="", caller="unauthenticated"):
         model=model,
         task=task,
         ref=ref,
+        gpu=gpu,
     )
+
+
+@pytest.fixture
+def signed(tmp_path, monkeypatch):
+    """A JWKS the dispatcher will trust, so tests can mint real signed tokens.
+
+    Module-level rather than nested in TestAuthenticatedSurface: the GPU capacity tests
+    need an authenticated caller too, because a GPU is granted per caller identity and an
+    unauthenticated request cannot reach the capacity check at all.
+    """
+    keys = {test_oidc.KID: test_oidc._keypair()}
+    path = tmp_path / "jwks.json"
+    path.write_text(json.dumps(test_oidc._jwks_document(keys)))
+    monkeypatch.setattr(oidc, "JWKS_PATH", path)
+    oidc._CACHE.update(keyset=None, loaded_at=0.0, fetched_at=None)
+    return keys
+
+
+def a_signed_token(keys, **overrides):
+    return test_oidc.a_token(keys, **{**test_authorize.GOOD_CLAIMS, **overrides})
+
+
+def authed_post(server, token, payload):
+    req = urllib.request.Request(  # noqa: S310  (loopback http:// built in-test)
+        f"{server}/run",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    return json.loads(_opener.open(req, timeout=30).read())
 
 
 @pytest.fixture
@@ -173,6 +206,55 @@ class TestJobManifest:
         leaves task pods with no egress allow-list at all."""
         labels = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["metadata"]["labels"]
         assert labels["app"] == "sandbox-task"
+
+
+class TestGpuJobManifest:
+    """The GPU Job is where the isolation trade-off is encoded, so assert its shape: the
+    wrong RuntimeClass lands the pod on a fleet whose AMI has no nvproxy, and a missing
+    device request lets two tasks share one GPU."""
+
+    def _gpu_pod_spec(self):
+        return kube.job_manifest("abc123abc123", a_grant(gpu=True))["spec"]["template"]["spec"]
+
+    def test_uses_the_gpu_runtime_class(self):
+        assert self._gpu_pod_spec()["runtimeClassName"] == kube.GPU_RUNTIME_CLASS
+
+    def test_cpu_task_keeps_the_cpu_runtime_class(self):
+        spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
+        assert spec["runtimeClassName"] == kube.RUNTIME_CLASS
+
+    def test_requests_exactly_one_gpu_in_requests_and_limits(self):
+        """Extended resources must match on both sides, and this single device is what
+        pins the fleet to one task per node."""
+        resources = self._gpu_pod_spec()["containers"][0]["resources"]
+        assert resources["requests"]["nvidia.com/gpu"] == "1"
+        assert resources["limits"]["nvidia.com/gpu"] == "1"
+
+    def test_cpu_task_requests_no_gpu(self):
+        spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
+        assert "nvidia.com/gpu" not in spec["containers"][0]["resources"]["requests"]
+
+    def test_gpu_slot_is_bigger_than_the_cpu_slot(self):
+        gpu = self._gpu_pod_spec()["containers"][0]["resources"]["requests"]
+        assert gpu["cpu"] == kube.GPU_SLOT_CPU
+        assert gpu["memory"] == kube.GPU_SLOT_MEMORY
+        assert gpu["ephemeral-storage"] == kube.GPU_SLOT_DISK
+
+    def test_requests_equal_limits_and_no_identity(self):
+        """Everything the CPU task guarantees still holds on the GPU path."""
+        spec = self._gpu_pod_spec()
+        assert spec["containers"][0]["resources"]["requests"] == spec["containers"][0]["resources"]["limits"]
+        assert spec["serviceAccountName"] == "sandbox-agent"
+        assert spec["automountServiceAccountToken"] is False
+
+    def test_task_is_told_it_has_a_gpu(self):
+        """SANDBOX_GPU is what makes the task report nvidia-smi back, which is the only
+        end-to-end evidence that nvproxy handed it a device."""
+        env = {e["name"]: e["value"] for e in self._gpu_pod_spec()["containers"][0]["env"]}
+        assert env["SANDBOX_GPU"] == "1"
+        cpu_spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
+        cpu_env = {e["name"]: e["value"] for e in cpu_spec["containers"][0]["env"]}
+        assert cpu_env["SANDBOX_GPU"] == ""
 
 
 class TestRunToCompletion:
@@ -298,8 +380,8 @@ class TestHTTPSurface:
 
     @pytest.mark.parametrize(
         ("field", "value"),
-        [("ref", None), ("task", []), ("model", {}), ("wait", "yes")],
-        ids=["ref-null", "task-list", "model-object", "wait-string"],
+        [("ref", None), ("task", []), ("model", {}), ("wait", "yes"), ("gpu", "yes")],
+        ids=["ref-null", "task-list", "model-object", "wait-string", "gpu-string"],
     )
     def test_wrong_field_type_is_400(self, server, field, value):
         with pytest.raises(urllib.error.HTTPError) as exc:
@@ -392,6 +474,77 @@ class TestCapacity:
         tasks._finish(task_id, {"report": "ok"})
         tasks.start_task("unauthenticated")
         assert task_id not in tasks._TASKS
+
+
+class TestGpuCapacity:
+    def test_gpu_and_cpu_capacity_are_counted_separately(self, monkeypatch):
+        """A GPU node is one task and costs real money, so CPU work must not consume the
+        GPU cap and a full GPU cap must not block CPU tasks."""
+        monkeypatch.setattr(tasks, "MAX_CONCURRENT_TASKS", 2)
+        monkeypatch.setattr(tasks, "MAX_CONCURRENT_GPU_TASKS", 1)
+        tasks._TASKS.clear()
+
+        assert tasks.start_task("owner", gpu=True) is not None
+        assert tasks.start_task("owner", gpu=True) is None, "GPU cap is 1"
+        assert tasks.start_task("owner", gpu=False) is not None, "CPU work must not be blocked by the GPU cap"
+        assert tasks.start_task("owner", gpu=False) is not None
+        assert tasks.start_task("owner", gpu=False) is None, "CPU cap is 2"
+
+    def test_healthz_reports_both(self, server):
+        tasks._TASKS.clear()
+        tasks.start_task("owner", gpu=True)
+        body = _get(f"{server}/healthz")
+        assert body["gpu_in_flight"] == 1
+        assert body["in_flight"] == 0
+        assert body["gpu_capacity"] == tasks.MAX_CONCURRENT_GPU_TASKS
+
+    def test_over_gpu_capacity_is_429(self, server, signed, monkeypatch):
+        """Authenticated, because a GPU is granted per caller: an anonymous request is
+        refused at authorization and never reaches the capacity check."""
+        monkeypatch.setattr(tasks, "MAX_CONCURRENT_GPU_TASKS", 1)
+        tasks._TASKS.clear()
+        assert tasks.start_task("owner", gpu=True) is not None
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            authed_post(server, a_signed_token(signed), {"gpu": True})
+        assert exc.value.code == 429
+        assert "GPU tasks" in json.loads(exc.value.read())["error"]
+
+    def test_an_unauthenticated_caller_cannot_get_a_gpu(self, server):
+        """The migration window must not be the way to get a GPU without a token.
+
+        Refused rather than downgraded: a silent CPU run would come back with no `gpu`
+        block, which is indistinguishable from nvproxy failing to inject the device — the
+        one signal this whole path exists to report.
+        """
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"gpu": True})
+        assert exc.value.code == 403
+        assert "authenticated" in json.loads(exc.value.read())["error"]
+        assert tasks.slots_in_use(True) == 0, "a refused request must not reserve a GPU slot"
+
+    def test_an_unauthenticated_cpu_task_still_runs(self, server):
+        """The denial above is scoped to the capability, not to the migration window."""
+        assert _post(f"{server}/run", {"task": "hello"})["report"] == "ok"
+
+    def test_a_caller_the_policy_refuses_a_gpu_gets_403(self, server, signed, monkeypatch):
+        """The per-caller flag is what decides, not merely having a valid token."""
+        # Every entry, not just the one GOOD_CLAIMS matches: keying on the caller name
+        # here would go stale silently the day that fixture points at a different repo.
+        refused = tuple({**entry, "gpu": False} for entry in authorize.ALLOWED_CALLERS)
+        monkeypatch.setattr(authorize, "ALLOWED_CALLERS", refused)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            authed_post(server, a_signed_token(signed), {"gpu": True})
+        assert exc.value.code == 403
+        assert tasks.slots_in_use(True) == 0
+
+    def test_an_authenticated_gpu_task_lands_on_the_gpu_fleet(self, server, signed, fake_k8s):
+        """The whole chain in one: token -> policy -> Grant.gpu -> Job. Nothing below
+        authorize() reads the request body, so this is the only test that proves a
+        caller's `gpu: true` actually reaches the RuntimeClass."""
+        assert authed_post(server, a_signed_token(signed), {"gpu": True})["report"] == "ok"
+        pod = fake_k8s["jobs"][-1]["spec"]["template"]["spec"]
+        assert pod["runtimeClassName"] == kube.GPU_RUNTIME_CLASS
+        assert pod["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] == "1"
 
 
 class TestInClusterConfig:
@@ -642,25 +795,14 @@ class TestAuthenticatedSurface:
     is a different claim, and the one that would silently regress.
     """
 
-    @pytest.fixture
-    def signed(self, tmp_path, monkeypatch):
-        keys = {test_oidc.KID: test_oidc._keypair()}
-        path = tmp_path / "jwks.json"
-        path.write_text(json.dumps(test_oidc._jwks_document(keys)))
-        monkeypatch.setattr(oidc, "JWKS_PATH", path)
-        oidc._CACHE.update(keyset=None, loaded_at=0.0, fetched_at=None)
-        return keys
-
+    # The `signed` fixture, a_signed_token() and authed_post() are module-level so the GPU
+    # capacity tests can reach them too; these stay as thin names so the call sites below
+    # read as they did before the move.
     def _authed_post(self, server, token, payload):
-        req = urllib.request.Request(  # noqa: S310  (loopback http:// built in-test)
-            f"{server}/run",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        )
-        return json.loads(_opener.open(req, timeout=30).read())
+        return authed_post(server, token, payload)
 
     def _token(self, keys, **overrides):
-        return test_oidc.a_token(keys, **{**test_authorize.GOOD_CLAIMS, **overrides})
+        return a_signed_token(keys, **overrides)
 
     def test_a_real_token_from_the_allowed_caller_runs_a_task(self, server, signed):
         assert self._authed_post(server, self._token(signed), {"task": "hello"})["report"] == "ok"

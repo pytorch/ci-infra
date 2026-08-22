@@ -47,7 +47,7 @@ fail loudly for exactly this).
 
 ```bash
 just build-agent-sandbox-ami <cluster>          # e.g. meta-staging-aws-ue1
-just build-agent-sandbox-ami <cluster> -var gvisor_release=20260901
+just build-agent-sandbox-ami <cluster> -var gvisor_release=YYYYMMDD
 ```
 
 AMIs are regional: build once per cluster region. Existing nodes keep their

@@ -20,12 +20,18 @@ metadata:
   namespace: ai-sandbox
   labels:
     osdc.io/module: agent-sandbox
+#
+# GPU tasks are counted in the same quota because they run in the same namespace: two of
+# them (12 vCPU / 48 GiB / 100 GiB each) plus the 12 CPU slots is what the numbers below
+# allow. requests.nvidia.com/gpu is the ceiling that matters — it caps GPU nodes at two
+# regardless of what the dispatcher thinks its own limit is.
 spec:
   hard:
-    pods: "20"
-    requests.cpu: "25"
-    requests.memory: "50Gi"
-    requests.ephemeral-storage: "245Gi"
-    limits.cpu: "27"
-    limits.memory: "51Gi"
-    limits.ephemeral-storage: "245Gi"
+    pods: "24"
+    requests.cpu: "49"
+    requests.memory: "146Gi"
+    requests.ephemeral-storage: "445Gi"
+    limits.cpu: "51"
+    limits.memory: "147Gi"
+    limits.ephemeral-storage: "445Gi"
+    requests.nvidia.com/gpu: "2"

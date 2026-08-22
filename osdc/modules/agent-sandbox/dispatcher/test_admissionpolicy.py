@@ -86,17 +86,40 @@ def deployed_image(monkeypatch):
     monkeypatch.setattr(kube, "AGENT_IMAGE", GOOD_IMAGE)
 
 
-def a_job(**pod_overrides) -> dict:
-    """A real job_manifest() with the pod spec optionally mutated."""
-    grant = authorize.Grant(
+def _grant(*, gpu: bool) -> authorize.Grant:
+    """A Grant of the kind authorize() would hand job_manifest().
+
+    Built here rather than hand-rolling a dict, so that adding a field to Grant breaks
+    these tests loudly instead of leaving them asserting against a shape the dispatcher
+    no longer produces.
+    """
+    return authorize.Grant(
         caller="pytorch/ciforge",
         workflow_ref="pytorch/ciforge/.github/workflows/x.yml@refs/heads/main",
         clone_repo="pytorch/pytorch",
         model="",
         task="hello",
         ref="",
+        gpu=gpu,
     )
-    job = kube.job_manifest("abc123456789", grant)
+
+
+def a_job(**pod_overrides) -> dict:
+    """A real job_manifest() with the pod spec optionally mutated."""
+    job = kube.job_manifest("abc123456789", _grant(gpu=False))
+    job["spec"]["template"]["spec"].update(pod_overrides)
+    return job
+
+
+def a_gpu_job(**pod_overrides) -> dict:
+    """The other Job job_manifest() can build: the same function against a GPU Grant.
+
+    A second shape the policy must admit, and the one the two device-related rules were
+    rewritten for. Without it, `test_real_job_manifest_satisfies_the_policy` would check
+    the CPU Job against rules that only the GPU Job can fail, and the first evidence that
+    the policy rejects every GPU task would be a dispatch error in production.
+    """
+    job = kube.job_manifest("abc123456789", _grant(gpu=True))
     job["spec"]["template"]["spec"].update(pod_overrides)
     return job
 
@@ -122,13 +145,31 @@ def _nodename_rule(pod: dict, *, is_job: bool, operation: str) -> bool:
     return "nodeName" not in pod or (not is_job and operation == "UPDATE")
 
 
+def _resource_key_rule(job: dict) -> bool:
+    """The device allowlist — the one container-level rule that also reads a POD field.
+
+    `nvidia.com/gpu` is admitted only on the GPU RuntimeClass and only at exactly one, so
+    the mirror has to consult runtimeClassName the way the CEL's `variables.isGpu` does.
+    Written as a function rather than inline in MIRRORS because a lambda that quietly
+    dropped either condition would still pass both tests around it.
+    """
+    is_gpu = _pod(job).get("runtimeClassName") == "gvisor-gpu"
+    return all(
+        all(
+            key in ("cpu", "memory", "ephemeral-storage") or (key == "nvidia.com/gpu" and is_gpu and quantity == "1")
+            for key, quantity in container.get("resources", {}).get("limits", {}).items()
+        )
+        for container in _all_containers(job)
+    )
+
+
 # Each entry mirrors one `validations:` item, keyed by the exact `message:` string in the
 # YAML, and paired with a Job the rule must reject. Keeping the message as the key is what
 # makes drift loud: reword a message in the policy and this test names the rule that lost
 # its mirror.
 MIRRORS = {
-    "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)": (
-        lambda j: _pod(j).get("runtimeClassName") == "gvisor",
+    "task pods must set runtimeClassName to gvisor or gvisor-gpu (this is also what confines them to the matching ai-sandbox fleet)": (
+        lambda j: _pod(j).get("runtimeClassName") in ("gvisor", "gvisor-gpu"),
         lambda: a_job(runtimeClassName="runc"),
     ),
     "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC": (
@@ -225,14 +266,13 @@ MIRRORS = {
         ),
         lambda: _with_container(resources={"requests": {"cpu": "2"}}),
     ),
-    "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": (
-        lambda j: all(
-            set(c.get("resources", {}).get("limits", {})) <= {"cpu", "memory", "ephemeral-storage"}
-            for c in _all_containers(j)
-        ),
-        # requests mirrors limits on purpose: Kubernetes requires that of an extended
-        # resource, so this counterexample satisfies both the rule above and Guaranteed
-        # QoS, and only this rule can reject it. That is the whole finding.
+    "task containers must limit cpu, memory and ephemeral-storage, plus at most one nvidia.com/gpu and only on the gvisor-gpu class — any other key is an unapproved resource": (
+        _resource_key_rule,
+        # A GPU on the CPU class: requests mirrors limits on purpose, because Kubernetes
+        # requires that of an extended resource, so this counterexample satisfies both the
+        # rule above and Guaranteed QoS, and only this rule can reject it. That is the
+        # whole finding — and the reason the GPU path had to widen this rule by exactly
+        # one key on exactly one RuntimeClass rather than by dropping it.
         lambda: _with_container(
             resources={
                 "requests": {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "50Gi", "nvidia.com/gpu": "1"},
@@ -296,6 +336,42 @@ def _without_job_field(name: str) -> dict:
     return job
 
 
+def _with_gpu_limit(quantity: str, *, runtime_class: str = "gvisor-gpu") -> dict:
+    """A task Job asking for `quantity` GPUs on `runtime_class`.
+
+    requests mirrors limits throughout, so every one of these satisfies the Guaranteed-QoS
+    rule and only the device rule can decide them.
+    """
+    job = a_gpu_job(runtimeClassName=runtime_class)
+    slot = {"cpu": "12", "memory": "48Gi", "ephemeral-storage": "100Gi", "nvidia.com/gpu": quantity}
+    _pod(job)["containers"][0]["resources"] = {"requests": dict(slot), "limits": dict(slot)}
+    return job
+
+
+@pytest.mark.parametrize(
+    ("job", "admitted"),
+    [
+        (lambda: _with_gpu_limit("1"), True),
+        # More than one device on a node the fleet gives one task at a time. The fleet is
+        # single-GPU today, so this would simply not schedule — but the property the GPU
+        # design rests on is one task per GPU node, and a rule that only said "a device
+        # key is allowed here" would stop enforcing it the day a multi-GPU instance type
+        # is added to the fleet.
+        (lambda: _with_gpu_limit("2"), False),
+        (lambda: _with_gpu_limit("0"), False),
+        # The class is what carries the nodeSelector, so a device on the CPU class is a
+        # request for hardware on a fleet that has none — and, if that fleet ever gained
+        # a device plugin, for hardware reached through an AMI without nvproxy.
+        (lambda: _with_gpu_limit("1", runtime_class="gvisor"), False),
+    ],
+    ids=["one-gpu-on-the-gpu-class", "two-gpus", "zero-gpus", "one-gpu-on-the-cpu-class"],
+)
+def test_the_device_allowlist_admits_exactly_one_gpu_on_the_gpu_class(job, admitted):
+    """The device rule is the only thing standing between `create jobs` and a GPU, so its
+    three conditions — the key, the class and the count — each get a case."""
+    assert _resource_key_rule(job()) is admitted
+
+
 def test_validation_messages_are_distinct(policy):
     """Both coverage tables are keyed by message, so a repeat is a rule that loses both.
 
@@ -324,10 +400,16 @@ def test_every_validation_has_a_mirror(policy):
 
 
 @pytest.mark.parametrize("message", sorted(MIRRORS))
-def test_real_job_manifest_satisfies_the_policy(message):
-    """What kube.job_manifest() builds today would be admitted."""
+@pytest.mark.parametrize("build", [a_job, a_gpu_job], ids=["cpu-task", "gpu-task"])
+def test_real_job_manifest_satisfies_the_policy(message, build):
+    """What kube.job_manifest() builds today would be admitted — on both paths.
+
+    Every rule against both shapes, rather than the device rules against the GPU one: a
+    GPU task differs from a CPU task in the RuntimeClass, the slot and one env var, and
+    any rule here could turn out to read one of those.
+    """
     predicate, _ = MIRRORS[message]
-    assert predicate(a_job()), f"job_manifest() violates: {message}"
+    assert predicate(build()), f"job_manifest() violates: {message}"
 
 
 @pytest.mark.parametrize("message", sorted(MIRRORS))
@@ -622,7 +704,7 @@ def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
 # and decide whether it still describes the rule. Re-pin deliberately, never by pasting the
 # digest the failure prints without reading the diff it is telling you about.
 EXPRESSION_DIGESTS = {
-    "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)": "93161384aabc",
+    "task pods must set runtimeClassName to gvisor or gvisor-gpu (this is also what confines them to the matching ai-sandbox fleet)": "31d3e446eb24",
     "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC": "2779cb7d8a6b",
     "task pods must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox": "224303faac17",
     "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": "767387bc5943",
@@ -641,7 +723,7 @@ EXPRESSION_DIGESTS = {
     "task containers must not unmask /proc": "f9d3102f1226",
     "task containers must not publish a hostPort": "aadf2d231816",
     "task containers must set cpu, memory and ephemeral-storage limits": "82ea58d521a8",
-    "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": "cbe9db10c667",
+    "task containers must limit cpu, memory and ephemeral-storage, plus at most one nvidia.com/gpu and only on the gvisor-gpu class — any other key is an unapproved resource": "e8e7f802350d",
     "task containers must request exactly what they limit (Guaranteed QoS)": "e5824532099d",
     "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it": "4490bf5bfaf0",
     "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": "3bf5faca144b",
@@ -663,6 +745,7 @@ MATCH_CONDITION_DIGESTS = {
 VARIABLE_DIGESTS = {
     "pod": "14b9d426b721",
     "isJob": "e99f115a3c1c",
+    "isGpu": "1936ac9eb577",
     "allContainers": "b41ce25c2638",
 }
 

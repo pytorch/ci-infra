@@ -90,6 +90,13 @@ spec:
       expression: "request.kind.kind == 'Job' ? object.spec.template.spec : object.spec"
     - name: isJob
       expression: "request.kind.kind == 'Job'"
+    # A GPU task, decided by the RuntimeClass and nothing else — the class is what carries
+    # the ai-sandbox-gpu nodeSelector, so it is the only field that says which fleet the
+    # pod lands on. Reading it here is what couples the device rule below to the fleet: a
+    # pod on the CPU class cannot ask for a GPU, and one that asks for a GPU is on the
+    # fleet whose AMI runs nvproxy.
+    - name: isGpu
+      expression: "has(variables.pod.runtimeClassName) && variables.pod.runtimeClassName == 'gvisor-gpu'"
     - name: allContainers
       expression: >-
         variables.pod.containers +
@@ -101,9 +108,15 @@ spec:
     # field must be a rejection, not a pass. A Job template that omits
     # serviceAccountName does not inherit sandbox-agent — it gets `default` when the
     # pod is created, which is a token-mounting account.
-    - expression: "has(variables.pod.runtimeClassName) && variables.pod.runtimeClassName == 'gvisor'"
+    #
+    # Two classes, one per fleet: `gvisor` is the CPU fleet, `gvisor-gpu` the GPU one.
+    # Both run runsc, and the allowlist stays closed — a class this does not name is a
+    # class whose scheduling block nobody here reviewed, and `runc` is one of them.
+    - expression: >-
+        has(variables.pod.runtimeClassName) &&
+        variables.pod.runtimeClassName in ['gvisor', 'gvisor-gpu']
       reason: Forbidden
-      message: "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)"
+      message: "task pods must set runtimeClassName to gvisor or gvisor-gpu (this is also what confines them to the matching ai-sandbox fleet)"
     - expression: "has(variables.pod.serviceAccountName) && variables.pod.serviceAccountName == 'sandbox-agent'"
       reason: Forbidden
       message: "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC"
@@ -223,7 +236,7 @@ spec:
     #
     # These rules check that limits are DECLARED, and that requests equal them. They put
     # no ceiling on the VALUES, so one admitted task can still size itself to the whole
-    # namespace quota (25 CPU / 50Gi memory / 245Gi ephemeral in quota.yaml) and starve
+    # namespace quota (49 CPU / 146Gi memory / 445Gi ephemeral in quota.yaml) and starve
     # every other task — a denial of service against ourselves, not an escape, which is
     # why it is a follow-up rather than a rule here: a ceiling means a fourth copy of the
     # TASK_CPU/TASK_MEMORY/TASK_EPHEMERAL_STORAGE values, and comparing quantities needs
@@ -248,22 +261,35 @@ spec:
     # already requires `nvidia.com/gpu`'s request to equal its limit, so such a key also
     # satisfies the Guaranteed-QoS rule below by construction, and attaches hardware
     # through the resources map rather than through resourceClaims — which is the door
-    # the resourceClaims rule above exists to close. Nothing lands today only because the
-    # ai-sandbox fleet advertises no device plugin, and that is a fleet shape rather than
-    # a rule.
+    # the resourceClaims rule above exists to close.
     #
     # Written as an ALLOWLIST rather than a device denylist, so it also excludes keys that
-    # are not devices at all (hugepages-2Mi and the rest) — anything outside the three the
+    # are not devices at all (hugepages-2Mi and the rest) — anything outside what the
     # dispatcher sizes a task with is a resource nobody here has approved.
     #
-    # `all` over a MAP binds its iteration variable to the KEYS, so this tests key names
-    # and not quantities.
+    # ONE device, and only on the GPU class. A GPU task is the one approved device, and
+    # the three conditions on it are the whole of the approval: the key is nvidia.com/gpu,
+    # the pod is on gvisor-gpu (so the ai-sandbox-gpu fleet, whose AMI runs nvproxy), and
+    # the count is exactly one — which is what keeps a GPU node to one task, and with it
+    # the one-task-per-node property the fleet's isolation argument rests on. nvproxy
+    # forwards NVIDIA ioctls to the host driver, so this rule is where the reduced
+    # isolation of a GPU task is bounded; docs/agent-sandbox-gpu-gvisor.md is the why.
+    #
+    # The '1' is a STRING comparison for the same reason the Guaranteed-QoS rule below is
+    # one — assume "1" and "1000m" do NOT compare equal here. Sound for a device: whole
+    # numbers are the only quantities Kubernetes accepts for an extended resource, and the
+    # failure direction is rejection.
+    #
+    # `all` over a MAP binds its iteration variable to the KEYS, hence the index to reach
+    # the quantity.
     - expression: >-
         variables.allContainers.all(c,
           !has(c.resources) || !has(c.resources.limits) ||
-          c.resources.limits.all(k, k in ['cpu', 'memory', 'ephemeral-storage']))
+          c.resources.limits.all(k,
+            k in ['cpu', 'memory', 'ephemeral-storage'] ||
+            (k == 'nvidia.com/gpu' && variables.isGpu && c.resources.limits[k] == '1')))
       reason: Forbidden
-      message: "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them"
+      message: "task containers must limit cpu, memory and ephemeral-storage, plus at most one nvidia.com/gpu and only on the gvisor-gpu class — any other key is an unapproved resource"
     # Guaranteed QoS: requests == limits is what keeps fleet capacity a division rather
     # than a guess, and stops a task pod being the first thing evicted under pressure.
     #

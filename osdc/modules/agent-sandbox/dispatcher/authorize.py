@@ -53,6 +53,7 @@ ALLOWED_CALLERS = (
         "repository_id": "1133856973",
         "repository_owner_id": "21003710",  # the pytorch organisation
         "workflow_prefix": "pytorch/ciforge/",
+        "gpu": True,
     },
     {
         # This module's own integration test (`test-agent-sandbox` in
@@ -64,8 +65,20 @@ ALLOWED_CALLERS = (
         "repository_id": "654341155",
         "repository_owner_id": "21003710",
         "workflow_prefix": "pytorch/ci-infra/",
+        "gpu": True,
     },
 )
+
+# `gpu` above is PER CALLER and read through .get(..., False), so a caller entry that
+# omits it cannot have one. It is a capability rather than a selector — a GPU task runs
+# on the reduced-isolation nvproxy fleet and costs real money — so it is decided here
+# beside the repository and the model, and not taken from the request body.
+#
+# Unlike those two it is still OPT-IN per request: an authorized caller asks for `gpu:
+# true` and most of its runs will not. What this controls is whether asking is allowed.
+# Both entries are first-party repositories we control, and the blast radius is bounded
+# independently by MAX_CONCURRENT_GPU_TASKS and by requests.nvidia.com/gpu in the
+# namespace quota. Flipping an entry to False is the kill switch for that caller.
 
 # What an authorized run may do. v1 hardcodes both; v2 reads them from the manifest.
 # The clone target is public, which is what lets the task pod clone with no credential
@@ -140,6 +153,11 @@ class Grant:
     # policy-pinned repository to read. It selects code to look at, not a capability —
     # the repository itself is not negotiable, and neither is the model.
     ref: str
+    # Whether this run gets a GPU: requested by the caller, granted only if the policy
+    # entry allows it. Not defaulted — a Grant built without deciding this is a Grant
+    # nobody thought about the capability for, and TypeError at construction is a better
+    # outcome than a silent False that hides the omission.
+    gpu: bool
 
 
 def _lookup_caller(claims: dict) -> dict | None:
@@ -216,6 +234,14 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
     if not isinstance(task, str) or not isinstance(ref, str):
         raise Denied("'task' and 'ref' must be strings")
 
+    # Denied rather than downgraded. Silently handing back a CPU task would look like a
+    # success to the caller and produce a result with no `gpu` block, which reads as "the
+    # device was not injected" — the exact symptom the GPU path exists to report on. Say
+    # no instead, the same way a wrong `repo` or `model` is refused rather than replaced.
+    gpu = bool(request.get("gpu"))
+    if gpu and not caller.get("gpu", False):
+        raise Denied("this caller is not allowed to request a GPU task")
+
     return Grant(
         caller=caller["name"],
         workflow_ref=workflow_ref,
@@ -223,4 +249,5 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
         model=model,
         task=task,
         ref=ref,
+        gpu=gpu,
     )

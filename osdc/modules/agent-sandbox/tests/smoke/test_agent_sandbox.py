@@ -63,6 +63,22 @@ class TestAgentSandboxRuntimeClass:
         )
 
 
+def _gpu_container(count: str) -> dict:
+    """A task container asking for `count` GPUs.
+
+    requests mirrors limits, as Kubernetes requires of an extended resource, so every
+    probe built from this satisfies the limits-present and Guaranteed-QoS rules and the
+    device allowlist is the only rule left that can decide it.
+    """
+    slot = {"cpu": "1", "memory": "1Gi", "ephemeral-storage": "1Gi", "nvidia.com/gpu": count}
+    return {
+        "name": "task",
+        "image": "harbor:30002/osdc/ci-agent-sandbox:admission-probe",
+        "securityContext": {"allowPrivilegeEscalation": False, "runAsNonRoot": True},
+        "resources": {"requests": dict(slot), "limits": dict(slot)},
+    }
+
+
 class TestTaskAdmissionPolicy:
     """The cluster-side copy of the task-pod isolation contract.
 
@@ -226,6 +242,22 @@ class TestTaskAdmissionPolicy:
         result = self._server_dry_run(self._task_pod("admission-probe-good"))
         assert result.returncode == 0, f"a compliant task pod was rejected: {result.stderr.strip()}"
 
+    def test_a_compliant_gpu_task_pod_is_admitted(self) -> None:
+        """The GPU half of the positive case, and the only place its CEL is evaluated.
+
+        The device rule reads a pod field from inside a map-keyed `all` and indexes the map
+        for the quantity; nothing off-cluster runs that. Get it wrong under
+        `failurePolicy: Fail` and every GPU task is denied at dispatch while the negative
+        probe below still passes, because a rule that denies everything denies that too.
+        """
+        pod = self._task_pod(
+            "admission-probe-gpu-good",
+            runtimeClassName="gvisor-gpu",
+            containers=[_gpu_container("1")],
+        )
+        result = self._server_dry_run(pod)
+        assert result.returncode == 0, f"a compliant GPU task pod was rejected: {result.stderr.strip()}"
+
     # Each violation is chosen so that NOTHING ELSE in the admission chain would reject
     # it first: no `runtimeClassName: runc` (there is no runc RuntimeClass to resolve, so
     # the RuntimeClass admission plugin would answer before this policy did), and an
@@ -242,34 +274,16 @@ class TestTaskAdmissionPolicy:
             # The two rules whose CEL is not a shape already proven by the cases above: a
             # map-keyed `all`, and a bound on a field the API server defaults. Both are
             # unevaluated until something here denies with them.
+            # A device on the CPU class. The pod stays on `gvisor`, which is what makes it
+            # a violation: the allowlist admits nvidia.com/gpu only on gvisor-gpu, whose
+            # nodeSelector is the GPU fleet.
+            ("a device request", {"containers": [_gpu_container("1")]}),
+            # More than one device, on the class that may have one. Only the count differs
+            # from the admitted GPU probe above, so this is the case that says the bound is
+            # a bound rather than a device flag — one task per GPU node is the property.
             (
-                "a device request",
-                {
-                    "containers": [
-                        {
-                            "name": "task",
-                            "image": "harbor:30002/osdc/ci-agent-sandbox:admission-probe",
-                            "securityContext": {"allowPrivilegeEscalation": False, "runAsNonRoot": True},
-                            # Equal on both sides on purpose: Kubernetes requires that of
-                            # an extended resource, so this satisfies the limits-present
-                            # and Guaranteed-QoS rules and only the allowlist can say no.
-                            "resources": {
-                                "requests": {
-                                    "cpu": "1",
-                                    "memory": "1Gi",
-                                    "ephemeral-storage": "1Gi",
-                                    "nvidia.com/gpu": "1",
-                                },
-                                "limits": {
-                                    "cpu": "1",
-                                    "memory": "1Gi",
-                                    "ephemeral-storage": "1Gi",
-                                    "nvidia.com/gpu": "1",
-                                },
-                            },
-                        }
-                    ]
-                },
+                "two devices on the GPU class",
+                {"runtimeClassName": "gvisor-gpu", "containers": [_gpu_container("2")]},
             ),
             ("a long termination grace period", {"terminationGracePeriodSeconds": 3600}),
         ],
@@ -438,6 +452,36 @@ class TestDispatcherRBAC:
         all — otherwise the untrusted side can launch its own pods."""
         subject = f"system:serviceaccount:{NAMESPACE}:sandbox-agent"
         assert self._can_i("create", "jobs", subject, NAMESPACE) == "no"
+
+
+class TestGvisorGpuRuntimeClass:
+    """The GPU class is what routes a GPU task to the fleet whose AMI has nvproxy enabled.
+    A GPU pod on the CPU class would start and then find no device."""
+
+    def test_gpu_runtimeclass_exists(self) -> None:
+        rc = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])
+        assert rc["handler"] == "runsc", f"gvisor-gpu must use handler 'runsc', got {rc.get('handler')!r}."
+
+    def test_gpu_runtimeclass_pins_the_gpu_fleet(self) -> None:
+        """Separate fleet is the containment story: nvproxy exposes the host NVIDIA driver
+        to untrusted code, so those nodes must never be shared with CI work."""
+        rc = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])
+        node_selector = rc.get("scheduling", {}).get("nodeSelector", {})
+        assert node_selector.get("node-fleet") == "ai-sandbox-gpu", (
+            f"gvisor-gpu must pin node-fleet=ai-sandbox-gpu, got {node_selector!r}."
+        )
+
+    def test_gpu_runtimeclass_tolerates_the_gpu_taint(self) -> None:
+        rc = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])
+        keys = {t.get("key") for t in rc.get("scheduling", {}).get("tolerations", [])}
+        assert {"node-fleet", "instance-type", "nvidia.com/gpu"} <= keys, (
+            f"gvisor-gpu must tolerate the fleet, instance-type and nvidia.com/gpu taints; got {keys}."
+        )
+
+    def test_cpu_and_gpu_classes_target_different_fleets(self) -> None:
+        cpu = run_kubectl(["get", "runtimeclass", "gvisor"])["scheduling"]["nodeSelector"]["node-fleet"]
+        gpu = run_kubectl(["get", "runtimeclass", "gvisor-gpu"])["scheduling"]["nodeSelector"]["node-fleet"]
+        assert cpu != gpu, f"the two RuntimeClasses must not share a fleet; both pin {cpu!r}."
 
 
 class TestAgentSandboxServiceAccounts:

@@ -235,3 +235,44 @@ def test_an_unparseable_require_auth_value_crashes_rather_than_disabling_auth(mo
     monkeypatch.setenv("REQUIRE_AUTH", "tru")
     with pytest.raises(RuntimeError, match="REQUIRE_AUTH"):
         http_api._flag("REQUIRE_AUTH", "false")
+
+
+class TestGpuCapability:
+    """A GPU is granted per caller, so it is decided here and not in the request body.
+
+    The device itself is bounded elsewhere — MAX_CONCURRENT_GPU_TASKS, the namespace
+    quota, and the admission policy's one-GPU-on-the-gvisor-gpu-class rule. What these
+    cover is the one question only this file can answer: who is allowed to ask.
+    """
+
+    @POLICIES
+    def test_a_permitted_caller_gets_the_gpu_it_asks_for(self, policy):
+        assert authorize_fn(claims(), {"gpu": True}, policy).gpu is True
+
+    @POLICIES
+    def test_not_asking_gets_no_gpu(self, policy):
+        """The default has to be off: a GPU run costs real money and lands on the
+        reduced-isolation fleet, so it is never what an unstated request means."""
+        assert authorize_fn(claims(), {}, policy).gpu is False
+        assert authorize_fn(claims(), {"gpu": False}, policy).gpu is False
+
+    @POLICIES
+    def test_a_caller_the_policy_refuses_is_denied_not_downgraded(self, policy, monkeypatch):
+        """Denied rather than quietly handed a CPU task. A downgrade returns a result
+        with no `gpu` block, which reads exactly like nvproxy failing to inject the
+        device — so the caller would debug the fleet instead of reading the refusal."""
+        monkeypatch.setattr(authorize, "ALLOWED_CALLERS", tuple({**c, "gpu": False} for c in authorize.ALLOWED_CALLERS))
+        with pytest.raises(Denied, match="GPU"):
+            authorize_fn(claims(), {"gpu": True}, policy)
+
+    @POLICIES
+    def test_a_caller_entry_that_omits_the_flag_has_no_gpu(self, policy, monkeypatch):
+        """Read through .get(..., False), so the capability is default-deny in shape: a
+        new entry added without thinking about GPUs cannot accidentally have one."""
+        monkeypatch.setattr(
+            authorize,
+            "ALLOWED_CALLERS",
+            tuple({k: v for k, v in c.items() if k != "gpu"} for c in authorize.ALLOWED_CALLERS),
+        )
+        with pytest.raises(Denied, match="GPU"):
+            authorize_fn(claims(), {"gpu": True}, policy)
