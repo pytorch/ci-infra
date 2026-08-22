@@ -602,6 +602,61 @@ class TestGenerateNodepoolYaml:
             if "containerLogMaxFiles" in line:
                 assert line.strip() == "containerLogMaxFiles: 5"
 
+    @patch.dict(os.environ, {"NODEPOOLS_FAST_IMAGE_PULL": "true"}, clear=False)
+    def test_fast_image_pull_emits_feature_gate(self):
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        userdata = self._parse(output)[1]["spec"]["userData"]
+        assert "featureGates:" in userdata
+        # Must be its own line under spec, not concatenated onto kubelet:
+        gate_lines = [line.strip() for line in userdata.splitlines() if "FastImagePull" in line]
+        assert gate_lines == ["FastImagePull: true"]
+
+    @patch.dict(os.environ, {"NODEPOOLS_FAST_IMAGE_PULL": "true"}, clear=False)
+    def test_fast_image_pull_nodeconfig_still_parses(self):
+        """The embedded NodeConfig MIME part must remain valid YAML with the gate added."""
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        userdata = self._parse(output)[1]["spec"]["userData"]
+        mime_part = userdata.split("Content-Type: application/node.eks.aws", 1)[1].split("--==BOUNDARY==", 1)[0]
+        node_config = next(
+            doc for doc in yaml.safe_load_all(mime_part) if isinstance(doc, dict) and doc.get("kind") == "NodeConfig"
+        )
+        assert node_config["spec"]["featureGates"] == {"FastImagePull": True}
+        # The gate must not displace the kubelet block it sits next to.
+        assert node_config["spec"]["kubelet"]["config"]["cpuManagerPolicy"] == "static"
+
+    @patch.dict(os.environ, {"NODEPOOLS_FAST_IMAGE_PULL": "false"}, clear=False)
+    def test_fast_image_pull_absent_by_default(self):
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        userdata = self._parse(output)[1]["spec"]["userData"]
+        assert "FastImagePull" not in userdata
+        assert "featureGates" not in userdata
+
+    @patch.dict(os.environ, {"NODEPOOLS_FAST_IMAGE_PULL": "false"}, clear=False)
+    def test_per_def_fast_image_pull_override(self):
+        """Per-def fast_image_pull=true overrides a cluster default of false."""
+        nodepool_def = _make_nodepool_def(fast_image_pull=True)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        assert "FastImagePull: true" in self._parse(output)[1]["spec"]["userData"]
+
+    @patch.dict(os.environ, {"NODEPOOLS_FAST_IMAGE_PULL": "true"}, clear=False)
+    def test_custom_ami_opts_out_of_fast_image_pull(self):
+        """A baked AMI may predate the gate, and nodeadm hard-fails on an unknown one."""
+        nodepool_def = _make_nodepool_def(ami_selector_tags={"Name": "ai-sandbox-gvisor"})
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        assert "FastImagePull" not in self._parse(output)[1]["spec"]["userData"]
+
+    @patch.dict(os.environ, {"NODEPOOLS_FAST_IMAGE_PULL": "true"}, clear=False)
+    def test_custom_ami_can_opt_back_in_explicitly(self):
+        nodepool_def = _make_nodepool_def(
+            ami_selector_tags={"Name": "ai-sandbox-gvisor"},
+            fast_image_pull=True,
+        )
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        assert "FastImagePull: true" in self._parse(output)[1]["spec"]["userData"]
+
     def test_block_device_disk_size(self):
         nodepool_def = _make_nodepool_def(node_disk_size=2500)
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
