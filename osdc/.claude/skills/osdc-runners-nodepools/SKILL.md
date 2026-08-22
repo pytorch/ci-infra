@@ -50,10 +50,12 @@ There is no longer a `.github/workflows/osdc-auto-update-deploy-prod.yml` — de
 
 **Base nodes**: `CriticalAddonsOnly=true:NoSchedule`. All base workloads (Harbor, DaemonSets, Karpenter, control plane) must tolerate this.
 
-**Workload (Karpenter) nodes** — every NodePool emits these taints:
+**Workload (Karpenter) nodes** — runner and GPU NodePools emit these taints:
 - `node-fleet=<fleet-name>:NoSchedule` — fleet isolation (e.g. `c7i-runner`, `g5`, `m8g`)
 - `instance-type=<instance>:NoSchedule` — per-instance-type taint
 - `nvidia.com/gpu=true:NoSchedule` — GPU pools only
+
+BuildKit NodePools are the exception: they emit only `workload/buildkit-<arch>`, no `instance-type` taint (one pool per size, but one shared pod spec).
 
 **IPv6-only EKS**: the cluster runs on IPv6-only pod networking (`ip_family = "ipv6"`, commit `a6b4c8c` / PR #576). Pod IPs are allocated from a /80 IPv6 prefix per node via VPC CNI prefix delegation; the service CIDR is auto-assigned by EKS in `fd00:ec2::/108` (ULA). There is no per-AZ NodePool fan-out, no `bucket` label, no ENIConfig CR, and no `pod_cidr_buckets` map in `clusters.yaml` — the IPv4 + Custom Networking bucket scheme described in the abandoned `INCREASE_IPV4.md` plan was superseded by the IPv6 migration and is NOT in the current generator.
 
@@ -77,15 +79,15 @@ For image mirroring details (bootstrap images, ECR, Harbor proxy cache), see the
 BuildKit (`moby/buildkit:v0.29.0`) runs as two Deployments in the `buildkit` namespace — one per architecture. Runner job pods invoke `buildctl` — no Kubernetes API access required.
 
 - **Architecture**: Dual-arch fleet with per-arch Deployments and Services
-  - `buildkitd-arm64` — Graviton (script default `m8gd.24xlarge`; real clusters override — both staging clusters and the prod fleets use `m7gd.16xlarge`), Service: `buildkitd-arm64.buildkit:1234`
-  - `buildkitd-amd64` — Intel (default `m6id.24xlarge`), Service: `buildkitd-amd64.buildkit:1234`
+  - `buildkitd-arm64` — Graviton (`m7gd.16xlarge:4` from `defaults.buildkit`), Service: `buildkitd-arm64.buildkit:1234`
+  - `buildkitd-amd64` — Intel (`m6id.24xlarge:2` preferred, `m6id.12xlarge:1` fallback, from `defaults.buildkit`), Service: `buildkitd-amd64.buildkit:1234`
   - `buildkitd` — combined Service (round-robin across both arches, for arch-agnostic builds)
-- **Sizing**: Dynamically computed by `modules/buildkit/scripts/python/generate_buildkit.py` from instance specs. Guaranteed QoS (requests == limits), static CPU pinning, `max-parallelism=1` (one build at a time per pod), 2 pods per node by default (overridable per-arch via `buildkit.amd64_pods_per_node` / `buildkit.arm64_pods_per_node`)
+- **Sizing**: Dynamically computed by `modules/buildkit/scripts/python/generate_buildkit.py` from instance specs. Guaranteed QoS (requests == limits), static CPU pinning, `max-parallelism=1` (one build at a time per pod), pods per node declared per instance type in `buildkit.{amd64,arm64}_instance_types`
 - **NUMA**: BuildKit EC2NodeClasses use `topologyManagerPolicy: restricted` + `topologyManagerScope: container` + `prefer-closest-numa-nodes: true` — stricter than the nodepool generator's `best-effort` default. Relevant when debugging BuildKit scheduling failures on multi-NUMA hosts.
 - **Startup taint**: BuildKit nodepools also carry their own `git-cache-not-ready=true:NoSchedule` startup taint (in addition to the cluster-wide `node-init.osdc.io/*` ones). The git-cache rsync init clears it before pods can schedule.
-- **Instance types**: Configurable via `clusters.yaml` (`buildkit.arm64_instance_type`, `buildkit.amd64_instance_type`)
+- **Instance types**: Configurable via `clusters.yaml` (`buildkit.arm64_instance_types`, `buildkit.amd64_instance_types`) — a map of instance type to pods per node, in preference order. Each entry generates its own weighted NodePool sharing one EC2NodeClass (`buildkit-<arch>` at weight 100, then `buildkit-<arch>-<type>` descending by 10), so Karpenter falls through to the next size only when the one above cannot provision — e.g. amd64 prefers m6id.24xlarge and spills to m6id.12xlarge on InsufficientInstanceCapacity. Each pool's limits are sized to absorb the whole replica count alone. Both sizes are the same family, so a family-wide regional ICE still stalls; a genuine fallback needs a different NVMe family (`m7id.*`), which the git cache and `instanceStorePolicy: RAID0` both require.
 - **Scaling**: Configurable via `clusters.yaml` (`buildkit.replicas_per_arch`, default 12 in `defaults:`; the bash fallback in `deploy.sh` is 4, used only if neither `defaults:` nor the cluster sets a value)
-- **Autoscaling (KEDA)**: Enabled via `buildkit.autoscaling.enabled: true` (currently true on `arc-cbr-production` and both `lf-prod-aws-ue1`/`ue2` and both staging clusters; false elsewhere). Requires the `keda` module to be in the cluster's module list. Per-arch `_min`/`_max`/`_fallback` knobs live under `buildkit.autoscaling.*` in `clusters.yaml`. ScaledObjects are generated by `generate_buildkit.generate_autoscaling_yaml` and applied from `generated/autoscaling.yaml`. With autoscaling on, Deployments omit the static `replicas:` line and add `terminationGracePeriodSeconds: 8100` for in-flight builds.
+- **Autoscaling (KEDA)**: Enabled via `buildkit.autoscaling.enabled: true`. BuildKit deploys on exactly five clusters — `meta-staging-aws-{uw1,ue1,ue2}` and `meta-prod-aws-{ue1,ue2}` — and all five have it enabled; `defaults.buildkit.autoscaling.enabled` is `false`. Requires the `keda` module to be in the cluster's module list. Per-arch `_min`/`_max`/`_fallback` knobs live under `buildkit.autoscaling.*` in `clusters.yaml`. ScaledObjects are generated by `generate_buildkit.generate_autoscaling_yaml` and applied from `generated/autoscaling.yaml`. With autoscaling on, Deployments omit the static `replicas:` line and add `terminationGracePeriodSeconds: 8100` for in-flight builds.
 - **Storage**: NVMe instance storage (RAID0) for build cache + git object cache
 - **Registry mirrors**: `buildkitd.toml` routes `FROM` image pulls through Harbor for docker.io, ghcr.io, nvcr.io, registry.k8s.io, quay.io (public.ecr.aws not mirrored — no rate limits)
 - **Network access**: NetworkPolicy restricts ingress to pods from `arc-runners` namespace only
@@ -122,12 +124,14 @@ RUN --mount=type=bind,from=gitcache,source=pytorch/pytorch.git/objects,target=/t
 
 ### BuildKit Pod Sizing Algorithm
 
-Pod resource requests are computed by `modules/buildkit/scripts/python/generate_buildkit.py` from a static instance spec table:
-1. Look up total vCPU + memory for the instance type
+Pod resource requests are computed by `modules/buildkit/scripts/python/generate_buildkit.py` from a static instance spec table. The **first** entry in `{arch}_instance_types` is the primary and alone sizes the pod:
+1. Look up total vCPU + memory for the primary instance type
 2. Subtract kubelet reserved resources
 3. Subtract DaemonSet overhead (300m CPU, 440Mi memory)
 4. Apply 10% margin
-5. Divide by `pods_per_node` (default: 2)
+5. Divide by the primary's `pods_per_node`
+
+Every later entry is then checked with `pods_that_fit`: it must hold at least the count it declared, or generation fails. That is what stops a denser `pods_per_node` on a fallback size from silently shrinking every build pod on the arch — to size the pod off a different entry, make it first.
 
 This ensures exactly N pods fit per node with Guaranteed QoS (requests == limits -> static CPU pinning). NVMe instance storage uses `instanceStorePolicy: RAID0` on EC2NodeClass (nodeadm handles formatting/mounting) — instance types must have `d` suffix.
 
