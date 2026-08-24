@@ -78,6 +78,7 @@ Reference documentation in `docs/`:
 | `docs/current_runner_load_distribution.md` | Job counts and peak concurrency by runner type (pytorch/pytorch, from ClickHouse) |
 | `docs/node-utilization-optimization.md` | Runner-to-node packing efficiency analysis and instance type recommendations |
 | `docs/node-warmup-and-scheduling-gates.md` | Full node initialization sequence — taints, DaemonSets, init containers before job scheduling |
+| `docs/fast-image-pull.md` | SOCI parallel pull via the nodeadm `FastImagePull` gate — cold-node image pull time, why not lazy loading, staging-only rollout |
 | `docs/arc-fork-build-deploy.md` | ARC fork (jeanschmidt/actions-runner-controller) build/release workflow and chart publishing |
 | `docs/pypi-package-cache.md` | PyPI wheel cache architecture, slug naming, S3 layout, runner integration |
 | `docs/h100-fabric-handles-imex-channels.md` | Enabling CUDA fabric handles (`CU_MEM_HANDLE_TYPE_FABRIC`) on H100 runners — IMEX channel creation, the gated fabric runner, and verification |

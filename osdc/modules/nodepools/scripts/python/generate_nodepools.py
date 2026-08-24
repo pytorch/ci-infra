@@ -302,6 +302,12 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         gpu_taints = ""
         gpu_tags = ""
 
+    # ----- FastImagePull (SOCI parallel pull) opt-in -----
+    # See docs/fast-image-pull.md. nodeadm ignores the gate below 2xlarge, and
+    # it needs a root volume at >=600 MiB/s — both already hold for every def.
+    cluster_fast_image_pull = os.environ.get("NODEPOOLS_FAST_IMAGE_PULL", "false").lower() == "true"
+    fast_image_pull = nodepool_def.get("fast_image_pull", cluster_fast_image_pull)
+
     # ----- Custom AMI override -----
     # A def may select its own AMI by tag instead of the stock AL2023 alias, for
     # fleets that need something baked into the image (the ai-sandbox fleet needs
@@ -320,6 +326,10 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         ami_selector_block = f"""  amiSelectorTerms:
     - tags:
 {tag_lines}"""
+        # nodeadm rejects an unknown feature gate — a baked AMI predating
+        # FastImagePull fails node bootstrap outright rather than degrading.
+        if fast_image_pull and "fast_image_pull" not in nodepool_def:
+            fast_image_pull = False
 
     # ----- Baremetal consolidate_after override -----
     # Baremetal instances take much longer to provision, so they get a longer
@@ -463,6 +473,7 @@ spec:
     apiVersion: node.eks.aws/v1alpha1
     kind: NodeConfig
     spec:
+{"      featureGates:" + chr(10) + "        FastImagePull: true" + chr(10) if fast_image_pull else ""}\
       kubelet:
         config:
           cpuManagerPolicy: static
@@ -712,6 +723,8 @@ def main():
     log_info(f"Found {len(def_files)} nodepool definition(s)")
     if region:
         log_info(f"Target region: {region} (fleets with matching exclude_regions will be skipped)")
+    if os.environ.get("NODEPOOLS_FAST_IMAGE_PULL", "false").lower() == "true":
+        log_info("FastImagePull enabled — nodes bootstrap with the SOCI snapshotter in parallel-pull mode")
 
     generated = 0
     skipped = []
