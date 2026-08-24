@@ -13,9 +13,9 @@ than all runner compute combined on a per-line basis. July 2026, grouped by the
 | `meta-prod-aws-ue2` | $126,855 | 2,819 TB |
 | `meta-prod-aws-ue1` | $124,765 | 2,773 TB |
 | `meta-prod-aws-uw1` | $1,269 | 26 TB |
-| `pytorch-re-prod-production` + 3× staging | $368 | 8 TB |
+| 3× `meta-staging-*` | $211 | 5 TB |
 | *(account discount line, untagged)* | −$104,001 | — |
-| **Net fleet total** | **$149,257** | 5,631 TB |
+| **Net fleet total** | **$149,099** | 5,623 TB |
 
 That is pure NAT gateway *data processing* at $0.045/GB — separate from the
 $0.045/hr per-gateway rental, which is only ~$100/mo per cluster. The processing
@@ -23,21 +23,12 @@ fee was running 1,240× the rental fee.
 
 ## What was generating it
 
-Regressing daily `NatGateway-Bytes` against daily S3 GET count
-(`Requests-Tier2`) for `meta-prod-aws-ue1`, 7–31 July 2026:
+Almost all of it is **Harbor serving container image layers out of S3** — daily
+NAT bytes track daily S3 GET count for `meta-prod-aws-ue1` at r² = 0.95, with no
+meaningful non-S3 remainder, and it is overwhelmingly inbound (2,720 TB in vs
+257 TB out).
 
-```
-n = 25 days
-Pearson r  = 0.9729      r² = 0.9465
-slope      = 64.3 MB per S3 GET
-intercept  = −6,186 GB/day   (statistically zero)
-```
-
-An intercept indistinguishable from zero means there is effectively no non-S3
-traffic on the NAT gateways. 64.3 MB/GET is the size profile of a container
-image layer blob. Direction confirms it: 2,720 TB inbound vs 257 TB outbound.
-
-Two design choices combined to route all of it through NAT:
+Two design choices combined to route that through NAT:
 
 1. **Harbor redirects layer pulls to S3.** `base/helm/harbor/values.yaml` sets
    `disableredirect: false`, so the registry 307-redirects containerd to a
@@ -101,8 +92,8 @@ resources before re-applying.
 ## Verification
 
 ```bash
-CLUSTER=meta-prod-aws-ue1
-REGION=$(yq ".clusters.$CLUSTER.region" clusters.yaml)
+CLUSTER=meta-staging-aws-ue1
+REGION=$(uv run scripts/cluster-config.py "$CLUSTER" region)
 VPC=$(aws eks describe-cluster --name "$CLUSTER" --region "$REGION" \
         --query 'cluster.resourcesVpcConfig.vpcId' --output text)
 
@@ -117,12 +108,48 @@ aws ec2 describe-route-tables --region "$REGION" \
   --query 'RouteTables[].{rtb:RouteTableId,vpce:Routes[?starts_with(GatewayId || ``, `vpce-`)].GatewayId}'
 ```
 
-`modules/eks/tests/smoke/test_eks.py::TestS3GatewayEndpoint` asserts all three
-invariants (gateway type, available, associated with every private route table),
-so `just smoke-test <cluster>` covers this going forward.
+A single private route table is expected where `single_nat_gateway: true` (the
+staging clusters); prod gets one per AZ. What matters is that every private
+subnet maps to a table carrying the route.
 
-The behavioural check is `AWS/NATGateway` → `BytesInFromDestination`, which should
-collapse by >90% within an hour of a normal traffic period.
+`modules/eks/tests/smoke/test_eks.py::TestS3GatewayEndpoint` asserts gateway
+type, `available` state, association with every private route table, and — the
+load-bearing one — that each of those tables actually holds an `active`
+prefix-list route to the endpoint. The association alone is not enough: it can
+survive the route being pruned, which is exactly the inline-route failure mode
+above. `just smoke <cluster>` covers all four going forward.
+
+### Behavioural check
+
+`AWS/NATGateway` → `BytesInFromDestination` should collapse by >90% over a normal
+traffic period. On an idle cluster there is nothing to see — `meta-staging-aws-ue1`
+sits at ~0.2 GB/hr — so drive traffic deliberately instead:
+
+```bash
+just kubeconfig "$CLUSTER"
+
+# ~3.4 GB of in-region S3. ossci-linux is public and us-east-1, so it is inside
+# the same prefix list and needs no credentials. Base nodes are in the private
+# subnets; the toleration is what schedules the pod onto one.
+kubectl run s3-endpoint-check --rm -i --restart=Never \
+  --image=public.ecr.aws/docker/library/alpine:3.21 \
+  --overrides='{"spec":{"tolerations":[{"key":"CriticalAddonsOnly","operator":"Exists","effect":"NoSchedule"}]}}' \
+  -- sh -c 'for i in 1 2 3; do wget -q -O /dev/null \
+      https://ossci-linux.s3.us-east-1.amazonaws.com/cuda/cuda_7.0.28_linux.run; done'
+```
+
+Then re-read the metric after ~10 minutes (NAT stats publish on a lag). The S3
+pull should be invisible against the idle floor.
+
+**Run a negative control in the same window** — a broken measurement is
+indistinguishable from success otherwise. Repeat the pod against a non-AWS host
+(e.g. a ~140 MB `cdn.kernel.org` tarball); those bytes *must* appear on the NAT
+gateway. Only the two-sided result proves anything.
+
+For per-request proof, CloudTrail S3 data events are enabled account-wide and
+carry `vpcEndpointId`. That is unambiguous, but reading them means Athena over
+the trail bucket plus delivery lag — a one-off pre-prod check, not something to
+automate.
 
 ## Rollback
 

@@ -295,6 +295,26 @@ class TestS3GatewayEndpoint:
             f"route table(s) {sorted(missing)}; nodes in those subnets still reach S3 over the NAT gateway."
         )
 
+        # The association above is the endpoint's view. Assert the route itself
+        # exists, because that is what actually diverts the traffic and it can
+        # be removed out from under the association — a Terraform provider that
+        # stops skipping vpce- routes when diffing aws_route_table.private would
+        # prune it, leaving the association intact and the bill unchanged.
+        endpoint_id = s3_endpoint.get("VpcEndpointId")
+        for rtb in result.get("RouteTables", []):
+            vpce_routes = [
+                r
+                for r in rtb.get("Routes", [])
+                if r.get("DestinationPrefixListId") and r.get("GatewayId") == endpoint_id
+            ]
+            assert vpce_routes, (
+                f"Route table {rtb['RouteTableId']} has no prefix-list route to {endpoint_id}. "
+                f"Routes present: {rtb.get('Routes')}"
+            )
+            assert vpce_routes[0].get("State") == "active", (
+                f"S3 prefix-list route in {rtb['RouteTableId']} is {vpce_routes[0].get('State')!r}, not active"
+            )
+
 
 # ============================================================================
 # ECR Images
