@@ -19,7 +19,7 @@ from generate_buildkit import (
     plan_pod_resources,
     pods_that_fit,
 )
-from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
+from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS, eni_max_pods
 
 # ============================================================================
 # Helpers
@@ -802,3 +802,61 @@ class TestMultipleInstanceTypes:
         for d in yaml.safe_load_all(output):
             if d and d["kind"] == "EC2NodeClass":
                 assert "InstanceType" not in d["spec"]["tags"]
+
+
+class TestStagingSmallPool:
+    """Staging mirrors prod's big+half shape on much smaller instances."""
+
+    AMD64 = "m6id.4xlarge:2,m6id.2xlarge:1"
+    ARM64 = "m7gd.4xlarge:2,m7gd.2xlarge:1"
+
+    def test_declared_packing_holds(self):
+        for plan in (
+            [("m6id.4xlarge", 2), ("m6id.2xlarge", 1)],
+            [("m7gd.4xlarge", 2), ("m7gd.2xlarge", 1)],
+        ):
+            res = plan_pod_resources(plan)
+            assert (res["cpu"], res["memory_gi"]) == (7, 25)
+            for instance_type, declared in plan:
+                assert pods_that_fit(instance_type, res["cpu"], res["memory_gi"]) == declared
+
+    def test_reaches_integration_test_target(self):
+        """The buildkit integration test needs 8 active backends per arch."""
+        res = plan_pod_resources([("m6id.4xlarge", 2), ("m6id.2xlarge", 1)])
+        per_node = pods_that_fit("m6id.4xlarge", res["cpu"], res["memory_gi"])
+        assert math.ceil(8 / per_node) == 4, "8 amd64 pods should need 4 nodes"
+
+    def test_nodepool_limits_cover_the_smallest_type(self):
+        """At max replicas an all-2xlarge fleet must stay inside the limits."""
+        output = generate_nodepools_yaml(self.ARM64, self.AMD64, 8, 2)
+        res = plan_pod_resources([("m6id.4xlarge", 2), ("m6id.2xlarge", 1)])
+        for d in yaml.safe_load_all(output):
+            if not d or d["kind"] != "NodePool" or d["metadata"]["name"] != "buildkit-amd64":
+                continue
+            limit = int(d["spec"]["limits"]["cpu"])
+            nodes = math.ceil(8 / pods_that_fit("m6id.2xlarge", res["cpu"], res["memory_gi"]))
+            assert nodes * INSTANCE_SPECS["m6id.2xlarge"]["vcpu"] <= limit
+            return
+        raise AssertionError("buildkit-amd64 NodePool not found")
+
+    def test_every_buildkit_type_has_an_eni_entry(self):
+        """ENI_MAX_PODS.get() falls back to vCPU, so a missing entry mis-sizes silently."""
+        declared = set()
+        for plan in (self.AMD64, self.ARM64, "m6id.24xlarge:2,m6id.12xlarge:1", "m7gd.16xlarge:4"):
+            declared |= {t for t, _ in parse_instance_plan(plan, 2)}
+        missing = sorted(declared - ENI_MAX_PODS.keys())
+        assert not missing, f"BuildKit instance type(s) with no ENI_MAX_PODS entry: {missing}"
+
+    def test_eni_max_pods_is_derived_not_transcribed(self):
+        """Recompute the formula rather than restating the literal it produced."""
+        assert eni_max_pods(8, 30) == 234
+        assert eni_max_pods(4, 15) == 58
+        for instance_type in ("m6id.4xlarge", "m7gd.4xlarge"):
+            assert ENI_MAX_PODS[instance_type] == eni_max_pods(8, 30)
+        for instance_type in ("m6id.2xlarge", "m7gd.2xlarge"):
+            assert ENI_MAX_PODS[instance_type] == eni_max_pods(4, 15)
+
+    def test_small_and_large_types_do_not_share_a_max_pods_value(self):
+        """Guards the 234-vs-58 transcription slip: the two sizes must differ."""
+        assert ENI_MAX_PODS["m6id.4xlarge"] != ENI_MAX_PODS["m6id.2xlarge"]
+        assert ENI_MAX_PODS["m7gd.4xlarge"] != ENI_MAX_PODS["m7gd.2xlarge"]

@@ -112,15 +112,30 @@ INSTANCE_SPECS: dict[str, dict] = {
     "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "arm64"},
     "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
     "m6id.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    # Staging BuildKit — small pool, same big+half shape as prod at ~1/10 the cost
+    "m6id.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
+    "m6id.2xlarge": {"vcpu": 8, "memory_gib": 32, "memory_mi": 30310, "gpu": 0, "arch": "amd64"},
     "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "arm64"},
     "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
+    "m7gd.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "arm64"},
+    "m7gd.2xlarge": {"vcpu": 8, "memory_gib": 32, "memory_mi": 30310, "gpu": 0, "arch": "arm64"},
     "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
 }
+
+
+def eni_max_pods(enis: int, ips_per_eni: int) -> int:
+    """AWS max-pods for an instance: one IP per ENI is the ENI's own, plus 2 host pods."""
+    return enis * (ips_per_eni - 1) + 2
+
 
 # ---------------------------------------------------------------------------
 # EKS max pods per instance type (from ENI limits).
 # Source: awslabs/amazon-eks-ami eni-max-pods.txt
 # The kubelet memory reservation formula uses max_pods, NOT vCPU count.
+#
+# Entries added since the ENI topology was recorded call eni_max_pods() so the
+# arithmetic is checked rather than transcribed; 737 is the AMI's prefix-
+# delegation ceiling, not a product of the formula.
 # ---------------------------------------------------------------------------
 ENI_MAX_PODS: dict[str, int] = {
     # Runner node instance types
@@ -203,7 +218,11 @@ ENI_MAX_PODS: dict[str, int] = {
     # BuildKit instance types
     "m8gd.24xlarge": 737,
     "m6id.24xlarge": 737,
-    "m6id.12xlarge": 234,  # 8 ENIs x (30 - 1) IPs + 2
+    "m6id.12xlarge": eni_max_pods(8, 30),
+    "m6id.4xlarge": eni_max_pods(8, 30),
+    "m6id.2xlarge": eni_max_pods(4, 15),
+    "m7gd.4xlarge": eni_max_pods(8, 30),
+    "m7gd.2xlarge": eni_max_pods(4, 15),
     "c7gd.16xlarge": 737,
     "m7gd.16xlarge": 737,
     "m8gd.16xlarge": 737,

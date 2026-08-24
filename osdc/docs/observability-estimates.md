@@ -239,7 +239,7 @@ From `clusters.yaml` defaults plus `meta-prod-aws-ue2` overrides:
 | Harbor exporter / jobservice / portal / db / redis | 1 each | chart defaults |
 | node-compactor | 1 | single replica |
 | Monitoring Alloy | 2 | Hard-coded in `modules/monitoring/helm/alloy-values.yaml` (`controller.replicas: 2`, `clustering.enabled: true`) — there is no `monitoring.alloy_replicas` config knob |
-| BuildKit daemon | 10 | `defaults.buildkit.replicas_per_arch: 5` × 2 archs |
+| BuildKit daemon | 24 | `defaults.buildkit.replicas_per_arch: 12` × 2 archs; every buildkit cluster runs KEDA, so the live count varies between the per-arch min and max |
 | BuildKit HAProxy | 1 | single replica |
 | CoreDNS | 6 | `defaults.coredns.replicas: 6` (`meta-prod-aws-ue2` has no override) |
 | kube-state-metrics | 1 | single replica |
