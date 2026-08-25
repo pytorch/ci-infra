@@ -45,6 +45,10 @@ defaults:
     registry_replicas: 4
     nginx_replicas: 6
     pdb_max_unavailable: 1  # conservative: at most 1 pod down per component
+    # Registry holding the PyTorch CI images, for harbor.ecr_pullthrough. Not
+    # derived from the deploying account: LF clusters are in 391835788720 and
+    # pull these same images cross-account.
+    ecr_pullthrough_registry: "308535385114.dkr.ecr.us-east-1.amazonaws.com"
 
   # --- Module defaults ---
   karpenter:
@@ -310,6 +314,10 @@ clusters:
       registry_replicas: 1
       nginx_replicas: 1
       pdb_max_unavailable: "100%"  # aggressive: staging has 1 replica each
+      # Proxy the private us-east-1 ECR through Harbor so CI image layers are
+      # served from this cluster's own bucket instead of cross-region S3.
+      # Staging-only while the ECR adapter's auth is being validated.
+      ecr_pullthrough: true
     karpenter:
       replicas: 1
       log_level: debug
