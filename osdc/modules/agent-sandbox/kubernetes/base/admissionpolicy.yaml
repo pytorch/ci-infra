@@ -1,0 +1,174 @@
+# Cluster-side enforcement of the task-pod isolation contract.
+#
+# Today every isolation property of a task pod — gVisor, no service-account token, no
+# volumes, the task image and nothing else — is enforced by one Python function,
+# dispatcher.py's job_manifest(). The API server accepts whatever that function emits,
+# so a bug or a careless refactor there is enough to produce a task pod with no gVisor
+# and a mounted token, and nothing in the cluster would notice. RBAC does not help: the
+# dispatcher legitimately holds `create jobs`, and "create a Job" is not a verb that can
+# be narrowed to "create a Job shaped like this".
+#
+# This policy is the second copy of that contract, in the API server rather than in the
+# process that could be compromised. It is deliberately redundant with job_manifest() —
+# that is the point. Anything it rejects is either an attack or a bug in the dispatcher.
+#
+# It is also what makes it safe to put OIDC verification inside the dispatcher process
+# rather than in a separate pod in front of it: the worst case of a parser bug there is
+# arbitrary Job creation with the dispatcher's RBAC, and this bounds what an arbitrary
+# Job is allowed to look like.
+#
+# SCOPE: every Job in ai-sandbox, not just the dispatcher's. Fail-closed on purpose — a
+# future migration/maintenance Job in this namespace has to satisfy these rules or
+# explicitly amend them, rather than quietly getting a pod the sandbox contract forbids.
+#
+# NOT COVERED, and worth knowing before relying on this: it validates Jobs, not Pods. The
+# dispatcher has no `create pods` RBAC, so the Job template is the whole surface it can
+# reach — but a future grant of pod-create would route around this policy, and the
+# policy would need a Pod rule scoped to the sandbox-agent service account to follow.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: agent-sandbox-task-jobs
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  # Fail: an API-server-side evaluation error (a malformed object reaching an
+  # expression, the policy failing to compile) rejects the Job. The alternative,
+  # Ignore, turns any such error into a silently unenforced isolation contract.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+  variables:
+    # The Job's pod template. Everything below reads through this rather than
+    # re-spelling the path, so a wrong path is one edit rather than fifteen.
+    - name: pod
+      expression: "object.spec.template.spec"
+    # initContainers is absent today (v1 clones inside the task container). It is
+    # folded in here so that when the GITHUB_TOKEN init-container lands, it is covered
+    # by the image and privilege rules by default instead of by remembering to.
+    - name: allContainers
+      expression: >-
+        object.spec.template.spec.containers +
+        (has(object.spec.template.spec.initContainers) ? object.spec.template.spec.initContainers : [])
+  validations:
+    # --- Isolation: the three properties the whole design rests on -----------------
+    #
+    # Each is written `has(x) && x == ...` rather than `!has(x) || x == ...`: an absent
+    # field must be a rejection, not a pass. A Job template that omits
+    # serviceAccountName does not inherit sandbox-agent — it gets `default` when the
+    # pod is created, which is a token-mounting account.
+    - expression: "has(variables.pod.runtimeClassName) && variables.pod.runtimeClassName == 'gvisor'"
+      reason: Forbidden
+      message: "task Jobs must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)"
+    - expression: "has(variables.pod.serviceAccountName) && variables.pod.serviceAccountName == 'sandbox-agent'"
+      reason: Forbidden
+      message: "task Jobs must run as serviceAccountName: sandbox-agent, which holds no RBAC"
+    - expression: "has(variables.pod.automountServiceAccountToken) && variables.pod.automountServiceAccountToken == false"
+      reason: Forbidden
+      message: "task Jobs must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox"
+
+    # --- No path from the pod to the node or to another pod's data -----------------
+    - expression: >-
+        (!has(variables.pod.hostNetwork) || !variables.pod.hostNetwork) &&
+        (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
+        (!has(variables.pod.hostIPC) || !variables.pod.hostIPC)
+      reason: Forbidden
+      message: "task Jobs must not share host namespaces (hostNetwork/hostPID/hostIPC)"
+    - expression: "!has(variables.pod.nodeName)"
+      reason: Forbidden
+      message: "task Jobs must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector"
+    # Volumes are how a secret, a hostPath or a projected token would get in. v1 task
+    # pods declare none at all, so the rule can be "none" rather than an allowlist of
+    # shapes; the init-container work that needs a shared emptyDir amends this line and
+    # says so in review.
+    - expression: "!has(variables.pod.volumes) || size(variables.pod.volumes) == 0"
+      reason: Forbidden
+      message: "task Jobs must declare no volumes — see the module README before adding one"
+
+    # --- The image, and nothing that can smuggle another one in --------------------
+    #
+    # The literal registry path is deliberate: this is security policy, so it belongs in
+    # git history and code review rather than in a deploy-time substitution. It pins the
+    # repository, not the tag — deploy.sh builds a fresh content-hash tag on every
+    # deploy, and pinning the tag here would reject in-flight Jobs from the previous
+    # dispatcher replicas for the length of every rollout.
+    - expression: "variables.allContainers.all(c, c.image.startsWith('harbor:30002/osdc/ci-agent-sandbox:'))"
+      reason: Forbidden
+      message: "task containers must run the task image from harbor:30002/osdc/ci-agent-sandbox"
+    - expression: "size(variables.pod.containers) == 1"
+      reason: Forbidden
+      message: "a task Job runs exactly one container"
+
+    # --- Nothing reads a Secret into the task pod ----------------------------------
+    #
+    # The task pod is the untrusted side and holds no identity by design; the sigv4
+    # proxy exists so that even the Bedrock credential stays outside it. envFrom and
+    # env[].valueFrom are the two ways a Secret or ConfigMap becomes an environment
+    # variable without a volume, so both are closed alongside the volumes rule above.
+    - expression: "variables.allContainers.all(c, !has(c.envFrom) || size(c.envFrom) == 0)"
+      reason: Forbidden
+      message: "task containers must not use envFrom — it pulls a whole Secret or ConfigMap into the sandbox"
+    - expression: "variables.allContainers.all(c, !has(c.env) || c.env.all(e, !has(e.valueFrom)))"
+      reason: Forbidden
+      message: "task container env must be literal values — valueFrom reads Secrets, ConfigMaps and pod fields into the sandbox"
+
+    # --- Privilege ------------------------------------------------------------------
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) && c.securityContext.allowPrivilegeEscalation == false &&
+          (!has(c.securityContext.privileged) || c.securityContext.privileged == false) &&
+          has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot == true)
+      reason: Forbidden
+      message: "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged"
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0)
+      reason: Forbidden
+      message: "task containers must not add Linux capabilities"
+
+    # --- Cost and blast radius -------------------------------------------------------
+    #
+    # The ResourceQuota is the namespace-wide ceiling; these are the per-Job bounds it
+    # assumes. A Job with no limits is admitted by the quota only until the quota's own
+    # limits.* entries reject it, which surfaces as an unschedulable pod rather than a
+    # clear rejection — this says which rule was broken.
+    # `in` rather than has(): resources.limits is a map, and the CEL has() macro takes a
+    # field selection, which 'ephemeral-storage' cannot be spelled as.
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.resources) && has(c.resources.limits) &&
+          'cpu' in c.resources.limits && 'memory' in c.resources.limits &&
+          'ephemeral-storage' in c.resources.limits)
+      reason: Forbidden
+      message: "task containers must set cpu, memory and ephemeral-storage limits"
+    - expression: "has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds <= 3600"
+      reason: Forbidden
+      message: "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it"
+
+---
+# The binding is what actually turns the policy on, and it is scoped to ai-sandbox by
+# namespace name. A ValidatingAdmissionPolicy with no binding is inert — a policy that
+# looks enforced in `kubectl get` and enforces nothing is the failure mode this comment
+# exists to prevent.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: agent-sandbox-task-jobs
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  policyName: agent-sandbox-task-jobs
+  # Deny, not Warn or Audit: a warning on a Job that escapes the sandbox is a log line
+  # nobody reads. The dispatcher surfaces the rejection to its caller as a dispatch
+  # error, so a genuine bug here is loud rather than silent.
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ai-sandbox
