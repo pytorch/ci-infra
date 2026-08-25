@@ -47,8 +47,10 @@ class TestBaseDaemonSets:
             None,
         )
         assert ds is not None, "registry-mirror-config DaemonSet not found"
-        containers = ds["spec"]["template"]["spec"].get("containers", [])
-        env = [e for c in containers for e in c.get("env", []) if e.get("name") == "ECR_PULLTHROUGH_REGISTRY"]
+        # The mirror script runs in the initContainer; the main container is a sleep.
+        spec = ds["spec"]["template"]["spec"]
+        pod_containers = spec.get("initContainers", []) + spec.get("containers", [])
+        env = [e for c in pod_containers for e in c.get("env", []) if e.get("name") == "ECR_PULLTHROUGH_REGISTRY"]
         assert env, "registry-mirror-config has no ECR_PULLTHROUGH_REGISTRY env var"
         ref = env[0].get("valueFrom", {}).get("configMapKeyRef", {})
         assert ref.get("name") == "registry-mirror-ecr", f"unexpected configMapKeyRef: {ref}"
