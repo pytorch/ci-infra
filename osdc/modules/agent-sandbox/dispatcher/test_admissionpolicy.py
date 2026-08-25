@@ -26,6 +26,7 @@ import hashlib
 import re
 from pathlib import Path
 
+import authorize
 import kube
 import pytest
 import yaml
@@ -86,7 +87,15 @@ def deployed_image(monkeypatch):
 
 def a_job(**pod_overrides) -> dict:
     """A real job_manifest() with the pod spec optionally mutated."""
-    job = kube.job_manifest("abc123456789", {"repo": "pytorch/pytorch", "task": "hello"})
+    grant = authorize.Grant(
+        caller="pytorch/ciforge",
+        workflow_ref="pytorch/ciforge/.github/workflows/x.yml@refs/heads/main",
+        clone_repo="pytorch/pytorch",
+        model="",
+        task="hello",
+        ref="",
+    )
+    job = kube.job_manifest("abc123456789", grant)
     job["spec"]["template"]["spec"].update(pod_overrides)
     return job
 

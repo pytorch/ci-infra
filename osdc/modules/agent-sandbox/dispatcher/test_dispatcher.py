@@ -16,16 +16,22 @@ import re
 import socket
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
 
+import authorize
 import http_api
+import jwt
 import kube
+import oidc
 import pytest
 import tasks
+import test_authorize
+import test_oidc
 
 
 def _load_entrypoint():
@@ -43,6 +49,19 @@ def _load_entrypoint():
 
 
 entrypoint = _load_entrypoint()
+
+
+def a_grant(task="", ref="", model="", caller="unauthenticated"):
+    """The Grant an unauthenticated caller gets today. job_manifest takes one of these
+    rather than a request body, which is the layering rule made unavoidable."""
+    return authorize.Grant(
+        caller=caller,
+        workflow_ref="",
+        clone_repo="org/repo",
+        model=model,
+        task=task,
+        ref=ref,
+    )
 
 
 @pytest.fixture
@@ -112,7 +131,7 @@ class TestJobManifest:
     rather than trusting that a manifest reviewed once stays that way."""
 
     def _pod_spec(self):
-        return kube.job_manifest("abc123abc123", {"repo": "org/repo"})["spec"]["template"]["spec"]
+        return kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
 
     def test_runs_under_gvisor_on_the_sandbox_fleet(self):
         assert self._pod_spec()["runtimeClassName"] == "gvisor"
@@ -132,13 +151,13 @@ class TestJobManifest:
     def test_no_retry(self):
         """A retry re-clones and re-prompts the model — and bills for it. The result
         object already carries per-stage errors."""
-        job = kube.job_manifest("abc123abc123", {"repo": "org/repo"})
+        job = kube.job_manifest("abc123abc123", a_grant())
         assert job["spec"]["backoffLimit"] == 0
         assert job["spec"]["activeDeadlineSeconds"] == kube.TASK_DEADLINE_S
         assert job["spec"]["ttlSecondsAfterFinished"] == kube.JOB_TTL_S
 
     def test_spec_is_passed_as_env_not_baked_into_the_image(self):
-        spec = kube.job_manifest("abc123abc123", {"repo": "org/repo", "ref": "v1", "model": "us.x"})
+        spec = kube.job_manifest("abc123abc123", a_grant(ref="v1", model="us.x"))
         env = {e["name"]: e["value"] for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
         assert env["SANDBOX_REPO"] == "org/repo"
         assert env["SANDBOX_REF"] == "v1"
@@ -152,13 +171,13 @@ class TestJobManifest:
     def test_gvisor_label_matches_the_network_policy_selector(self):
         """sandbox-task-egress selects app=sandbox-task; a label drift here silently
         leaves task pods with no egress allow-list at all."""
-        labels = kube.job_manifest("abc123abc123", {"repo": "r"})["spec"]["template"]["metadata"]["labels"]
+        labels = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["metadata"]["labels"]
         assert labels["app"] == "sandbox-task"
 
 
 class TestRunToCompletion:
     def test_creates_one_job_and_returns_the_parsed_result(self, fake_k8s):
-        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", a_grant())
         assert result == {"cloned": True, "report": "ok"}
         assert len(fake_k8s["jobs"]) == 1
         assert fake_k8s["jobs"][0]["metadata"]["name"] == "sandbox-task-abc123abc123"
@@ -166,17 +185,17 @@ class TestRunToCompletion:
     def test_deletes_the_job_after_reading_the_log(self, fake_k8s):
         """The log is the result transport, so the Job can only be collected after it
         has been read — and it must be, or finished Jobs pile up against the quota."""
-        tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
+        tasks._run_to_completion("abc123abc123", a_grant())
         assert any("sandbox-task-abc123abc123" in path for path in fake_k8s["deleted"])
 
     def test_last_json_line_wins(self, fake_k8s):
         fake_k8s["log"] = 'warning: detached HEAD\n{"cloned": true, "file_count": 3}\n'
-        assert tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})["file_count"] == 3
+        assert tasks._run_to_completion("abc123abc123", a_grant())["file_count"] == 3
 
     def test_failed_pod_without_output_reports_the_reason(self, fake_k8s):
         fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]}
         fake_k8s["log"] = "Killed\n"
-        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "DeadlineExceeded" in result["errors"]["task"]
 
     def test_failed_pod_that_did_print_a_result_keeps_it(self, fake_k8s):
@@ -184,7 +203,7 @@ class TestRunToCompletion:
         answer, and it must not be replaced by a generic pod failure."""
         fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "BackoffLimit"}]}
         fake_k8s["log"] = '{"cloned": false, "errors": {"clone": "could not read Username"}}\n'
-        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", a_grant())
         assert result["errors"]["clone"] == "could not read Username"
 
     def test_api_failure_is_reported_not_raised(self, monkeypatch, fake_k8s):
@@ -192,7 +211,7 @@ class TestRunToCompletion:
             raise kube.ApiError("jobs.batch is forbidden")
 
         monkeypatch.setattr(kube, "create_job", boom)
-        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "forbidden" in result["errors"]["dispatch"]
 
 
@@ -231,7 +250,7 @@ class TestHTTPSurface:
 
     def test_healthz_counts_a_running_task(self, server):
         tasks._TASKS.clear()
-        tasks.start_task()
+        tasks.start_task("unauthenticated")
         assert _get(f"{server}/healthz")["in_flight"] == 1
 
     def test_unknown_path_is_404(self, server):
@@ -241,20 +260,27 @@ class TestHTTPSurface:
 
     def test_post_to_unknown_path_is_404(self, server):
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _post(f"{server}/nope", {"repo": "org/repo"})
+            _post(f"{server}/nope", {"task": "hello"})
         assert exc.value.code == 404
 
     def test_run_waits_and_returns_the_result(self, server):
-        body = _post(f"{server}/run", {"repo": "org/repo"})
+        body = _post(f"{server}/run", {"task": "hello"})
         assert body["cloned"] is True
         assert body["report"] == "ok"
         assert body["task_id"]
 
-    def test_run_requires_repo(self, server):
+    def test_the_caller_cannot_choose_the_repository(self, server):
+        """The repository to clone is policy, not request. A caller naming a different
+        one is refused outright rather than quietly given the policy's."""
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _post(f"{server}/run", {"task": "no repo given"})
-        assert exc.value.code == 400
-        assert "missing 'repo'" in json.loads(exc.value.read())["error"]
+            _post(f"{server}/run", {"repo": "attacker/evil"})
+        assert exc.value.code == 403
+        assert "set by policy" in json.loads(exc.value.read())["error"]
+
+    def test_naming_the_policy_repository_is_still_accepted(self, server):
+        """The existing caller sends repo explicitly; it keeps working as long as it
+        agrees with policy."""
+        assert _post(f"{server}/run", {"repo": authorize.V1_CLONE_REPO})["report"] == "ok"
 
     @pytest.mark.parametrize("body", [[], None, 3, "text"], ids=["list", "null", "number", "string"])
     def test_non_object_body_is_400(self, server, body):
@@ -269,13 +295,13 @@ class TestHTTPSurface:
     )
     def test_wrong_field_type_is_400(self, server, field, value):
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _post(f"{server}/run", {"repo": "org/repo", field: value})
+            _post(f"{server}/run", {field: value})
         assert exc.value.code == 400
 
     def test_async_run_returns_a_task_id_then_a_result(self, server):
         req = urllib.request.Request(  # noqa: S310
             f"{server}/run",
-            data=json.dumps({"repo": "org/repo", "wait": False}).encode(),
+            data=json.dumps({"task": "hello", "wait": False}).encode(),
             headers={"Content-Type": "application/json"},
         )
         resp = _opener.open(req, timeout=10)
@@ -314,7 +340,7 @@ class TestCapacity:
         monkeypatch.setattr(kube, "job_state", slow_state)
         results = []
         threads = [
-            Thread(target=lambda: results.append(_post(f"{server}/run", {"repo": "org/repo"})), daemon=True)
+            Thread(target=lambda: results.append(_post(f"{server}/run", {"task": "hello"})), daemon=True)
             for _ in range(3)
         ]
         for t in threads:
@@ -336,16 +362,16 @@ class TestCapacity:
         unbounded Jobs and, through Karpenter, unbounded nodes."""
         monkeypatch.setattr(tasks, "MAX_CONCURRENT_TASKS", 1)
         tasks._TASKS.clear()
-        assert tasks.start_task() is not None  # occupy the only slot
+        assert tasks.start_task("unauthenticated") is not None  # occupy the only slot
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _post(f"{server}/run", {"repo": "org/repo"})
+            _post(f"{server}/run", {"task": "hello"})
         assert exc.value.code == 429
         assert "at capacity" in json.loads(exc.value.read())["error"]
 
     def test_missing_task_image_is_500_not_a_broken_job(self, server, monkeypatch):
         monkeypatch.setattr(kube, "AGENT_IMAGE", "")
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _post(f"{server}/run", {"repo": "org/repo"})
+            _post(f"{server}/run", {"task": "hello"})
         assert exc.value.code == 500
         assert "AGENT_IMAGE" in json.loads(exc.value.read())["error"]
 
@@ -354,9 +380,9 @@ class TestCapacity:
         thing in a long-running dispatcher that would otherwise grow forever."""
         monkeypatch.setattr(tasks, "RESULT_RETENTION_S", 0)
         tasks._TASKS.clear()
-        task_id = tasks.start_task()
+        task_id = tasks.start_task("unauthenticated")
         tasks._finish(task_id, {"report": "ok"})
-        tasks.start_task()
+        tasks.start_task("unauthenticated")
         assert task_id not in tasks._TASKS
 
 
@@ -402,12 +428,12 @@ class TestPolling:
     def test_waits_while_the_job_is_running(self, fake_k8s, monkeypatch):
         states = iter([("running", ""), ("running", ""), ("succeeded", "")])
         monkeypatch.setattr(kube, "job_state", lambda task_id: next(states))
-        assert tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})["report"] == "ok"
+        assert tasks._run_to_completion("abc123abc123", a_grant())["report"] == "ok"
 
     def test_gives_up_at_the_deadline(self, fake_k8s, monkeypatch):
         monkeypatch.setattr(kube, "TASK_DEADLINE_S", -1)
         monkeypatch.setattr(kube, "job_state", lambda task_id: ("running", ""))
-        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "did not finish" in result["errors"]["dispatch"]
 
     def test_running_job_reports_running(self, fake_k8s):
@@ -436,7 +462,7 @@ class TestPolling:
             raise kube.ApiError("etcdserver: request timed out")
 
         monkeypatch.setattr(kube, "job_state", boom)
-        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "timed out" in result["errors"]["dispatch"]
 
     def test_ssl_context_loads_a_present_ca(self, monkeypatch, tmp_path):
@@ -599,3 +625,77 @@ class TestImageContents:
             "copied into the image but not a module (a test file, a glob, or a stale name)": sorted(copied - hashed),
             "fix": f"the COPY into {RUNTIME_DIR} in dispatcher/Dockerfile must name exactly these modules",
         }
+
+
+class TestAuthenticatedSurface:
+    """The auth path over the real HTTP surface, with real signed tokens.
+
+    test_oidc.py proves the verifier; this proves the endpoints are wired to it — which
+    is a different claim, and the one that would silently regress.
+    """
+
+    @pytest.fixture
+    def signed(self, tmp_path, monkeypatch):
+        keys = {test_oidc.KID: test_oidc._keypair()}
+        path = tmp_path / "jwks.json"
+        path.write_text(json.dumps(test_oidc._jwks_document(keys)))
+        monkeypatch.setattr(oidc, "JWKS_PATH", path)
+        oidc._CACHE.update(keyset=None, loaded_at=0.0, fetched_at=None)
+        return keys
+
+    def _authed_post(self, server, token, payload):
+        req = urllib.request.Request(  # noqa: S310  (loopback http:// built in-test)
+            f"{server}/run",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        )
+        return json.loads(_opener.open(req, timeout=30).read())
+
+    def _token(self, keys, **overrides):
+        return test_oidc.a_token(keys, **{**test_authorize.GOOD_CLAIMS, **overrides})
+
+    def test_a_real_token_from_the_allowed_caller_runs_a_task(self, server, signed):
+        assert self._authed_post(server, self._token(signed), {"task": "hello"})["report"] == "ok"
+
+    def test_a_token_from_another_repository_is_403(self, server, signed):
+        """Authenticated but not authorized — a different code from a bad signature,
+        because they are different problems for whoever is reading the log."""
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            self._authed_post(server, self._token(signed, repository_id="999"), {"task": "hello"})
+        assert exc.value.code == 403
+
+    def test_a_forged_token_is_401_even_while_auth_is_optional(self, server, signed):
+        """The migration flag governs the no-token case only. A token that IS presented
+        is always verified, so turning enforcement on later cannot be the moment a
+        forged token starts being rejected."""
+        assert http_api.REQUIRE_AUTH is False
+        stranger = test_oidc._keypair()
+        forged = jwt.encode(
+            {**test_authorize.GOOD_CLAIMS, "iss": oidc.ISSUER, "aud": oidc.AUDIENCE, "exp": int(time.time()) + 300},
+            stranger,
+            algorithm="RS256",
+            headers={"kid": test_oidc.KID},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            self._authed_post(server, forged, {"task": "hello"})
+        assert exc.value.code == 401
+
+    def test_requiring_auth_refuses_a_request_with_no_token(self, server, monkeypatch):
+        monkeypatch.setattr(http_api, "REQUIRE_AUTH", True)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"task": "hello"})
+        assert exc.value.code == 401
+
+    def test_status_does_not_expose_another_callers_task(self, server, signed, monkeypatch):
+        """/run and /status were both unauthenticated; fixing only /run would leave the
+        results readable."""
+        task_id = tasks.start_task("someone-else")
+        tasks._finish(task_id, {"report": "secret"})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _get(f"{server}/status/{task_id}")
+        assert exc.value.code == 404, "another caller's task must look absent, not forbidden"
+
+    def test_a_caller_can_read_its_own_task(self, server):
+        task_id = tasks.start_task("unauthenticated")
+        tasks._finish(task_id, {"report": "mine"})
+        assert _get(f"{server}/status/{task_id}")["report"] == "mine"

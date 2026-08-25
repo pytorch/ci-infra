@@ -1,0 +1,177 @@
+# OIDC signing keys for the dispatcher, and the job that keeps them current.
+#
+# The dispatcher verifies GitHub Actions tokens, which are signed RS256 with keys GitHub
+# publishes and rotates. It cannot fetch them itself: it is the process holding
+# create-Job RBAC, so it is precisely the one that must not be able to reach the
+# internet — see the egress policy in networkpolicy.yaml. So the keys arrive as a
+# mounted ConfigMap, and a separate CronJob with no such RBAC fetches them.
+#
+# The split is the security property. Write access to this ConfigMap is the power to
+# choose which signing keys the dispatcher trusts, so the refresher's Role names this one
+# object and grants nothing else in the namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oidc-jwks
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+data:
+  # Seeded deliberately stale rather than empty. An absent file and a placeholder both
+  # refuse every token, but the placeholder says WHY in the dispatcher's own words
+  # ("the JWKS refresher has stopped") instead of surfacing as a missing mount. The
+  # refresher overwrites the whole value on its first successful run.
+  jwks.json: |
+    {"fetched_at": 0, "jwks": {"keys": []}}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jwks-refresher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jwks-refresher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+rules:
+  # resourceNames, not the whole resource: this account may rewrite the key set the
+  # dispatcher trusts and nothing else. No create — the ConfigMap above already exists,
+  # and create would let a compromised refresher replace a deleted one on its own terms.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["oidc-jwks"]
+    verbs: ["get", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jwks-refresher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jwks-refresher
+subjects:
+  - kind: ServiceAccount
+    name: jwks-refresher
+    namespace: ai-sandbox
+
+---
+# Every 6 hours. The dispatcher refuses keys older than 24h, so this has four chances to
+# succeed before a failing refresher becomes an outage — enough to ride out a GitHub
+# blip, short enough that a persistent failure is not silent for a week.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jwks-refresh
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # A missed window (a control-plane blip, a cluster asleep) should run once when it can,
+  # not be skipped silently.
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: jwks-refresher
+            osdc.io/module: agent-sandbox
+        spec:
+          restartPolicy: Never
+          serviceAccountName: jwks-refresher
+          # Base nodes, like the dispatcher: this pod may reach the internet, so it must
+          # not be co-tenant with the sandbox fleet it is helping to gate.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-fleet
+                        operator: NotIn
+                        values: ["ai-sandbox"]
+          tolerations:
+            - key: CriticalAddonsOnly
+              operator: Exists
+              effect: NoSchedule
+          containers:
+            - name: refresh
+              image: __DISPATCHER_IMAGE__
+              command: ["python3", "/usr/local/lib/sandbox-dispatcher/jwks_refresh.py"]
+              env:
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+                - name: NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                  ephemeral-storage: "100Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+                  ephemeral-storage: "100Mi"
+
+---
+# The refresher's egress: DNS, the API server, and HTTPS out. It is the only pod in this
+# namespace besides the sigv4 proxy that is allowed off-cluster, and the only reason it
+# is allowed is that it holds no RBAC worth stealing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jwks-refresher-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: jwks-refresher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # github.com's published ranges move and NetworkPolicy selects on CIDR, not DNS, so
+    # 443 to anywhere is the tightest this layer can express — the same honest limitation
+    # the task-egress rule documents.
+    - to:
+        - ipBlock:
+            cidr: "::/0"
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
