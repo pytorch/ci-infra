@@ -699,3 +699,15 @@ class TestAuthenticatedSurface:
         task_id = tasks.start_task("unauthenticated")
         tasks._finish(task_id, {"report": "mine"})
         assert _get(f"{server}/status/{task_id}")["report"] == "mine"
+
+    def test_status_applies_the_same_policy_as_run(self, server, signed):
+        """An identity-only check on /status let a token that /run had denied — wrong
+        event, unprotected ref, self-hosted runner — read every task owned by that
+        repository."""
+        denied = self._token(signed, event_name="pull_request")
+        request = urllib.request.Request(  # noqa: S310
+            f"{server}/status/0123456789ab", headers={"Authorization": f"Bearer {denied}"}
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener.open(request, timeout=10)
+        assert exc.value.code == 403, "a token /run would deny must not be an identity /status accepts"

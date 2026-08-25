@@ -77,6 +77,22 @@ class InvalidToken(RuntimeError):
     """The token is absent, malformed, expired, or not signed by the issuer."""
 
 
+# A timestamp from the future is a broken clock or a tampered file, and either way the
+# age check reads as "brand new" — which is the wrong answer to fail towards. The
+# tolerance is for ordinary skew between the refresher pod and this one.
+FUTURE_SKEW_S = 300
+
+
+def _check_age(fetched_at: float) -> None:
+    age = time.time() - fetched_at
+    if age > JWKS_MAX_AGE_S:
+        raise InvalidToken(
+            f"signing keys are {int(age)}s old (max {JWKS_MAX_AGE_S}s) — the JWKS refresher has stopped"
+        )
+    if age < -FUTURE_SKEW_S:
+        raise InvalidToken(f"signing keys are timestamped {int(-age)}s in the future")
+
+
 def _load_keyset() -> PyJWKSet:
     """The mounted JWKS, re-read when the file changes or the interval elapses.
 
@@ -87,6 +103,10 @@ def _load_keyset() -> PyJWKSet:
     with _LOCK:
         cached = _CACHE["keyset"]
         if cached is not None and now - _CACHE["loaded_at"] < JWKS_RELOAD_INTERVAL_S:
+            # Age is re-checked on the cached path too. Checking it only on load would
+            # let keys stay usable for a whole reload interval past the bound, which is
+            # the one window the bound exists to close.
+            _check_age(_CACHE["fetched_at"])
             return cached
 
         try:
@@ -99,11 +119,7 @@ def _load_keyset() -> PyJWKSet:
         fetched_at = document.get("fetched_at")
         if not isinstance(fetched_at, (int, float)):
             raise InvalidToken("signing key file carries no fetched_at")
-        age = time.time() - fetched_at
-        if age > JWKS_MAX_AGE_S:
-            raise InvalidToken(
-                f"signing keys are {int(age)}s old (max {JWKS_MAX_AGE_S}s) — the JWKS refresher has stopped"
-            )
+        _check_age(fetched_at)
 
         try:
             keyset = PyJWKSet.from_dict(document["jwks"])

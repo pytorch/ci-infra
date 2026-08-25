@@ -101,7 +101,7 @@ def slots_in_use() -> int:
 
 
 def start_task(owner: str) -> str | None:
-    """Reserve a slot and return its task id. None when at capacity.
+    """Reserve a slot and return its task id. None when at capacity or unable to mint one.
 
     `owner` is the Grant's caller. It is recorded now rather than derived later because
     /status must be able to refuse a caller asking about somebody else's task, and after
@@ -112,9 +112,16 @@ def start_task(owner: str) -> str | None:
         _prune_locked(now)
         if _running_locked() >= MAX_CONCURRENT_TASKS:
             return None
-        task_id = uuid.uuid4().hex[:12]
-        _TASKS[task_id] = {"state": "running", "result": {}, "finished_at": 0.0, "owner": owner}
-    return task_id
+        # Retried rather than assumed unique. 12 hex characters is 48 bits, which makes a
+        # collision vanishingly unlikely — but now that entries carry an owner, a reused
+        # id would attribute one caller's result to another, and "vanishingly unlikely"
+        # is a bad reason to leave that reachable at all.
+        for _ in range(8):
+            task_id = uuid.uuid4().hex[:12]
+            if task_id not in _TASKS:
+                _TASKS[task_id] = {"state": "running", "result": {}, "finished_at": 0.0, "owner": owner}
+                return task_id
+    return None
 
 
 def status(task_id: str, owner: str) -> dict | None:

@@ -31,17 +31,36 @@ import tasks
 MAX_BODY_BYTES = 64 * 1024
 REQUEST_TIMEOUT_S = 30
 
+def _flag(name: str, default: str) -> bool:
+    """A boolean env var that refuses to guess.
+
+    `REQUIRE_AUTH=tru` under a `== "true"` comparison is silently False, which is a
+    security control switched off by a typo. Unrecognised values abort at import instead:
+    the pod crashloops with the reason, which is loud and safe, rather than serving
+    traffic with authentication quietly disabled.
+    """
+    raw = os.environ.get(name, default).strip().lower()
+    if raw not in ("true", "false"):
+        raise RuntimeError(f"{name} must be 'true' or 'false', got {raw!r}")
+    return raw == "true"
+
+
 # Whether a request carrying NO Authorization header at all is refused.
 #
-# A token that IS presented is always verified and authorized, whatever this is set to.
-# This flag governs one case: the caller that sends nothing. That is what makes it a
-# migration switch rather than a way to turn the security model off — while it is false a
-# correct caller is fully checked and a forged token is still rejected, so flipping it to
-# true changes behaviour only for callers that were never authenticating.
+# The flag governs exactly one case: the caller that sends nothing. A token that IS
+# presented is always verified and authorized whatever this says, so a forged or denied
+# token is rejected either way.
 #
-# It ships false because today's caller sends no token, and the Deployment must flip it
-# once the GHA client does. See the module README: the flip is the point of the exercise.
-REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "false").lower() == "true"
+# BE CLEAR ABOUT WHAT THAT DOES AND DOES NOT BUY. While this is false, authentication is
+# optional, and an unauthenticated caller can therefore do MORE than a caller whose real
+# token was denied — it simply omits the header. This is a migration window, not a
+# security posture, and it is only tolerable because /run is already reachable
+# unauthenticated by the whole arc-runners namespace today; it is strictly not worse than
+# the status quo, and strictly better once flipped.
+#
+# It ships false because today's caller sends no token. The Deployment must flip it once
+# the GHA client does. See the module README.
+REQUIRE_AUTH = _flag("REQUIRE_AUTH", "false")
 
 TASK_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
@@ -131,7 +150,11 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization")
         if header is None and not REQUIRE_AUTH:
             return "unauthenticated"
-        return authorize.caller_name(oidc.verify(oidc.bearer_token(header)))
+        # The SAME check /run runs, not a weaker identity-only one. Reading a task's
+        # result is a smaller decision than dispatching it, but "smaller" was letting a
+        # token that /run had denied — wrong event, unprotected ref, self-hosted runner —
+        # read every task owned by that repository.
+        return authorize.authorize(oidc.verify(oidc.bearer_token(header)), {}).caller
 
     def _grant_for(self, spec: dict):
         """Authenticate the caller and turn the request into a Grant.

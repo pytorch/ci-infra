@@ -115,12 +115,14 @@ def test_a_reusable_workflow_from_elsewhere_is_denied(policy):
 
 
 @POLICIES
-def test_an_absent_job_workflow_ref_is_tolerated(policy):
-    """Whether GitHub emits this claim for an ordinary non-reusable job is not something
-    we have confirmed against a real token. Requiring it would deny every such job; the
-    check above still closes the delegation case when it is present."""
+def test_an_absent_job_workflow_ref_is_denied(policy):
+    """Required, not checked-if-present. A control that exists to stop an allowed repo
+    delegating its identity is useless if suppressing one claim skips it. Corroborated
+    against PyPI's Warehouse, which lists this claim as required and indexes it
+    unguarded — GitHub emits it for ordinary jobs too, equal to workflow_ref."""
     without = {k: v for k, v in GOOD_CLAIMS.items() if k != "job_workflow_ref"}
-    assert authorize_fn(without, {}, policy).caller == "pytorch/ciforge"
+    with pytest.raises(Denied, match="job workflow"):
+        authorize_fn(without, {}, policy)
 
 
 @POLICIES
@@ -156,3 +158,13 @@ def test_the_allow_list_is_code_not_configuration(monkeypatch):
     monkeypatch.setenv("ALLOWED_WORKFLOW_PREFIX", "attacker/repo/")
     with pytest.raises(Denied):
         authorize_fn(claims(repository_id="999"), {}, None)
+
+
+def test_an_unparseable_require_auth_value_crashes_rather_than_disabling_auth(monkeypatch):
+    """`REQUIRE_AUTH=tru` under a `== "true"` comparison is a security control switched
+    off by a typo, with no signal anywhere."""
+    import http_api
+
+    monkeypatch.setenv("REQUIRE_AUTH", "tru")
+    with pytest.raises(RuntimeError, match="REQUIRE_AUTH"):
+        http_api._flag("REQUIRE_AUTH", "false")
