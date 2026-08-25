@@ -68,7 +68,59 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
 - `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
-  Results are kept in memory for an hour after the task finishes.
+  Results are kept in memory for an hour after the task finishes. A task belonging to
+  another caller answers `404`, not `403` — otherwise the endpoint would confirm that
+  other callers are running tasks.
+
+## Who may call, and what a call can do
+
+`/run` authenticates the caller with a **GitHub Actions OIDC token** in an
+`Authorization: Bearer` header, and authorizes it against a policy that lives in code —
+`dispatcher/authorize.py`, not an env var, because it is the answer to "who may spend our
+Bedrock budget" and belongs in git history and review.
+
+v1 admits exactly one caller: a workflow in **`pytorch/ciforge`**, on a protected ref, on
+a github-hosted runner, on an event that is not from the pull-request family. Callers are
+matched on `repository_id`/`repository_owner_id`, never on names, because a repository can
+be renamed and its old name re-registered by someone else.
+
+**The request decides less than it looks like it does.** Verification produces a frozen
+`Grant`, and the Job is built from the Grant alone — never from the request body. The
+repository to clone and the model are policy, so a caller cannot name either; passing a
+`repo` that disagrees with policy is refused outright rather than quietly substituted. The
+caller contributes the prompt and the commit to read.
+
+The residual worth knowing: **the prompt is caller-controlled**, and `workflow_run` is an
+allowed event, so a workflow that reads pull-request content can shape what the agent is
+asked to do. The Grant is what bounds the damage — same repo, same model, same limits.
+
+### Enabling enforcement
+
+`REQUIRE_AUTH` in `kubernetes/base/dispatcher.yaml` ships **`false`**, and flipping it to
+`true` is the point of this work, not an optional extra. It governs exactly one case: a
+request with no `Authorization` header at all. A token that *is* presented is always
+verified and always authorized, whatever the flag says — so while it is false a correct
+caller is fully checked and a forged token is still rejected, and flipping it changes
+behaviour only for callers that were never authenticating. Until it is flipped, `/run`
+remains reachable by any pod in `arc-runners`.
+
+### The signing keys
+
+The dispatcher holds create-Job RBAC, so it is the component that must not be able to
+reach the internet — its NetworkPolicy allows DNS and the Kubernetes API and nothing
+else. GitHub's signing keys therefore arrive as a mounted ConfigMap, refreshed every six
+hours by a CronJob (`kubernetes/base/oidc.yaml`) whose Role can patch that one named
+object and nothing more.
+
+The refresher writes a `fetched_at` timestamp *into* the document. That is not
+decoration: a ConfigMap volume only updates when its content changes and GitHub rotates
+rarely, so judging freshness by file mtime would age out a perfectly healthy key set
+while a refresher dead for a month looked identical. The dispatcher refuses keys older
+than 24h, which is what turns a silently dead refresher into a loud failure.
+
+Task pods declare no volumes at all, and `kubernetes/base/admissionpolicy.yaml` enforces
+that in the API server. **Adding one is a policy change as well as a manifest change** —
+the `GITHUB_TOKEN` init-container work is the case this is waiting for.
 
 ## The two images
 

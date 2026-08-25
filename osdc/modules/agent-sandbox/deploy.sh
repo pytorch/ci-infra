@@ -167,6 +167,18 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
     -e "s|__K8S_API_CIDR__|${K8S_API_CIDR}|g" \
   | kubectl_apply_if_changed -f -
 
+# --- Populate the OIDC signing keys now, not at the CronJob's next tick ---
+# The ConfigMap ships deliberately stale, so until this runs the dispatcher refuses every
+# authenticated request. The CronJob is every 6 hours, which is the wrong amount of time
+# to wait after a first deploy. Named per run so repeated deploys do not collide; a
+# failure warns rather than aborts, because the deploy is otherwise complete and the
+# CronJob will retry on its own.
+JWKS_JOB="jwks-refresh-deploy-$(date +%s)"
+echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
+kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresh -n "$NAMESPACE"
+kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s ||
+  echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
+
 # --- Prune objects earlier designs left behind (idempotent) ---
 # `kubectl apply` never deletes what the manifests stop containing, so anything dropped
 # from kubernetes/base/ keeps running until it is deleted by name. This has already bitten
