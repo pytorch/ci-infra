@@ -106,7 +106,9 @@ MIRRORS = {
     ),
     "task containers must run the task image from harbor:30002/osdc/ci-agent-sandbox": (
         lambda j: all(c["image"].startswith("harbor:30002/osdc/ci-agent-sandbox:") for c in _all_containers(j)),
-        lambda: a_job(containers=[{**a_job()["spec"]["template"]["spec"]["containers"][0], "image": "docker.io/alpine"}]),
+        lambda: a_job(
+            containers=[{**a_job()["spec"]["template"]["spec"]["containers"][0], "image": "docker.io/alpine"}]
+        ),
     ),
     "a task pod runs exactly one container": (
         lambda j: len(_pod(j)["containers"]) == 1,
@@ -127,7 +129,9 @@ MIRRORS = {
             and c.get("securityContext", {}).get("runAsNonRoot") is True
             for c in _all_containers(j)
         ),
-        lambda: _with_container(securityContext={"privileged": True, "runAsNonRoot": True, "allowPrivilegeEscalation": False}),
+        lambda: _with_container(
+            securityContext={"privileged": True, "runAsNonRoot": True, "allowPrivilegeEscalation": False}
+        ),
     ),
     "task containers must not add Linux capabilities": (
         lambda j: all(not c.get("securityContext", {}).get("capabilities", {}).get("add") for c in _all_containers(j)),
@@ -140,7 +144,9 @@ MIRRORS = {
         ),
     ),
     "task containers must not unmask /proc": (
-        lambda j: all(c.get("securityContext", {}).get("procMount", "Default") == "Default" for c in _all_containers(j)),
+        lambda j: all(
+            c.get("securityContext", {}).get("procMount", "Default") == "Default" for c in _all_containers(j)
+        ),
         lambda: _with_container(
             securityContext={"runAsNonRoot": True, "allowPrivilegeEscalation": False, "procMount": "Unmasked"}
         ),
