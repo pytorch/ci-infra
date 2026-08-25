@@ -176,8 +176,8 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 JWKS_JOB="jwks-refresh-deploy-$(date +%s)"
 echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
 kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresh -n "$NAMESPACE"
-kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s ||
-  echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
+kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s \
+  || echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
 
 # --- Prune objects earlier designs left behind (idempotent) ---
 # `kubectl apply` never deletes what the manifests stop containing, so anything dropped
