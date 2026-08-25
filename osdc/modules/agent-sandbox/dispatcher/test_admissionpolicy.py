@@ -39,8 +39,8 @@ def policy(documents):
 
 
 @pytest.fixture(scope="module")
-def binding(documents):
-    return next(d for d in documents if d["kind"] == "ValidatingAdmissionPolicyBinding")
+def bindings(documents):
+    return [d for d in documents if d["kind"] == "ValidatingAdmissionPolicyBinding"]
 
 
 def a_job(**pod_overrides) -> dict:
@@ -64,35 +64,51 @@ def _all_containers(job):
 # makes drift loud: reword a message in the policy and this test names the rule that lost
 # its mirror.
 MIRRORS = {
-    "task Jobs must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)": (
+    "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)": (
         lambda j: _pod(j).get("runtimeClassName") == "gvisor",
         lambda: a_job(runtimeClassName="runc"),
     ),
-    "task Jobs must run as serviceAccountName: sandbox-agent, which holds no RBAC": (
+    "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC": (
         lambda j: _pod(j).get("serviceAccountName") == "sandbox-agent",
         lambda: a_job(serviceAccountName="sandbox-dispatcher"),
     ),
-    "task Jobs must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox": (
+    "task pods must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox": (
         lambda j: _pod(j).get("automountServiceAccountToken") is False,
         lambda: a_job(automountServiceAccountToken=True),
     ),
-    "task Jobs must not share host namespaces (hostNetwork/hostPID/hostIPC)": (
+    "task pods must not share host namespaces (hostNetwork/hostPID/hostIPC)": (
         lambda j: not any(_pod(j).get(k) for k in ("hostNetwork", "hostPID", "hostIPC")),
         lambda: a_job(hostPID=True),
     ),
-    "task Jobs must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": (
+    "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": (
         lambda j: "nodeName" not in _pod(j),
         lambda: a_job(nodeName="ip-10-0-0-1"),
     ),
-    "task Jobs must declare no volumes — see the module README before adding one": (
+    "task pods must use the default scheduler — an alternate scheduler need not honour the RuntimeClass node selector": (
+        lambda j: _pod(j).get("schedulerName", "default-scheduler") == "default-scheduler",
+        lambda: a_job(schedulerName="my-scheduler"),
+    ),
+    "task pods must declare no volumes — see the module README before adding one": (
         lambda j: not _pod(j).get("volumes"),
         lambda: a_job(volumes=[{"name": "host", "hostPath": {"path": "/"}}]),
+    ),
+    "task pods must claim no devices — a resource claim can attach host hardware and its mounts": (
+        lambda j: not _pod(j).get("resourceClaims"),
+        lambda: a_job(resourceClaims=[{"name": "gpu", "resourceClaimName": "gpu"}]),
+    ),
+    "task pods must set no sysctls": (
+        lambda j: not _pod(j).get("securityContext", {}).get("sysctls"),
+        lambda: a_job(securityContext={"sysctls": [{"name": "net.core.somaxconn", "value": "1024"}]}),
+    ),
+    "task pods must declare no init containers": (
+        lambda j: not _pod(j).get("initContainers"),
+        lambda: a_job(initContainers=[{"name": "sidecar", "image": GOOD_IMAGE, "restartPolicy": "Always"}]),
     ),
     "task containers must run the task image from harbor:30002/osdc/ci-agent-sandbox": (
         lambda j: all(c["image"].startswith("harbor:30002/osdc/ci-agent-sandbox:") for c in _all_containers(j)),
         lambda: a_job(containers=[{**a_job()["spec"]["template"]["spec"]["containers"][0], "image": "docker.io/alpine"}]),
     ),
-    "a task Job runs exactly one container": (
+    "a task pod runs exactly one container": (
         lambda j: len(_pod(j)["containers"]) == 1,
         lambda: a_job(containers=a_job()["spec"]["template"]["spec"]["containers"] * 2),
     ),
@@ -123,6 +139,16 @@ MIRRORS = {
             }
         ),
     ),
+    "task containers must not unmask /proc": (
+        lambda j: all(c.get("securityContext", {}).get("procMount", "Default") == "Default" for c in _all_containers(j)),
+        lambda: _with_container(
+            securityContext={"runAsNonRoot": True, "allowPrivilegeEscalation": False, "procMount": "Unmasked"}
+        ),
+    ),
+    "task containers must not publish a hostPort": (
+        lambda j: all("hostPort" not in p for c in _all_containers(j) for p in c.get("ports", [])),
+        lambda: _with_container(ports=[{"containerPort": 8080, "hostPort": 8080}]),
+    ),
     "task containers must set cpu, memory and ephemeral-storage limits": (
         lambda j: all(
             {"cpu", "memory", "ephemeral-storage"} <= set(c.get("resources", {}).get("limits", {}))
@@ -132,7 +158,19 @@ MIRRORS = {
     ),
     "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": (
         lambda j: 0 < j["spec"].get("activeDeadlineSeconds", 0) <= 3600,
-        lambda: _without_deadline(),
+        lambda: _without_job_field("activeDeadlineSeconds"),
+    ),
+    "task Jobs must run one pod at a time (parallelism: 1)": (
+        lambda j: j["spec"].get("parallelism", 1) == 1,
+        lambda: _with_job_field(parallelism=20),
+    ),
+    "task Jobs must run exactly one pod (completions: 1)": (
+        lambda j: j["spec"].get("completions", 1) == 1,
+        lambda: _with_job_field(completions=20),
+    ),
+    "task Jobs must set backoffLimit: 0 — a retry re-clones and re-prompts the model, and bills for it": (
+        lambda j: j["spec"].get("backoffLimit") == 0,
+        lambda: _with_job_field(backoffLimit=6),
     ),
 }
 
@@ -144,9 +182,15 @@ def _with_container(**container_overrides) -> dict:
     return job
 
 
-def _without_deadline() -> dict:
+def _with_job_field(**job_overrides) -> dict:
     job = a_job()
-    del job["spec"]["activeDeadlineSeconds"]
+    job["spec"].update(job_overrides)
+    return job
+
+
+def _without_job_field(name: str) -> dict:
+    job = a_job()
+    del job["spec"][name]
     return job
 
 
@@ -173,17 +217,48 @@ def test_each_rule_rejects_its_own_violation(message):
     assert not predicate(violating()), f"mirror does not actually enforce: {message}"
 
 
-def test_binding_denies_rather_than_warns(policy, binding):
-    """A policy with no binding, or a binding set to Warn, enforces nothing while looking applied."""
-    assert binding["spec"]["policyName"] == policy["metadata"]["name"]
-    assert binding["spec"]["validationActions"] == ["Deny"]
-    assert binding["spec"]["matchResources"]["namespaceSelector"]["matchLabels"] == {
-        "kubernetes.io/metadata.name": "ai-sandbox"
-    }
+def test_bindings_deny_rather_than_warn(policy, bindings):
+    """A policy with no binding, or one set to Warn, enforces nothing while looking applied."""
+    assert bindings, "the policy has no binding at all — it would be inert"
+    for b in bindings:
+        assert b["spec"]["policyName"] == policy["metadata"]["name"]
+        assert b["spec"]["validationActions"] == ["Deny"]
+        assert b["spec"]["matchResources"]["namespaceSelector"]["matchLabels"] == {
+            "kubernetes.io/metadata.name": "ai-sandbox"
+        }
 
 
-def test_policy_fails_closed_and_covers_job_writes(policy):
+def _binding_for(bindings, resource):
+    matches = [
+        b for b in bindings if any(r["resources"] == [resource] for r in b["spec"]["matchResources"]["resourceRules"])
+    ]
+    assert len(matches) == 1, f"expected exactly one binding covering {resource}, found {len(matches)}"
+    return matches[0]
+
+
+def test_the_job_pass_is_not_label_scoped(bindings):
+    """A Job that simply omitted the label would otherwise skip the policy entirely —
+    which is the bug this policy exists to catch."""
+    assert "objectSelector" not in _binding_for(bindings, "jobs")["spec"]["matchResources"]
+
+
+def test_the_pod_pass_selects_the_label_the_job_template_stamps(bindings):
+    """Validating only the Job template leaves the window a mutating webhook writes into:
+    the pod is created later, by the Job controller, from a template already passed. That
+    second pass is label-scoped, so a label drift in job_manifest() would silently switch
+    it off rather than fail anything — hence this test rather than a comment."""
+    selector = _binding_for(bindings, "pods")["spec"]["matchResources"]["objectSelector"]["matchLabels"]
+    template_labels = a_job()["spec"]["template"]["metadata"]["labels"]
+    assert selector.items() <= template_labels.items(), (
+        f"pod binding selects {selector}, but the Job template stamps {template_labels}"
+    )
+
+
+def test_policy_fails_closed_and_covers_both_kinds(policy):
     assert policy["spec"]["failurePolicy"] == "Fail"
-    rule = policy["spec"]["matchConstraints"]["resourceRules"][0]
-    assert rule["apiGroups"] == ["batch"] and rule["resources"] == ["jobs"]
-    assert set(rule["operations"]) == {"CREATE", "UPDATE"}
+    rules = {
+        (tuple(r["apiGroups"]), tuple(r["resources"]), frozenset(r["operations"]))
+        for r in policy["spec"]["matchConstraints"]["resourceRules"]
+    }
+    assert (("batch",), ("jobs",), frozenset({"CREATE", "UPDATE"})) in rules
+    assert (("",), ("pods",), frozenset({"CREATE", "UPDATE"})) in rules
