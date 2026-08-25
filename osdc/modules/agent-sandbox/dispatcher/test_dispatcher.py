@@ -4,8 +4,13 @@ Stdlib-only, so nothing needs stubbing: the dispatcher runs against a fake Kuber
 API on a real socket, and its HTTP surface is driven over a real socket too. The fake
 API records what was created, which is where the Job-shape assertions come from — that
 manifest is the security boundary for every task pod (gVisor, no token, capped disk).
+
+One file for four modules, deliberately: these are the same assertions the single-file
+dispatcher carried, against the same behaviour, which is what makes the split reviewable
+as a move rather than a rewrite.
 """
 
+import importlib.util
 import json
 import socket
 import ssl
@@ -13,10 +18,30 @@ import threading
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from threading import Thread
 
-import dispatcher
+import http_api
+import kube
 import pytest
+import tasks
+
+
+def _load_entrypoint():
+    """__main__.py by path, under another name.
+
+    A plain `import __main__` resolves to whatever is running the process — pytest — so
+    the entry point is the one module here that cannot be imported the normal way. It is
+    still worth a test: it decides the listen address, and binding IPv4 on this
+    IPv6-only cluster is a silent, total outage.
+    """
+    spec = importlib.util.spec_from_file_location("dispatcher_entrypoint", Path(__file__).parent / "__main__.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+entrypoint = _load_entrypoint()
 
 
 @pytest.fixture
@@ -69,13 +94,13 @@ def fake_k8s(monkeypatch, tmp_path):
     monkeypatch.setenv("KUBERNETES_SERVICE_PORT", str(port))
     token = tmp_path / "token"
     token.write_text("fake-token")
-    monkeypatch.setattr(dispatcher, "TOKEN_PATH", token)
-    monkeypatch.setattr(dispatcher, "CA_PATH", tmp_path / "absent-ca.crt")
-    monkeypatch.setattr(dispatcher, "_k8s_api", lambda: f"http://{host}:{port}")
-    monkeypatch.setattr(dispatcher, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:deadbeef")
-    monkeypatch.setattr(dispatcher, "POLL_INTERVAL_S", 0)
-    dispatcher._ssl_context.cache_clear()  # cached across calls; don't leak one between tests
-    dispatcher._TASKS.clear()
+    monkeypatch.setattr(kube, "TOKEN_PATH", token)
+    monkeypatch.setattr(kube, "CA_PATH", tmp_path / "absent-ca.crt")
+    monkeypatch.setattr(kube, "_k8s_api", lambda: f"http://{host}:{port}")
+    monkeypatch.setattr(kube, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:deadbeef")
+    monkeypatch.setattr(tasks, "POLL_INTERVAL_S", 0)
+    kube._ssl_context.cache_clear()  # cached across calls; don't leak one between tests
+    tasks._TASKS.clear()
     yield state
     httpd.shutdown()
     httpd.server_close()
@@ -86,7 +111,7 @@ class TestJobManifest:
     rather than trusting that a manifest reviewed once stays that way."""
 
     def _pod_spec(self):
-        return dispatcher.job_manifest("abc123abc123", {"repo": "org/repo"})["spec"]["template"]["spec"]
+        return kube.job_manifest("abc123abc123", {"repo": "org/repo"})["spec"]["template"]["spec"]
 
     def test_runs_under_gvisor_on_the_sandbox_fleet(self):
         assert self._pod_spec()["runtimeClassName"] == "gvisor"
@@ -106,13 +131,13 @@ class TestJobManifest:
     def test_no_retry(self):
         """A retry re-clones and re-prompts the model — and bills for it. The result
         object already carries per-stage errors."""
-        job = dispatcher.job_manifest("abc123abc123", {"repo": "org/repo"})
+        job = kube.job_manifest("abc123abc123", {"repo": "org/repo"})
         assert job["spec"]["backoffLimit"] == 0
-        assert job["spec"]["activeDeadlineSeconds"] == dispatcher.TASK_DEADLINE_S
-        assert job["spec"]["ttlSecondsAfterFinished"] == dispatcher.JOB_TTL_S
+        assert job["spec"]["activeDeadlineSeconds"] == kube.TASK_DEADLINE_S
+        assert job["spec"]["ttlSecondsAfterFinished"] == kube.JOB_TTL_S
 
     def test_spec_is_passed_as_env_not_baked_into_the_image(self):
-        spec = dispatcher.job_manifest("abc123abc123", {"repo": "org/repo", "ref": "v1", "model": "us.x"})
+        spec = kube.job_manifest("abc123abc123", {"repo": "org/repo", "ref": "v1", "model": "us.x"})
         env = {e["name"]: e["value"] for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
         assert env["SANDBOX_REPO"] == "org/repo"
         assert env["SANDBOX_REF"] == "v1"
@@ -120,19 +145,19 @@ class TestJobManifest:
         assert env["SANDBOX_TASK"] == "", "an omitted task must arrive empty so run_task applies its default"
 
     def test_carries_the_task_image_the_dispatcher_was_given(self, monkeypatch):
-        monkeypatch.setattr(dispatcher, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:cafe1234")
+        monkeypatch.setattr(kube, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:cafe1234")
         assert self._pod_spec()["containers"][0]["image"] == "harbor:30002/osdc/ci-agent-sandbox:cafe1234"
 
     def test_gvisor_label_matches_the_network_policy_selector(self):
         """sandbox-task-egress selects app=sandbox-task; a label drift here silently
         leaves task pods with no egress allow-list at all."""
-        labels = dispatcher.job_manifest("abc123abc123", {"repo": "r"})["spec"]["template"]["metadata"]["labels"]
+        labels = kube.job_manifest("abc123abc123", {"repo": "r"})["spec"]["template"]["metadata"]["labels"]
         assert labels["app"] == "sandbox-task"
 
 
 class TestRunToCompletion:
     def test_creates_one_job_and_returns_the_parsed_result(self, fake_k8s):
-        result = dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert result == {"cloned": True, "report": "ok"}
         assert len(fake_k8s["jobs"]) == 1
         assert fake_k8s["jobs"][0]["metadata"]["name"] == "sandbox-task-abc123abc123"
@@ -140,17 +165,17 @@ class TestRunToCompletion:
     def test_deletes_the_job_after_reading_the_log(self, fake_k8s):
         """The log is the result transport, so the Job can only be collected after it
         has been read — and it must be, or finished Jobs pile up against the quota."""
-        dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert any("sandbox-task-abc123abc123" in path for path in fake_k8s["deleted"])
 
     def test_last_json_line_wins(self, fake_k8s):
         fake_k8s["log"] = 'warning: detached HEAD\n{"cloned": true, "file_count": 3}\n'
-        assert dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})["file_count"] == 3
+        assert tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})["file_count"] == 3
 
     def test_failed_pod_without_output_reports_the_reason(self, fake_k8s):
         fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]}
         fake_k8s["log"] = "Killed\n"
-        result = dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "DeadlineExceeded" in result["errors"]["task"]
 
     def test_failed_pod_that_did_print_a_result_keeps_it(self, fake_k8s):
@@ -158,22 +183,22 @@ class TestRunToCompletion:
         answer, and it must not be replaced by a generic pod failure."""
         fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "BackoffLimit"}]}
         fake_k8s["log"] = '{"cloned": false, "errors": {"clone": "could not read Username"}}\n'
-        result = dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert result["errors"]["clone"] == "could not read Username"
 
     def test_api_failure_is_reported_not_raised(self, monkeypatch, fake_k8s):
         def boom(*a, **kw):
-            raise dispatcher.ApiError("jobs.batch is forbidden")
+            raise kube.ApiError("jobs.batch is forbidden")
 
-        monkeypatch.setattr(dispatcher, "create_job", boom)
-        result = dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        monkeypatch.setattr(kube, "create_job", boom)
+        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "forbidden" in result["errors"]["dispatch"]
 
 
 @pytest.fixture
 def server(fake_k8s):
     """The real dispatcher HTTP surface on an ephemeral port (IPv6, as in-cluster)."""
-    httpd = dispatcher.HTTPServerV6(("::1", 0), dispatcher.Handler)
+    httpd = http_api.HTTPServerV6(("::1", 0), http_api.Handler)
     Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://[::1]:{httpd.server_address[1]}"
     httpd.shutdown()
@@ -201,11 +226,11 @@ class TestHTTPSurface:
         body = _get(f"{server}/healthz")
         assert body["status"] == "ok"
         assert body["in_flight"] == 0
-        assert body["capacity"] == dispatcher.MAX_CONCURRENT_TASKS
+        assert body["capacity"] == tasks.MAX_CONCURRENT_TASKS
 
     def test_healthz_counts_a_running_task(self, server):
-        dispatcher._TASKS.clear()
-        dispatcher.start_task()
+        tasks._TASKS.clear()
+        tasks.start_task()
         assert _get(f"{server}/healthz")["in_flight"] == 1
 
     def test_unknown_path_is_404(self, server):
@@ -279,13 +304,13 @@ class TestCapacity:
         """The point of the design: concurrent requests must each get their own Job
         instead of queueing behind one slot."""
         gate = threading.Event()
-        real_state = dispatcher.job_state
+        real_state = kube.job_state
 
         def slow_state(task_id):
             gate.wait(10)
             return real_state(task_id)
 
-        monkeypatch.setattr(dispatcher, "job_state", slow_state)
+        monkeypatch.setattr(kube, "job_state", slow_state)
         results = []
         threads = [
             Thread(target=lambda: results.append(_post(f"{server}/run", {"repo": "org/repo"})), daemon=True)
@@ -308,16 +333,16 @@ class TestCapacity:
     def test_over_capacity_is_429(self, server, monkeypatch):
         """/run is unauthenticated, so the cap is what stops a caller loop turning into
         unbounded Jobs and, through Karpenter, unbounded nodes."""
-        monkeypatch.setattr(dispatcher, "MAX_CONCURRENT_TASKS", 1)
-        dispatcher._TASKS.clear()
-        assert dispatcher.start_task() is not None  # occupy the only slot
+        monkeypatch.setattr(tasks, "MAX_CONCURRENT_TASKS", 1)
+        tasks._TASKS.clear()
+        assert tasks.start_task() is not None  # occupy the only slot
         with pytest.raises(urllib.error.HTTPError) as exc:
             _post(f"{server}/run", {"repo": "org/repo"})
         assert exc.value.code == 429
         assert "at capacity" in json.loads(exc.value.read())["error"]
 
     def test_missing_task_image_is_500_not_a_broken_job(self, server, monkeypatch):
-        monkeypatch.setattr(dispatcher, "AGENT_IMAGE", "")
+        monkeypatch.setattr(kube, "AGENT_IMAGE", "")
         with pytest.raises(urllib.error.HTTPError) as exc:
             _post(f"{server}/run", {"repo": "org/repo"})
         assert exc.value.code == 500
@@ -326,12 +351,12 @@ class TestCapacity:
     def test_finished_results_are_pruned(self, monkeypatch):
         """Results live in memory so /status can answer after the Job is gone — the one
         thing in a long-running dispatcher that would otherwise grow forever."""
-        monkeypatch.setattr(dispatcher, "RESULT_RETENTION_S", 0)
-        dispatcher._TASKS.clear()
-        task_id = dispatcher.start_task()
-        dispatcher._finish(task_id, {"report": "ok"})
-        dispatcher.start_task()
-        assert task_id not in dispatcher._TASKS
+        monkeypatch.setattr(tasks, "RESULT_RETENTION_S", 0)
+        tasks._TASKS.clear()
+        task_id = tasks.start_task()
+        tasks._finish(task_id, {"report": "ok"})
+        tasks.start_task()
+        assert task_id not in tasks._TASKS
 
 
 class TestInClusterConfig:
@@ -342,77 +367,75 @@ class TestInClusterConfig:
         an unbracketed URL is unparseable."""
         monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "fdba:9e82:4cac::1")
         monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
-        assert dispatcher._k8s_api() == "https://[fdba:9e82:4cac::1]:443"
+        assert kube._k8s_api() == "https://[fdba:9e82:4cac::1]:443"
 
     def test_api_url_leaves_ipv4_alone(self, monkeypatch):
         monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.100.0.1")
         monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
-        assert dispatcher._k8s_api() == "https://10.100.0.1:443"
+        assert kube._k8s_api() == "https://10.100.0.1:443"
 
     def test_api_url_outside_a_pod_raises(self, monkeypatch):
         monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
         with pytest.raises(RuntimeError, match="KUBERNETES_SERVICE_HOST"):
-            dispatcher._k8s_api()
+            kube._k8s_api()
 
     def test_missing_token_raises(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(dispatcher, "TOKEN_PATH", tmp_path / "absent")
+        monkeypatch.setattr(kube, "TOKEN_PATH", tmp_path / "absent")
         with pytest.raises(RuntimeError, match="token not found"):
-            dispatcher._read_token()
+            kube._read_token()
 
     def test_ssl_context_loads_the_projected_ca(self, monkeypatch, tmp_path):
         """Without the projected CA the API server's cert doesn't verify, and every
         call would fail closed."""
-        monkeypatch.setattr(dispatcher, "CA_PATH", tmp_path / "absent")
-        assert isinstance(dispatcher._ssl_context(), ssl.SSLContext)
+        monkeypatch.setattr(kube, "CA_PATH", tmp_path / "absent")
+        assert isinstance(kube._ssl_context(), ssl.SSLContext)
 
     def test_api_error_carries_the_status_and_body(self, fake_k8s):
         """A 403 here means the Role is wrong — the message has to say so rather than
         surfacing as a bare failure."""
-        with pytest.raises(dispatcher.ApiError, match="404"):
-            dispatcher.api_request("GET", "/apis/batch/v1/namespaces/ai-sandbox/nope")
+        with pytest.raises(kube.ApiError, match="404"):
+            kube.api_request("GET", "/apis/batch/v1/namespaces/ai-sandbox/nope")
 
 
 class TestPolling:
     def test_waits_while_the_job_is_running(self, fake_k8s, monkeypatch):
         states = iter([("running", ""), ("running", ""), ("succeeded", "")])
-        monkeypatch.setattr(dispatcher, "job_state", lambda task_id: next(states))
-        assert dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})["report"] == "ok"
+        monkeypatch.setattr(kube, "job_state", lambda task_id: next(states))
+        assert tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})["report"] == "ok"
 
     def test_gives_up_at_the_deadline(self, fake_k8s, monkeypatch):
-        monkeypatch.setattr(dispatcher, "TASK_DEADLINE_S", -1)
-        monkeypatch.setattr(dispatcher, "job_state", lambda task_id: ("running", ""))
-        result = dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        monkeypatch.setattr(kube, "TASK_DEADLINE_S", -1)
+        monkeypatch.setattr(kube, "job_state", lambda task_id: ("running", ""))
+        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "did not finish" in result["errors"]["dispatch"]
 
     def test_running_job_reports_running(self, fake_k8s):
         fake_k8s["job_status"] = {"active": 1}
-        assert dispatcher.job_state("abc123abc123") == ("running", "")
+        assert kube.job_state("abc123abc123") == ("running", "")
 
     def test_missing_pod_is_an_api_error(self, fake_k8s, monkeypatch):
-        monkeypatch.setattr(
-            dispatcher, "api_request", lambda method, path, **kw: {"items": []} if "/pods?" in path else {}
-        )
-        with pytest.raises(dispatcher.ApiError, match="no pod found"):
-            dispatcher.task_result("abc123abc123")
+        monkeypatch.setattr(kube, "api_request", lambda method, path, **kw: {"items": []} if "/pods?" in path else {})
+        with pytest.raises(kube.ApiError, match="no pod found"):
+            kube.task_result("abc123abc123")
 
     def test_log_without_json_is_an_api_error(self, fake_k8s):
         fake_k8s["log"] = "Traceback (most recent call last):\n  ImportError\n"
-        with pytest.raises(dispatcher.ApiError, match="no result JSON"):
-            dispatcher.task_result("abc123abc123")
+        with pytest.raises(kube.ApiError, match="no result JSON"):
+            kube.task_result("abc123abc123")
 
     def test_a_brace_line_that_is_not_json_is_skipped(self, fake_k8s):
         """Anything the task or git writes to stdout lands in the same log, so a line
         that merely starts with { must not shadow the real result."""
         # Scanned last line first, so the trailing junk is what has to be skipped.
         fake_k8s["log"] = '{"cloned": true, "report": "the real one"}\n{not json at all\n'
-        assert dispatcher.task_result("abc123abc123")["report"] == "the real one"
+        assert kube.task_result("abc123abc123")["report"] == "the real one"
 
     def test_api_failure_while_polling_is_reported(self, fake_k8s, monkeypatch):
         def boom(task_id):
-            raise dispatcher.ApiError("etcdserver: request timed out")
+            raise kube.ApiError("etcdserver: request timed out")
 
-        monkeypatch.setattr(dispatcher, "job_state", boom)
-        result = dispatcher.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        monkeypatch.setattr(kube, "job_state", boom)
+        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "timed out" in result["errors"]["dispatch"]
 
     def test_ssl_context_loads_a_present_ca(self, monkeypatch, tmp_path):
@@ -426,28 +449,28 @@ class TestPolling:
             def load_verify_locations(self, cafile):
                 loaded["cafile"] = cafile
 
-        monkeypatch.setattr(dispatcher, "CA_PATH", ca)
-        monkeypatch.setattr(dispatcher.ssl, "create_default_context", lambda: FakeCtx())
-        dispatcher._ssl_context.cache_clear()
-        dispatcher._ssl_context()
+        monkeypatch.setattr(kube, "CA_PATH", ca)
+        monkeypatch.setattr(kube.ssl, "create_default_context", lambda: FakeCtx())
+        kube._ssl_context.cache_clear()
+        kube._ssl_context()
         assert loaded["cafile"] == str(ca)
 
         # Built once, not per API call: each in-flight task polls every POLL_INTERVAL_S,
         # and re-parsing the CA bundle every time is pure overhead.
         loaded.clear()
-        dispatcher._ssl_context()
+        kube._ssl_context()
         assert loaded == {}, "the context must be cached, not rebuilt on every call"
-        dispatcher._ssl_context.cache_clear()
+        kube._ssl_context.cache_clear()
 
     def test_delete_failure_is_logged_not_raised(self, fake_k8s, monkeypatch, capsys):
         """The TTL collects the Job anyway; failing the request over cleanup would
         throw away a result that is already in hand."""
 
         def boom(*a, **kw):
-            raise dispatcher.ApiError("jobs.batch is forbidden")
+            raise kube.ApiError("jobs.batch is forbidden")
 
-        monkeypatch.setattr(dispatcher, "api_request", boom)
-        dispatcher.delete_job("abc123abc123")
+        monkeypatch.setattr(kube, "api_request", boom)
+        kube.delete_job("abc123abc123")
         assert "TTL will collect it" in capsys.readouterr().out
 
 
@@ -479,7 +502,7 @@ class TestRequestBodyLimits:
         assert "400" in response.splitlines()[0]
 
     def test_oversized_content_length_is_refused_before_reading(self, server):
-        response = self._raw_post(server, {"Content-Length": str(dispatcher.MAX_BODY_BYTES + 1)})
+        response = self._raw_post(server, {"Content-Length": str(http_api.MAX_BODY_BYTES + 1)})
         assert "400" in response.splitlines()[0]
 
 
@@ -495,16 +518,16 @@ class TestServerShape:
             def serve_forever(self):
                 bound["served"] = True
 
-        monkeypatch.setattr(dispatcher, "HTTPServerV6", FakeServer)
-        dispatcher.main()
-        assert bound["address"] == ("::", dispatcher.PORT)
-        assert bound["handler"] is dispatcher.Handler
+        monkeypatch.setattr(http_api, "HTTPServerV6", FakeServer)
+        entrypoint.main()
+        assert bound["address"] == ("::", entrypoint.PORT)
+        assert bound["handler"] is http_api.Handler
         assert bound["served"] is True
 
     def test_binds_ipv6(self):
         """A default AF_INET listener binds 0.0.0.0 and is unreachable on the IPv6-only
         cluster — the readiness probe and the Service both target the pod's IPv6."""
-        assert dispatcher.HTTPServerV6.address_family == socket.AF_INET6
+        assert http_api.HTTPServerV6.address_family == socket.AF_INET6
 
     def test_handler_has_a_socket_timeout(self):
-        assert 0 < dispatcher.Handler.timeout <= 60
+        assert 0 < http_api.Handler.timeout <= 60

@@ -20,11 +20,15 @@ RUN apt-get update \
         python3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY dispatcher.py /usr/local/bin/dispatcher.py
-RUN chmod 0755 /usr/local/bin/dispatcher.py
+# The modules are listed rather than globbed so the image cannot pick up a test file,
+# and so adding one is a visible line in review.
+COPY __main__.py http_api.py tasks.py kube.py /usr/local/lib/sandbox-dispatcher/
 
 # UID 1000, non-root. The pod securityContext enforces this too.
 USER 1000
 
 EXPOSE 8080
-ENTRYPOINT ["python3", "/usr/local/bin/dispatcher.py"]
+# `python3 <dir>` runs <dir>/__main__.py with <dir> prepended to sys.path, so the
+# modules import each other by bare name with no package, no PYTHONPATH and no
+# installation step.
+ENTRYPOINT ["python3", "/usr/local/lib/sandbox-dispatcher"]

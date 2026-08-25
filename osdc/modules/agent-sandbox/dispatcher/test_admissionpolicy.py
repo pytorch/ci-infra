@@ -26,7 +26,7 @@ import hashlib
 import re
 from pathlib import Path
 
-import dispatcher
+import kube
 import pytest
 import yaml
 
@@ -81,12 +81,12 @@ def deployed_image(monkeypatch):
     what a deploy.sh that failed to substitute the tag would emit, so the old fixture hid
     the one input the rule exists to reject.
     """
-    monkeypatch.setattr(dispatcher, "AGENT_IMAGE", GOOD_IMAGE)
+    monkeypatch.setattr(kube, "AGENT_IMAGE", GOOD_IMAGE)
 
 
 def a_job(**pod_overrides) -> dict:
     """A real job_manifest() with the pod spec optionally mutated."""
-    job = dispatcher.job_manifest("abc123456789", {"repo": "pytorch/pytorch", "task": "hello"})
+    job = kube.job_manifest("abc123456789", {"repo": "pytorch/pytorch", "task": "hello"})
     job["spec"]["template"]["spec"].update(pod_overrides)
     return job
 
@@ -278,7 +278,7 @@ def test_every_validation_has_a_mirror(policy):
 
 @pytest.mark.parametrize("message", sorted(MIRRORS))
 def test_real_job_manifest_satisfies_the_policy(message):
-    """What dispatcher.py builds today would be admitted."""
+    """What kube.job_manifest() builds today would be admitted."""
     predicate, _ = MIRRORS[message]
     assert predicate(a_job()), f"job_manifest() violates: {message}"
 
@@ -476,7 +476,7 @@ def test_an_unsubstituted_task_image_is_rejected(monkeypatch):
         mirror for message, mirror in MIRRORS.items() if message.startswith("task containers must run the task image")
     )
     for value in ("", "__AGENT_IMAGE__"):
-        monkeypatch.setattr(dispatcher, "AGENT_IMAGE", value)
+        monkeypatch.setattr(kube, "AGENT_IMAGE", value)
         assert not predicate(a_job()), f"an image of {value!r} must not be admitted"
 
 
@@ -498,8 +498,8 @@ def test_the_deadline_ceiling_admits_the_deadline_the_dispatcher_deploys(policy)
     loudly, but with nothing in this suite noticing beforehand."""
     rule = next(v for v in policy["spec"]["validations"] if "activeDeadlineSeconds" in v["expression"])
     ceiling = int(re.search(r"activeDeadlineSeconds <= (\d+)", rule["expression"]).group(1))
-    assert ceiling >= dispatcher.TASK_DEADLINE_S, (
-        f"the dispatcher's default deadline ({dispatcher.TASK_DEADLINE_S}s) exceeds the policy ceiling ({ceiling}s)"
+    assert ceiling >= kube.TASK_DEADLINE_S, (
+        f"the dispatcher's default deadline ({kube.TASK_DEADLINE_S}s) exceeds the policy ceiling ({ceiling}s)"
     )
     deployed = _deployed_env("TASK_DEADLINE_S")
     assert deployed is None or int(deployed) <= ceiling, (
