@@ -56,18 +56,19 @@ data:
     MARKER_FILE="/var/lib/registry-mirror-config/.configured"
     HARBOR_PORT="${HARBOR_PORT:-30002}"
 
+    # Conditional entry must join the list, or enabling it later keeps skipping
+    # on the marker.
+    EXPECTED_REGISTRIES="docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io harbor:${HARBOR_PORT}"
+    if [ -n "${ECR_PULLTHROUGH_REGISTRY:-}" ]; then
+      EXPECTED_REGISTRIES="${EXPECTED_REGISTRIES} ${ECR_PULLTHROUGH_REGISTRY}"
+    fi
+
     if [ -f "$MARKER_FILE" ]; then
       echo ""
       echo "Node already configured (marker file exists)"
       echo "Verifying current configuration..."
 
       all_checks_pass=true
-      # Conditional entry must join the list, or enabling it later keeps
-      # skipping on the marker.
-      EXPECTED_REGISTRIES="docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io harbor:${HARBOR_PORT}"
-      if [ -n "${ECR_PULLTHROUGH_REGISTRY:-}" ]; then
-        EXPECTED_REGISTRIES="${EXPECTED_REGISTRIES} ${ECR_PULLTHROUGH_REGISTRY}"
-      fi
       for registry in ${EXPECTED_REGISTRIES}; do
         if [ ! -f "/etc/containerd/certs.d/${registry}/hosts.toml" ]; then
           echo "  Missing hosts.toml for ${registry} - will reconfigure"
@@ -230,7 +231,7 @@ data:
     echo ""
     echo "=== Registry Mirror Configuration Complete ==="
     echo "Harbor endpoint: http://harbor:${HARBOR_PORT}"
-    echo "Configured mirrors for: ${EXPECTED_REGISTRIES:-docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io}"
+    echo "Configured mirrors for: ${EXPECTED_REGISTRIES}"
     echo "Configured direct registry: harbor:${HARBOR_PORT}"
     echo ""
     echo "Note: containerd 1.6+ dynamically watches certs.d/ - no restart needed"
