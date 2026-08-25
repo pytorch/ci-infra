@@ -1,0 +1,137 @@
+"""The HTTP surface: parse, bound, dispatch, answer. No task logic lives here.
+
+Endpoints:
+  GET  /healthz      -> {"status": "ok"}
+  POST /run          -> body {"repo","ref","task","model"?,"wait"?}
+                        wait=true (default): blocks, returns the task result
+                        wait=false: returns {"task_id": ...} immediately
+  GET  /status/<id>  -> {"state": "running"|"done", ...result}
+
+Everything below the parse is somebody else's file, so the rule for this one is that it
+never decides anything: it validates the shape of a request and hands it on.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import socket
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import kube
+import tasks
+
+# Request-surface bounds. /run is unauthenticated behind a NetworkPolicy, so the body
+# is read under a size cap and the connection under a socket timeout.
+MAX_BODY_BYTES = 64 * 1024
+REQUEST_TIMEOUT_S = 30
+
+TASK_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+class Handler(BaseHTTPRequestHandler):
+    # Whole-connection socket timeout (socketserver applies it in setup()). Without it
+    # a caller that announces a body and sends it slowly, or never, parks a handler
+    # thread for as long as it likes, and ThreadingHTTPServer caps nothing. A waiting
+    # /run sits between socket operations, so it never trips this.
+    timeout = REQUEST_TIMEOUT_S
+
+    def _send(self, code: int, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        if self.path == "/healthz":
+            # in_flight/capacity are here because a 429 is otherwise indistinguishable
+            # from a wedged dispatcher: this says which one it is without kubectl.
+            self._send(
+                200,
+                {"status": "ok", "in_flight": tasks.slots_in_use(), "capacity": tasks.MAX_CONCURRENT_TASKS},
+            )
+            return
+        if self.path.startswith("/status/"):
+            task_id = self.path[len("/status/") :]
+            if not TASK_ID_RE.match(task_id):
+                self._send(400, {"error": "malformed task id"})
+                return
+            payload = tasks.status(task_id)
+            if payload is None:
+                self._send(404, {"error": "unknown task id"})
+                return
+            self._send(200, payload)
+            return
+        self._send(404, {"error": "not found"})
+
+    def _read_spec(self) -> dict:
+        """Parse and validate the /run body, raising ValueError with the reason.
+
+        Bounded, because the declared length is caller-controlled and read(-1) would
+        read until end of file. Types are checked rather than truth-tested: a field of
+        the wrong type reaches git or the proxy as an argument.
+        """
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except ValueError:
+            raise ValueError(f"invalid Content-Length: {raw_length!r}") from None
+        if not 0 <= length <= MAX_BODY_BYTES:
+            raise ValueError(f"Content-Length must be between 0 and {MAX_BODY_BYTES}, got {length}")
+
+        spec = json.loads(self.rfile.read(length) or "{}")
+        if not isinstance(spec, dict):
+            raise ValueError("body must be a JSON object")
+        if not isinstance(spec.get("repo"), str) or not spec["repo"]:
+            raise ValueError("missing 'repo'")
+        for key in ("ref", "task", "model"):
+            if key in spec and not isinstance(spec[key], str):
+                raise ValueError(f"'{key}' must be a string")
+        if "wait" in spec and not isinstance(spec["wait"], bool):
+            raise ValueError("'wait' must be a boolean")
+        return spec
+
+    def do_POST(self) -> None:
+        if self.path != "/run":
+            self._send(404, {"error": "not found"})
+            return
+        try:
+            spec = self._read_spec()
+        except ValueError as exc:
+            # json.JSONDecodeError is a ValueError subclass, so a malformed body, a
+            # non-object body and a bad header all answer 400 rather than dropping the
+            # connection with no response at all.
+            self._send(400, {"error": str(exc)})
+            return
+        if not kube.AGENT_IMAGE:
+            self._send(500, {"error": "AGENT_IMAGE not set — deploy.sh did not substitute the task image"})
+            return
+
+        task_id = tasks.start_task()
+        if task_id is None:
+            self._send(429, {"error": f"at capacity: {tasks.MAX_CONCURRENT_TASKS} tasks in flight"})
+            return
+
+        if spec.get("wait", True):
+            result = tasks.run_and_record(task_id, spec)
+            self._send(200, {"task_id": task_id, **result})
+            return
+
+        tasks.run_in_background(task_id, spec)
+        self._send(202, {"task_id": task_id, "state": "running"})
+
+    def log_message(self, fmt: str, *args) -> None:
+        print(f"[sandbox-dispatcher] {fmt % args}")
+
+
+class HTTPServerV6(ThreadingHTTPServer):
+    # OSDC EKS is IPv6-only: the pod IP (and the readiness probe / Service target) are
+    # IPv6, so the listener must bind :: — a default AF_INET server binds 0.0.0.0 and
+    # is unreachable on this cluster.
+    #
+    # Threading, because a synchronous /run holds its connection for the length of a
+    # task: without it one caller would block /healthz, the readiness probe would time
+    # out, and the pod would be dropped from the Service mid-task.
+    address_family = socket.AF_INET6
