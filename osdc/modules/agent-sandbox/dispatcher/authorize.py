@@ -102,19 +102,6 @@ def _lookup_caller(claims: dict) -> dict | None:
     return None
 
 
-def caller_name(claims: dict) -> str:
-    """Just the identity, for endpoints that need to know who is asking and nothing else.
-
-    /status uses this: reading your own task's result is not the same decision as
-    dispatching one, and running the full authorize() there would demand claims the
-    question does not depend on.
-    """
-    caller = _lookup_caller(claims)
-    if caller is None:
-        raise Denied("caller is not on the allow-list")
-    return caller["name"]
-
-
 def authorize(claims: dict, request: dict, policy=None) -> Grant:
     """Turn verified OIDC claims plus a request into a Grant, or raise Denied.
 
@@ -134,17 +121,24 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
     if event in DENIED_EVENTS:
         raise Denied(f"event {event} is not allowed to dispatch agent tasks")
 
-    # workflow_ref is the entry workflow; job_workflow_ref is the workflow file the job
-    # is actually defined in, which differs when a reusable workflow is called. BOTH must
-    # be inside the allowed repo, or an allowed repo could delegate its identity to a
-    # workflow living anywhere. job_workflow_ref is checked only when present: whether
-    # GitHub emits it for an ordinary non-reusable job is not something we have confirmed
-    # against a real token, and requiring it would deny every such job if it does not.
+    # workflow_ref is the entry workflow; job_workflow_ref is the workflow file the job is
+    # actually defined in, which differs when a reusable workflow is called. BOTH must be
+    # inside the allowed repo, or an allowed repo could delegate its identity to a
+    # workflow living anywhere.
+    #
+    # job_workflow_ref is REQUIRED, not checked-if-present. An earlier draft tolerated its
+    # absence because we had not confirmed GitHub emits it for an ordinary non-reusable
+    # job — but "tolerate when absent" on a control whose whole job is to stop delegation
+    # means an attacker who can suppress the claim skips the control. Corroboration that
+    # it is always emitted: PyPI's Warehouse, a production GitHub OIDC verifier, lists it
+    # in __required_verifiable_claims__ and indexes it unguarded
+    # (warehouse/oidc/models/github.py). If that turns out to be wrong the failure is a
+    # clear 403 naming the claim, which is the direction to be wrong in.
     workflow_ref = claims.get("workflow_ref") or ""
     if not workflow_ref.startswith(ALLOWED_WORKFLOW_PREFIX):
         raise Denied("workflow is not on the allow-list")
-    job_workflow_ref = claims.get("job_workflow_ref")
-    if job_workflow_ref is not None and not job_workflow_ref.startswith(ALLOWED_WORKFLOW_PREFIX):
+    job_workflow_ref = claims.get("job_workflow_ref") or ""
+    if not job_workflow_ref.startswith(ALLOWED_WORKFLOW_PREFIX):
         raise Denied("job workflow is not on the allow-list")
 
     if claims.get("runner_environment") not in ALLOWED_RUNNER_ENVIRONMENTS:

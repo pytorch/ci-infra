@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 import kube
+from jwt import PyJWKSet, PyJWKSetError
 
 JWKS_URL = os.environ.get("JWKS_URL", "https://token.actions.githubusercontent.com/.well-known/jwks")
 CONFIGMAP_NAME = os.environ.get("JWKS_CONFIGMAP", "oidc-jwks")
@@ -45,13 +46,18 @@ def fetch_jwks() -> dict:
 
     document = json.loads(body)
     keys = document.get("keys")
-    # Checked here rather than trusted from the endpoint: an empty or malformed key set
-    # written to the ConfigMap would take the dispatcher down at the next reload, and it
-    # would do so with the old, working keys already overwritten.
     if not isinstance(keys, list) or not keys:
         raise ValueError("JWKS response contained no keys")
     if not all(isinstance(k, dict) and k.get("kid") for k in keys):
         raise ValueError("JWKS response contained a key with no kid")
+
+    # Parsed with the SAME library the dispatcher will use, not merely shape-checked.
+    # "a non-empty list of dicts with a kid" is not the property that matters — the
+    # property that matters is that the dispatcher can load it, and anything else
+    # overwrites a working key set with one that breaks at the next reload.
+    keyset = PyJWKSet.from_dict({"keys": keys})
+    if not any(key.key_id for key in keyset.keys):
+        raise ValueError("JWKS response contained no usable signing keys")
     return {"keys": keys}
 
 
@@ -76,7 +82,7 @@ def write_configmap(jwks: dict) -> None:
 def main() -> int:
     try:
         jwks = fetch_jwks()
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, ValueError, PyJWKSetError) as exc:
         print(f"[jwks-refresh] fetch failed, leaving the existing keys in place: {exc}", file=sys.stderr)
         return 1
     try:

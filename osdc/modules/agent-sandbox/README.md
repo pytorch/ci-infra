@@ -90,19 +90,35 @@ repository to clone and the model are policy, so a caller cannot name either; pa
 `repo` that disagrees with policy is refused outright rather than quietly substituted. The
 caller contributes the prompt and the commit to read.
 
-The residual worth knowing: **the prompt is caller-controlled**, and `workflow_run` is an
-allowed event, so a workflow that reads pull-request content can shape what the agent is
-asked to do. The Grant is what bounds the damage — same repo, same model, same limits.
+Two residuals worth knowing:
+
+- **The prompt is caller-controlled**, and `workflow_run` is an allowed event, so a
+  workflow that reads pull-request content can shape what the agent is asked to do. The
+  Grant is what bounds the damage — same repo, same model, same limits.
+- **Tokens are replayable until they expire.** `jti` is neither required nor consumed, so
+  a stolen token can submit requests until `exp`. Consuming it needs state shared across
+  dispatcher replicas, which v1 does not have; the concurrency cap and the namespace quota
+  are what bound the damage in the meantime. PyPI's Warehouse solves this with a `jti`
+  table, which is the shape to copy if this matters later.
 
 ### Enabling enforcement
 
 `REQUIRE_AUTH` in `kubernetes/base/dispatcher.yaml` ships **`false`**, and flipping it to
 `true` is the point of this work, not an optional extra. It governs exactly one case: a
 request with no `Authorization` header at all. A token that *is* presented is always
-verified and always authorized, whatever the flag says — so while it is false a correct
-caller is fully checked and a forged token is still rejected, and flipping it changes
-behaviour only for callers that were never authenticating. Until it is flipped, `/run`
-remains reachable by any pod in `arc-runners`.
+verified and always authorized, whatever the flag says, so a forged or denied token is
+rejected either way.
+
+Be clear about what that does and does not buy. **While the flag is false, authentication
+is optional**, and an unauthenticated caller can therefore do *more* than a caller whose
+real token was denied — it simply omits the header. This is a migration window, not a
+security posture. It is tolerable only because `/run` is already reachable
+unauthenticated by the whole `arc-runners` namespace today, so it is strictly no worse
+than the status quo and strictly better once flipped.
+
+Unrecognised values abort at startup rather than defaulting to off: `REQUIRE_AUTH=tru`
+under a `== "true"` comparison is a security control disabled by a typo, with no signal
+anywhere.
 
 ### The signing keys
 

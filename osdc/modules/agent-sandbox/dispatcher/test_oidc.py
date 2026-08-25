@@ -227,3 +227,19 @@ class TestKeySetHandling:
             headers={"kid": "rotated"},
         )
         assert oidc.verify(token)["event_name"] == "push"
+
+    def test_a_key_set_timestamped_in_the_future_refuses(self, keys, jwks_file):
+        """A broken clock or a tampered file reads as "brand new" to an age check, which
+        is the wrong direction to fail in."""
+        jwks_file.write_text(json.dumps(_jwks_document(keys, fetched_at=time.time() + 10 * 3600)))
+        oidc._CACHE.update(keyset=None, loaded_at=0.0)
+        with pytest.raises(oidc.InvalidToken, match="future"):
+            oidc.verify(a_token(keys))
+
+    def test_a_cached_key_set_still_ages_out(self, keys, jwks_file, monkeypatch):
+        """Checking the age only when the file is read would leave the keys usable for a
+        whole reload interval past the bound — the one window the bound exists to close."""
+        assert oidc.verify(a_token(keys))  # populates the cache
+        monkeypatch.setattr(oidc, "JWKS_MAX_AGE_S", -1)
+        with pytest.raises(oidc.InvalidToken, match="refresher has stopped"):
+            oidc.verify(a_token(keys))
