@@ -13,9 +13,12 @@ that is only promised in a design doc is not a seam.
 
 from __future__ import annotations
 
+import dataclasses
+
 import authorize
 import pytest
-from authorize import Denied, authorize as authorize_fn
+from authorize import Denied
+from authorize import authorize as authorize_fn
 
 # A token from the caller we do allow, with every claim the policy reads.
 GOOD_CLAIMS = {
@@ -54,7 +57,7 @@ def test_the_allowed_caller_gets_a_grant(policy):
 def test_the_grant_is_frozen(policy):
     """Nothing downstream may edit a decision after it is made."""
     grant = authorize_fn(claims(), {}, policy)
-    with pytest.raises(Exception):  # noqa: B017 — dataclasses raises FrozenInstanceError
+    with pytest.raises(dataclasses.FrozenInstanceError):
         grant.clone_repo = "attacker/repo"
 
 

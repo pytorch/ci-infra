@@ -114,9 +114,13 @@ class TestVerify:
 
         Assembled by hand, because PyJWT refuses to ENCODE this — which is a hint about
         how bad it is, and not a substitute for checking that we refuse to DECODE it."""
-        public_pem = keys[KID].public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        public_pem = (
+            keys[KID]
+            .public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
         )
 
         def segment(payload: bytes) -> bytes:

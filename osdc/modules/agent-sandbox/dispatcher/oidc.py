@@ -86,9 +86,7 @@ FUTURE_SKEW_S = 300
 def _check_age(fetched_at: float) -> None:
     age = time.time() - fetched_at
     if age > JWKS_MAX_AGE_S:
-        raise InvalidToken(
-            f"signing keys are {int(age)}s old (max {JWKS_MAX_AGE_S}s) — the JWKS refresher has stopped"
-        )
+        raise InvalidToken(f"signing keys are {int(age)}s old (max {JWKS_MAX_AGE_S}s) — the JWKS refresher has stopped")
     if age < -FUTURE_SKEW_S:
         raise InvalidToken(f"signing keys are timestamped {int(-age)}s in the future")
 
