@@ -24,11 +24,19 @@
 # the template. The Pod pass is what closes that, scoped by the `app: sandbox-task` label
 # the Job template stamps on its pods.
 #
+# SCOPE. The Job pass applies to Jobs created BY THE DISPATCHER'S SERVICE ACCOUNT, which
+# is the threat this exists for: a bug (or a JWT parser compromise) in the one process
+# that holds create-Job RBAC. Scoping it that way is also what lets the namespace hold an
+# ordinary maintenance Job — the JWKS refresher CronJob in oidc.yaml is the first — without
+# each one having to satisfy a contract written for untrusted agent workloads.
+#
 # WHAT IT STILL DOES NOT COVER, so nobody reads more into it than it does:
 #   - It does not stop a task pod REACHING the API server; that is NetworkPolicy's job,
 #     and networkpolicy.yaml documents why the IPv6-only CNI makes that best-effort.
 #   - A mutating webhook that also stripped the `app: sandbox-task` label would evade the
 #     Pod pass. No mutating webhook is configured in this repo today.
+#   - A Job created by some OTHER identity with create-Job RBAC (a cluster admin) is not
+#     checked by the Job pass. Its pods still are, if they carry the task label.
 #   - It pins the image repository, not a digest — see the image rule for why.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -41,6 +49,13 @@ spec:
   # expression, the policy failing to compile) rejects the request. The alternative,
   # Ignore, turns any such error into a silently unenforced isolation contract.
   failurePolicy: Fail
+  # The Pod pass must stay unconditional here — pods are created by the Job controller,
+  # not by the dispatcher, so a blanket userInfo condition would switch it off entirely.
+  matchConditions:
+    - name: job-writes-come-from-the-dispatcher
+      expression: >-
+        request.kind.kind != 'Job' ||
+        request.userInfo.username == 'system:serviceaccount:ai-sandbox:sandbox-dispatcher'
   matchConstraints:
     resourceRules:
       - apiGroups: ["batch"]
@@ -193,6 +208,15 @@ spec:
           'ephemeral-storage' in c.resources.limits)
       reason: Forbidden
       message: "task containers must set cpu, memory and ephemeral-storage limits"
+    # Guaranteed QoS: requests == limits is what keeps fleet capacity a division rather
+    # than a guess, and stops a task pod being the first thing evicted under pressure.
+    # Quantity equality in CEL is numeric, so "2" and "2000m" compare equal and this does
+    # not quietly become a formatting rule.
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.resources.requests) && c.resources.requests == c.resources.limits)
+      reason: Forbidden
+      message: "task containers must request exactly what they limit (Guaranteed QoS)"
 
     # --- Job-level bounds, skipped on the Pod pass (a Pod has no such fields) ---------
     #
@@ -211,6 +235,16 @@ spec:
     - expression: "!variables.isJob || (has(object.spec.backoffLimit) && object.spec.backoffLimit == 0)"
       reason: Forbidden
       message: "task Jobs must set backoffLimit: 0 — a retry re-clones and re-prompts the model, and bills for it"
+    # This is what makes the Pod pass reachable. The Pod binding selects on
+    # app=sandbox-task, so a Job that did not stamp the label on its template would
+    # produce pods that skip the second pass entirely. Requiring it here means every Job
+    # this policy admits produces pods this policy also sees.
+    - expression: >-
+        !variables.isJob || (has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) &&
+        'app' in object.spec.template.metadata.labels &&
+        object.spec.template.metadata.labels['app'] == 'sandbox-task')
+      reason: Forbidden
+      message: "task Job pod templates must carry the app: sandbox-task label"
 
 ---
 # The bindings are what actually turn the policy on. A ValidatingAdmissionPolicy with no

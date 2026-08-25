@@ -172,6 +172,14 @@ MIRRORS = {
         lambda j: j["spec"].get("backoffLimit") == 0,
         lambda: _with_job_field(backoffLimit=6),
     ),
+    "task Job pod templates must carry the app: sandbox-task label": (
+        lambda j: j["spec"]["template"]["metadata"]["labels"].get("app") == "sandbox-task",
+        lambda: _with_template_labels({"app": "something-else"}),
+    ),
+    "task containers must request exactly what they limit (Guaranteed QoS)": (
+        lambda j: all(c["resources"]["requests"] == c["resources"]["limits"] for c in _all_containers(j)),
+        lambda: _with_container(resources={"requests": {"cpu": "1"}, "limits": {"cpu": "8"}}),
+    ),
 }
 
 
@@ -185,6 +193,12 @@ def _with_container(**container_overrides) -> dict:
 def _with_job_field(**job_overrides) -> dict:
     job = a_job()
     job["spec"].update(job_overrides)
+    return job
+
+
+def _with_template_labels(labels: dict) -> dict:
+    job = a_job()
+    job["spec"]["template"]["metadata"]["labels"] = labels
     return job
 
 
@@ -262,3 +276,19 @@ def test_policy_fails_closed_and_covers_both_kinds(policy):
     }
     assert (("batch",), ("jobs",), frozenset({"CREATE", "UPDATE"})) in rules
     assert (("",), ("pods",), frozenset({"CREATE", "UPDATE"})) in rules
+
+
+def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
+    """Scoping it to the one process holding create-Job RBAC is what lets the namespace
+    also hold an ordinary maintenance Job (the JWKS refresher) without that Job having to
+    satisfy a contract written for untrusted agent workloads.
+
+    The Pod pass must stay unconditional: pods are created by the Job controller, so a
+    blanket userInfo condition would switch the second pass off entirely."""
+    conditions = policy["spec"]["matchConditions"]
+    assert len(conditions) == 1
+    expression = conditions[0]["expression"]
+    assert "system:serviceaccount:ai-sandbox:sandbox-dispatcher" in expression
+    assert "request.kind.kind != 'Job'" in expression, (
+        "the condition must exempt non-Job requests, or it disables the Pod pass"
+    )
