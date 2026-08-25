@@ -78,6 +78,13 @@ metadata:
   namespace: ai-sandbox
   labels:
     osdc.io/module: agent-sandbox
+  annotations:
+    # First CronJob in the repo that lives inside a kustomization, so the first one
+    # kube-linter sees. A readiness probe is meaningless on a batch container that
+    # fetches a file and exits — its readiness IS its exit status, which the Job already
+    # tracks. Scoped to this object rather than added to the repo-wide exclude list,
+    # which would switch the check off for the Deployments that do need it.
+    ignore-check.kube-linter.io/no-readiness-probe: "a batch container's readiness is its exit status"
 spec:
   schedule: "17 */6 * * *"
   concurrencyPolicy: Forbid
