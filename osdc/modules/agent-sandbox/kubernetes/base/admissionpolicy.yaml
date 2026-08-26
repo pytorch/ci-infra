@@ -210,8 +210,15 @@ spec:
       message: "task containers must set cpu, memory and ephemeral-storage limits"
     # Guaranteed QoS: requests == limits is what keeps fleet capacity a division rather
     # than a guess, and stops a task pod being the first thing evicted under pressure.
-    # Quantity equality in CEL is numeric, so "2" and "2000m" compare equal and this does
-    # not quietly become a formatting rule.
+    #
+    # This is a STRING comparison, not a numeric one — assume "2" and "2000m" do NOT
+    # compare equal here. (An earlier revision of this file claimed the opposite. Nothing
+    # we could run settles it: Kubernetes ships a `quantity()` CEL conversion library,
+    # which would have no purpose if a raw field access already yielded a number, so the
+    # string reading is the safe one to design against.) That is acceptable because
+    # job_manifest() emits the identical string on both sides, and because the failure
+    # direction is a rejection rather than an admission. Do not relax the rule on the
+    # assumption that it normalises units, and reach for `quantity()` if it ever needs to.
     - expression: >-
         variables.allContainers.all(c,
           has(c.resources.requests) && c.resources.requests == c.resources.limits)
@@ -255,9 +262,11 @@ spec:
 # nobody reads. The dispatcher surfaces the rejection to its caller as a dispatch error,
 # so a genuine bug here is loud rather than silent.
 #
-# Two bindings rather than one, because the two passes need different scopes. EVERY Job in
-# ai-sandbox is checked, with no label filter — a Job that simply omitted the label would
-# otherwise skip the policy entirely, which is exactly the bug this is here to catch.
+# Two bindings rather than one, because the two passes need different scopes. Neither
+# binding label-filters the Job pass — a Job that simply omitted the label would otherwise
+# skip the policy entirely, which is one of the bugs this is here to catch. The Job pass IS
+# narrowed, but by the policy's own `matchConditions` above, to Jobs created by the
+# dispatcher's service account; nothing in these bindings does it.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
