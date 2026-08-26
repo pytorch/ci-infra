@@ -184,7 +184,7 @@ if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresh -n "$NAMESPACE"; t
   kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s \
     || echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
 else
-  echo "[agent-sandbox] Warning: could not start ${JWKS_JOB}; the CronJob will refresh the keys within 6h."
+  echo "[agent-sandbox] Warning: could not start ${JWKS_JOB}; the CronJob will attempt another refresh within 6h."
 fi
 
 # --- Prune objects earlier designs left behind (idempotent) ---

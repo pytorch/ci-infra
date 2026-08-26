@@ -593,12 +593,27 @@ def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
     )
 
 
-# Every rule's expression, pinned by digest of its WHITESPACE-NORMALISED text — _digest()
-# collapses every run of whitespace before hashing, so that a rule rewrapped across lines
-# is not reported as a change. The cost is the one blind spot this table has: whitespace
-# INSIDE a quoted CEL string literal is a semantic change that leaves the digest alone,
-# and nothing else in this file would see it either. No expression here contains a literal
-# with a space in it today; if one ever does, that rule needs its own assertion.
+# Every rule's expression, pinned by digest of its EXACT parsed text — see _digest(). The
+# alternative, and it is a genuine trade rather than a strict improvement: hashing the
+# whitespace-NORMALISED expression instead tolerates reformatting, at the price of being
+# blind to whitespace inside a quoted CEL literal, where 'a  b' -> 'a b' IS semantic.
+#
+# Measured on this file rather than argued, because the earlier wording here claimed exact
+# hashing cost nothing and that is false. 27 validations: 6 are folded block scalars and 21
+# are one-line double-quoted scalars. Folding preserves the newline before a MORE-INDENTED
+# line, so re-indenting one continuation line of the privilege rule moves its exact digest
+# 8c0bbaf088a3 -> 00cb38b33db1 while the normalised digest does not move at all. That false
+# alarm is the live cost. The benefit is currently unreachable: NONE of the 15 quoted CEL
+# literals in this file contains a space, so there is no literal whitespace to be blind to
+# yet. Exact hashing is kept because it fails in the safe direction — a spurious re-pin
+# prompt, never a missed edit — and because the day a literal does gain a space, the
+# normalised version would go quietly wrong. Revisit deliberately, not by accident.
+#
+# THE VALUES BELOW WERE RE-PINNED WHOLESALE at that switch. That is legitimate here only
+# because the INPUT was independently shown unchanged — the policy file is byte-identical
+# across main, this commit's parent, this commit and the branch tip — so nothing could ride
+# along inside a recomputation. Six stored values actually moved, all validations. Any
+# FUTURE mismatch is a real edit and gets the full treatment below.
 #
 # The MIRRORS table above is keyed by MESSAGE, which cannot see an expression edited in
 # place with its message untouched — and that is the drift most likely to actually happen,
@@ -621,13 +636,13 @@ EXPRESSION_DIGESTS = {
     "task pods must declare no init containers": "37fef9251087",
     "task containers must not use envFrom — it pulls a whole Secret or ConfigMap into the sandbox": "89e7123f9143",
     "task container env must be literal values — valueFrom reads Secrets, ConfigMaps and pod fields into the sandbox": "794a441e820d",
-    "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged": "97536754281c",
-    "task containers must not add Linux capabilities": "ddba99823b9e",
-    "task containers must not unmask /proc": "9befcf62623e",
+    "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged": "8c0bbaf088a3",
+    "task containers must not add Linux capabilities": "d15fed6ab652",
+    "task containers must not unmask /proc": "f9d3102f1226",
     "task containers must not publish a hostPort": "aadf2d231816",
-    "task containers must set cpu, memory and ephemeral-storage limits": "c6288f00cdd5",
-    "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": "890db686ccb0",
-    "task containers must request exactly what they limit (Guaranteed QoS)": "e3569a0a6e49",
+    "task containers must set cpu, memory and ephemeral-storage limits": "82ea58d521a8",
+    "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": "cbe9db10c667",
+    "task containers must request exactly what they limit (Guaranteed QoS)": "e5824532099d",
     "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it": "4490bf5bfaf0",
     "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": "3bf5faca144b",
     "task Jobs must run one pod at a time (parallelism: 1)": "240258b6ce47",
@@ -653,7 +668,14 @@ VARIABLE_DIGESTS = {
 
 
 def _digest(expression: str) -> str:
-    return hashlib.sha256(re.sub(r"\s+", " ", expression).strip().encode()).hexdigest()[:12]
+    """The EXACT parsed expression, not a whitespace-normalised one.
+
+    Normalising first would have collapsed whitespace inside CEL string literals too, so
+    a real semantic change like 'a  b' -> 'a b' would keep its digest. YAML has already
+    folded these block scalars by the time we see them, so re-indenting or reflowing an
+    expression does not move the digest on its own.
+    """
+    return hashlib.sha256(expression.encode()).hexdigest()[:12]
 
 
 def test_no_variable_changed_without_being_rechecked(policy):

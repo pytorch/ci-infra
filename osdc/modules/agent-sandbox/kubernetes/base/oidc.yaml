@@ -14,7 +14,7 @@
 # this ConfigMap with an empty placeholder, which made every deploy an authentication
 # outage: once the refresher had written real keys, the manifest's seed differed from the
 # live object, so `kubectl apply` dutifully put the empty value back. The refresher
-# refilled it seconds later and nothing looked wrong — but only because REQUIRE_AUTH was
+# refilled it shortly after and nothing looked wrong — but only because REQUIRE_AUTH was
 # false and nobody was authenticating yet.
 #
 # So the object is declared here (it must exist before the Deployment mounts it, and it
@@ -22,10 +22,17 @@
 # three-way apply leaves a field alone when it is absent from both the last-applied
 # annotation and the incoming config, so the keys survive every subsequent deploy.
 #
-# Do not "tidy" this by re-adding a placeholder. Until the first refresh lands, the
-# mounted directory has no jwks.json and the dispatcher refuses every token with "no
-# signing keys available" — fail-closed, and deploy.sh runs a refresh immediately after
-# applying precisely so that window is seconds rather than up to six hours.
+# Do not "tidy" this by re-adding a placeholder, and if you ever do, know that taking it
+# back out is NOT free: once a seeded manifest has been applied, `data.jwks.json` is in
+# that object's last-applied annotation, and the deploy that removes the field from the
+# manifest deletes it from the live object once before the no-data version becomes the
+# steady state. This file has never shipped with a seed, so there is nothing to migrate
+# today — that is a property to preserve, not a coincidence.
+#
+# Until the first refresh lands the mounted directory has no jwks.json and the dispatcher
+# refuses every token with "no signing keys available" — fail-closed. deploy.sh runs a
+# refresh immediately after applying so that window is a minute or two (a ConfigMap volume
+# updates on the kubelet's sync period, not instantly) rather than up to six hours.
 apiVersion: v1
 kind: ConfigMap
 metadata:
