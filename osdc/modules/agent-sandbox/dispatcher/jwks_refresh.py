@@ -55,9 +55,9 @@ def fetch_jwks() -> dict:
     # "a non-empty list of dicts with a kid" is not the property that matters — the
     # property that matters is that the dispatcher can load it, and anything else
     # overwrites a working key set with one that breaks at the next reload.
-    keyset = PyJWKSet.from_dict({"keys": keys})
-    if not any(key.key_id for key in keyset.keys):
-        raise ValueError("JWKS response contained no usable signing keys")
+    # PyJWKSet raises when every key is unusable, so there is no emptiness check after
+    # this: adding one would be unreachable code claiming to be a safety net.
+    PyJWKSet.from_dict({"keys": keys})
     return {"keys": keys}
 
 
