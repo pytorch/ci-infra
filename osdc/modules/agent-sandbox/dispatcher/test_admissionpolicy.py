@@ -414,12 +414,12 @@ EXPRESSION_DIGESTS = {
     "task pods must declare no init containers": "37fef9251087",
     "task containers must not use envFrom — it pulls a whole Secret or ConfigMap into the sandbox": "89e7123f9143",
     "task container env must be literal values — valueFrom reads Secrets, ConfigMaps and pod fields into the sandbox": "794a441e820d",
-    "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged": "97536754281c",
-    "task containers must not add Linux capabilities": "ddba99823b9e",
-    "task containers must not unmask /proc": "9befcf62623e",
+    "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged": "8c0bbaf088a3",
+    "task containers must not add Linux capabilities": "d15fed6ab652",
+    "task containers must not unmask /proc": "f9d3102f1226",
     "task containers must not publish a hostPort": "aadf2d231816",
-    "task containers must set cpu, memory and ephemeral-storage limits": "c6288f00cdd5",
-    "task containers must request exactly what they limit (Guaranteed QoS)": "e3569a0a6e49",
+    "task containers must set cpu, memory and ephemeral-storage limits": "82ea58d521a8",
+    "task containers must request exactly what they limit (Guaranteed QoS)": "e5824532099d",
     "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": "3bf5faca144b",
     "task Jobs must run one pod at a time (parallelism: 1)": "240258b6ce47",
     "task Jobs must run exactly one pod (completions: 1)": "dd57deb1df82",
@@ -444,7 +444,22 @@ VARIABLE_DIGESTS = {
 
 
 def _digest(expression: str) -> str:
-    return hashlib.sha256(re.sub(r"\s+", " ", expression).strip().encode()).hexdigest()[:12]
+    """The EXACT parsed expression, not a whitespace-normalised one.
+
+    Normalising first would have collapsed whitespace inside CEL string literals too, so
+    a real semantic change like 'a  b' -> 'a b' would keep its digest. YAML has already
+    folded these block scalars by the time we see them, so re-indenting or reflowing an
+    expression does not move the digest on its own.
+    """
+    return hashlib.sha256(expression.encode()).hexdigest()[:12]
+
+
+def test_every_rule_has_a_distinct_message(policy):
+    """Both MIRRORS and EXPRESSION_DIGESTS are keyed by message, so two rules sharing one
+    would collapse into a single entry and quietly leave the other rule unguarded."""
+    messages = [v["message"] for v in policy["spec"]["validations"]]
+    duplicated = sorted({m for m in messages if messages.count(m) > 1})
+    assert not duplicated, f"these messages are used by more than one rule: {duplicated}"
 
 
 def test_no_variable_changed_without_being_rechecked(policy):
