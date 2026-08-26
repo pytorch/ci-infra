@@ -396,6 +396,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.8.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
@@ -489,6 +491,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
@@ -589,6 +593,8 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.16.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
