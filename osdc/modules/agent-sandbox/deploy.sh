@@ -168,16 +168,24 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
   | kubectl_apply_if_changed -f -
 
 # --- Populate the OIDC signing keys now, not at the CronJob's next tick ---
-# The ConfigMap ships deliberately stale, so until this runs the dispatcher refuses every
-# authenticated request. The CronJob is every 6 hours, which is the wrong amount of time
-# to wait after a first deploy. Named per run so repeated deploys do not collide; a
-# failure warns rather than aborts, because the deploy is otherwise complete and the
-# CronJob will retry on its own.
+# The ConfigMap carries no keys until a refresh runs, so until this succeeds the
+# dispatcher refuses every authenticated request. The CronJob is every 6 hours, which is
+# the wrong amount of time to wait after a first deploy. Named per run so repeated
+# deploys do not collide.
+#
+# BOTH steps are guarded, and that is the point: under `set -euo pipefail` an unguarded
+# `kubectl create job` aborts the whole deploy, which is not what a failed key fetch
+# deserves — everything else has already applied and the CronJob retries on its own. An
+# earlier revision guarded only the wait and claimed in this comment that a failure
+# warns; it did not.
 JWKS_JOB="jwks-refresh-deploy-$(date +%s)"
 echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
-kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresh -n "$NAMESPACE"
-kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s \
-  || echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
+if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresh -n "$NAMESPACE"; then
+  kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s \
+    || echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
+else
+  echo "[agent-sandbox] Warning: could not start ${JWKS_JOB}; the CronJob will refresh the keys within 6h."
+fi
 
 # --- Prune objects earlier designs left behind (idempotent) ---
 # `kubectl apply` never deletes what the manifests stop containing, so anything dropped

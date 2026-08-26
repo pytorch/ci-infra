@@ -9,6 +9,23 @@
 # The split is the security property. Write access to this ConfigMap is the power to
 # choose which signing keys the dispatcher trusts, so the refresher's Role names this one
 # object and grants nothing else in the namespace.
+#
+# DELIBERATELY NO `data:` BELOW, and it must stay that way. An earlier revision seeded
+# this ConfigMap with an empty placeholder, which made every deploy an authentication
+# outage: once the refresher had written real keys, the manifest's seed differed from the
+# live object, so `kubectl apply` dutifully put the empty value back. The refresher
+# refilled it seconds later and nothing looked wrong — but only because REQUIRE_AUTH was
+# false and nobody was authenticating yet.
+#
+# So the object is declared here (it must exist before the Deployment mounts it, and it
+# should carry the module's labels) and its CONTENT belongs to the refresher alone. A
+# three-way apply leaves a field alone when it is absent from both the last-applied
+# annotation and the incoming config, so the keys survive every subsequent deploy.
+#
+# Do not "tidy" this by re-adding a placeholder. Until the first refresh lands, the
+# mounted directory has no jwks.json and the dispatcher refuses every token with "no
+# signing keys available" — fail-closed, and deploy.sh runs a refresh immediately after
+# applying precisely so that window is seconds rather than up to six hours.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,13 +33,6 @@ metadata:
   namespace: ai-sandbox
   labels:
     osdc.io/module: agent-sandbox
-data:
-  # Seeded deliberately stale rather than empty. An absent file and a placeholder both
-  # refuse every token, but the placeholder says WHY in the dispatcher's own words
-  # ("the JWKS refresher has stopped") instead of surfacing as a missing mount. The
-  # refresher overwrites the whole value on its first successful run.
-  jwks.json: |
-    {"fetched_at": 0, "jwks": {"keys": []}}
 
 ---
 apiVersion: v1

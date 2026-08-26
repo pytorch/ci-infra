@@ -277,6 +277,14 @@ class TestHTTPSurface:
         assert exc.value.code == 403
         assert "set by policy" in json.loads(exc.value.read())["error"]
 
+    def test_the_caller_cannot_choose_the_model(self, server):
+        """`repo` was refused and `model` was accepted-then-dropped, so a caller could ask
+        for a cheap model, be charged for the policy's, and never be told."""
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"model": "us.anthropic.something-expensive"})
+        assert exc.value.code == 403
+        assert "set by policy" in json.loads(exc.value.read())["error"]
+
     def test_naming_the_policy_repository_is_still_accepted(self, server):
         """The existing caller sends repo explicitly; it keeps working as long as it
         agrees with policy."""

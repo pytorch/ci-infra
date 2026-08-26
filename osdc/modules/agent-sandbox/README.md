@@ -59,12 +59,14 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"repo","ref","task","model"?,"wait"?}` →
+- `POST /run` body `{"ref"?,"task"?,"wait"?}` →
   `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
 
   Waits for the task by default, so a caller sees the result on the same connection —
   budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
-  returns `202 {"task_id"}` instead.
+  returns `202 {"task_id"}` instead. `repo` and `model` are still accepted for
+  compatibility but must agree with policy, and disagreeing is a `403` — see *Who may
+  call* below for why the request does not get to choose them.
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
 - `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
@@ -87,8 +89,8 @@ be renamed and its old name re-registered by someone else.
 **The request decides less than it looks like it does.** Verification produces a frozen
 `Grant`, and the Job is built from the Grant alone — never from the request body. The
 repository to clone and the model are policy, so a caller cannot name either; passing a
-`repo` that disagrees with policy is refused outright rather than quietly substituted. The
-caller contributes the prompt and the commit to read.
+`repo` or a `model` that disagrees with policy is refused outright rather than quietly
+substituted. The caller contributes the prompt and the commit to read.
 
 Two residuals worth knowing:
 
@@ -128,6 +130,12 @@ else. GitHub's signing keys therefore arrive as a mounted ConfigMap, refreshed e
 hours by a CronJob (`kubernetes/base/oidc.yaml`) whose Role can patch that one named
 object and nothing more.
 
+The manifest declares that ConfigMap with **no `data`** — the content belongs to the
+refresher. That is load-bearing rather than tidy: seeding it in the manifest meant every
+`kubectl apply` put the seed back over live keys, so each deploy blanked them. `deploy.sh`
+runs a refresh immediately after applying, so the window with no keys is seconds rather
+than up to six hours, and the dispatcher fails closed throughout it.
+
 The refresher writes a `fetched_at` timestamp *into* the document. That is not
 decoration: a ConfigMap volume only updates when its content changes and GitHub rotates
 rarely, so judging freshness by file mtime would age out a perfectly healthy key set
@@ -165,17 +173,17 @@ just deploy-module meta-staging-aws-ue1 agent-sandbox             # IRSA + proxy
 # -m 900: the call waits for the task, and a cold fleet waits for a Karpenter node.
 curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -H 'Content-Type: application/json' \
-  -d '{"repo":"pytorch/pytorch","ref":"main","task":"Summarize the build layout",
-       "model":"us.anthropic.claude-haiku-4-5-20251001-v1:0"}'
+  -d '{"ref":"main","task":"Summarize the build layout"}'
 
 # Or don't hold the connection open:
 TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
-  -d '{"repo":"pytorch/pytorch","wait":false}' | jq -r .task_id)
+  -d '{"wait":false}' | jq -r .task_id)
 curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
 ```
-Any caller can pick the model per request. Omitting `model` falls back to
-`BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
-`agent_sandbox.default_model_id`.
+**The caller no longer picks the repository or the model.** Both come from the `Grant`,
+and sending either is a `403` rather than a value that is quietly accepted and dropped.
+The model is `BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
+`agent_sandbox.default_model_id`; per-caller models arrive with the capability manifest.
 
 ## Capacity
 
