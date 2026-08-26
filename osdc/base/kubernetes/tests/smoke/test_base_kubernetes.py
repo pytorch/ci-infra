@@ -1,5 +1,7 @@
 """Smoke tests for base Kubernetes resources (DaemonSets, StorageClass, nodes)."""
 
+import json
+
 import pytest
 from helpers import assert_daemonset_healthy, filter_services, run_kubectl
 
@@ -28,14 +30,20 @@ class TestBaseDaemonSets:
     def test_registry_mirror_ecr_gate_matches_cluster_config(self, all_daemonsets, resolve_config):
         """Both directions: a stale ConfigMap routes CI pulls at a Harbor with no ECR endpoint."""
         enabled = bool(resolve_config("harbor.ecr_pullthrough", False))
-        result = run_kubectl(["get", "configmap", "registry-mirror-ecr", "--ignore-not-found"], namespace=NAMESPACE)
-        present = bool(result) and result.get("kind") == "ConfigMap"
+        # --ignore-not-found prints nothing when absent, which is not JSON — so read
+        # it raw and parse only when there is something to parse.
+        raw = run_kubectl(
+            ["get", "configmap", "registry-mirror-ecr", "--ignore-not-found", "-o", "json"],
+            namespace=NAMESPACE,
+            json_output=False,
+        )
+        present = bool(raw.strip())
         assert present == enabled, (
             f"harbor.ecr_pullthrough={enabled} but registry-mirror-ecr ConfigMap "
             f"{'exists' if present else 'is missing'} in {NAMESPACE}"
         )
         if enabled:
-            registry = result.get("data", {}).get("registry", "")
+            registry = json.loads(raw).get("data", {}).get("registry", "")
             msg = f"registry-mirror-ecr points at {registry!r}, which is not an ECR registry host"
             assert ".dkr.ecr." in registry, msg
             assert registry.endswith(".amazonaws.com"), msg
