@@ -247,3 +247,22 @@ class TestKeySetHandling:
         monkeypatch.setattr(oidc, "JWKS_MAX_AGE_S", -1)
         with pytest.raises(oidc.InvalidToken, match="refresher has stopped"):
             oidc.verify(a_token(keys))
+
+    def test_the_key_set_is_not_re_read_on_every_request(self, keys, jwks_file):
+        """Each in-flight task's caller hits verify(); re-reading and re-parsing the
+        mounted file every time is pure overhead on the request path."""
+        assert oidc.verify(a_token(keys))
+        jwks_file.unlink()
+        assert oidc.verify(a_token(keys))["event_name"] == "workflow_run", (
+            "the second call must be served from the cache, not from the file"
+        )
+
+    def test_an_unparseable_key_file_refuses(self, tmp_path, monkeypatch, keys):
+        """A half-written or corrupted mount must fail closed, not raise something no
+        caller catches."""
+        path = tmp_path / "jwks.json"
+        path.write_text("{ not json")
+        monkeypatch.setattr(oidc, "JWKS_PATH", path)
+        oidc._CACHE.update(keyset=None, loaded_at=0.0)
+        with pytest.raises(oidc.InvalidToken, match="unreadable"):
+            oidc.verify(a_token(keys))
