@@ -537,3 +537,19 @@ def _deployed_env(name: str) -> str | None:
                 assert "value" in entry, f"{name} is set from {entry.get('valueFrom')}, which this test cannot read"
                 return entry["value"]
     return None
+
+
+def test_the_jwks_configmap_ships_with_no_data(documents):
+    """Seeding it in the manifest made every deploy blank the live signing keys: apply
+    reasserts what the manifest declares, so the seed overwrote whatever the refresher had
+    written. The content belongs to the refresher; declaring any `data` here brings the
+    bug straight back."""
+    oidc_path = POLICY_PATH.parent / "oidc.yaml"
+    configmap = next(
+        d
+        for d in yaml.safe_load_all(oidc_path.read_text())
+        if d and d["kind"] == "ConfigMap" and d["metadata"]["name"] == "oidc-jwks"
+    )
+    assert "data" not in configmap, (
+        "oidc-jwks must declare no data — see the comment above it in oidc.yaml before changing this"
+    )
