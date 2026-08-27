@@ -22,6 +22,11 @@ output "vpc_ipv6_cidr_block" {
   value = module.vpc.vpc_ipv6_cidr_block
 }
 
+output "s3_vpc_endpoint_id" {
+  description = "S3 Gateway VPC Endpoint — keeps in-region S3 traffic off the NAT gateways"
+  value       = module.vpc.s3_vpc_endpoint_id
+}
+
 output "private_subnet_ids" {
   value = module.vpc.private_subnet_ids
 }
