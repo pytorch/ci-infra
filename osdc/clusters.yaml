@@ -45,6 +45,10 @@ defaults:
     registry_replicas: 4
     nginx_replicas: 6
     pdb_max_unavailable: 1  # conservative: at most 1 pod down per component
+    # Registry holding the PyTorch CI images, for harbor.ecr_pullthrough. Not
+    # derived from the deploying account: LF clusters are in 391835788720 and
+    # pull these same images cross-account.
+    ecr_pullthrough_registry: "308535385114.dkr.ecr.us-east-1.amazonaws.com"
 
   # --- Module defaults ---
   karpenter:
@@ -310,6 +314,10 @@ clusters:
       registry_replicas: 1
       nginx_replicas: 1
       pdb_max_unavailable: "100%"  # aggressive: staging has 1 replica each
+      # Proxy the private us-east-1 ECR through Harbor so CI image layers are
+      # served from this cluster's own bucket instead of cross-region S3.
+      # Staging-only while the ECR adapter's auth is being validated.
+      ecr_pullthrough: true
     karpenter:
       replicas: 1
       log_level: debug
@@ -388,6 +396,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.8.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
@@ -481,6 +491,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
@@ -559,6 +571,11 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.28.0.0/16"  # next free /16 after meta-staging-aws-ue2's 10.24.0.0/16
+    # Off-region: the CI images live in us-east-1 ECR, whose layer bucket is not
+    # covered by this cluster's us-west-2 S3 prefix list. On from day one so the
+    # Harbor cache warms with the cluster instead of after a NAT bill.
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
@@ -639,6 +656,8 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.16.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:

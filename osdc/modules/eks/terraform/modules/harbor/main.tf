@@ -102,6 +102,39 @@ resource "aws_iam_role_policy_attachment" "harbor_registry" {
   policy_arn = aws_iam_policy.harbor_registry.arn
 }
 
+# GetAuthorizationToken takes no resource qualifier — AWS requires "*".
+resource "aws_iam_policy" "harbor_ecr_pullthrough" {
+  name        = "${var.cluster_name}-harbor-ecr-pullthrough"
+  description = "Harbor proxy-cache read access to private ECR for ${var.cluster_name}"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AllowEcrAuth"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowEcrPull"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
+          "ecr:DescribeImages",
+          "ecr:DescribeRepositories",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:ListImages"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
 # IAM User for Harbor S3 access (static credentials)
 # The goharbor/distribution S3 driver hardcodes its AWS credential chain
 # and does not support IRSA (web identity tokens). A static IAM user is
@@ -114,6 +147,13 @@ resource "aws_iam_user" "harbor_s3" {
 resource "aws_iam_user_policy_attachment" "harbor_s3" {
   user       = aws_iam_user.harbor_s3.name
   policy_arn = aws_iam_policy.harbor_registry.arn
+}
+
+# User, not the IRSA role: the proxy cache runs in harbor-core, which uses the
+# default ServiceAccount and cannot reach IMDS.
+resource "aws_iam_user_policy_attachment" "harbor_ecr_pullthrough" {
+  user       = aws_iam_user.harbor_s3.name
+  policy_arn = aws_iam_policy.harbor_ecr_pullthrough.arn
 }
 
 resource "aws_iam_access_key" "harbor_s3" {
