@@ -55,3 +55,8 @@ output "egress_only_internet_gateway_id" {
   description = "The ID of the Egress-Only Internet Gateway (IPv6 outbound from private subnets)"
   value       = aws_egress_only_internet_gateway.this.id
 }
+
+output "s3_vpc_endpoint_id" {
+  description = "The ID of the S3 Gateway VPC Endpoint (keeps in-region S3 traffic off the NAT gateways)"
+  value       = aws_vpc_endpoint.s3.id
+}

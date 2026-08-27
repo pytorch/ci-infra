@@ -1898,6 +1898,31 @@ _deploy-harbor cluster:
 
     # Configure proxy cache projects
     echo "Configuring proxy cache projects..."
+    ECR_PULLTHROUGH=$(uv run "{{UPSTREAM}}/scripts/cluster-config.py" "{{cluster}}" harbor.ecr_pullthrough "false")
+    ECR_HOST=$(uv run "{{UPSTREAM}}/scripts/cluster-config.py" "{{cluster}}" harbor.ecr_pullthrough_registry)
+    if [[ "$ECR_PULLTHROUGH" == "true" ]]; then
+        # Same IAM user as S3: the ECR adapter shares the no-IRSA constraint.
+        export HARBOR_ECR_URL="https://${ECR_HOST}" HARBOR_S3_KEY HARBOR_S3_SECRET
+        ECR_CM_WANT="${ECR_HOST}"
+    else
+        ECR_CM_WANT=""
+    fi
+    # Env var, so only read at pod start — restart only when it changes.
+    ECR_CM_HAVE=$(kubectl get configmap registry-mirror-ecr -n kube-system \
+        -o jsonpath='{.data.registry}' 2>/dev/null || echo "")
+    if [[ "$ECR_CM_WANT" != "$ECR_CM_HAVE" ]]; then
+        if [[ -n "$ECR_CM_WANT" ]]; then
+            kubectl create configmap registry-mirror-ecr \
+                --namespace kube-system \
+                --from-literal=registry="${ECR_CM_WANT}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+        else
+            kubectl delete configmap registry-mirror-ecr --namespace kube-system \
+                --ignore-not-found >/dev/null
+        fi
+        echo "  ECR pull-through changed ('${ECR_CM_HAVE}' -> '${ECR_CM_WANT}'), restarting registry-mirror-config"
+        kubectl rollout restart daemonset/registry-mirror-config -n kube-system
+    fi
     just _configure-harbor-projects
     echo ""
     echo "Harbor deployed."
@@ -1951,6 +1976,11 @@ _configure-harbor-projects:
         echo "  Waiting for Harbor API (attempt $hp_attempt/$HP_MAX_RETRIES)..."
         sleep 5
     done
+
+    if [[ -n "${HARBOR_ECR_URL:-}" ]]; then
+        CRED_ARGS="${CRED_ARGS} --ecr-registry-url ${HARBOR_ECR_URL}"
+        CRED_ARGS="${CRED_ARGS} --ecr-access-key ${HARBOR_S3_KEY} --ecr-secret-key ${HARBOR_S3_SECRET}"
+    fi
 
     uv run {{SCRIPTS}}/python/configure_harbor_projects.py \
         --harbor-url http://localhost:8080 \
@@ -2188,6 +2218,36 @@ smoke cluster:
     fi
     echo "Smoke tests completed in ${elapsed}"
     exit $rc
+
+# Build the ai-sandbox gVisor AMI (nodepools-agent-sandbox) in a cluster's region
+#
+# The ai-sandbox fleet selects this AMI by tag, so it must exist before the fleet
+# can launch a node. Rebuild to pick up AL2023 CVE fixes or a newer gVisor —
+# unlike the al2023@latest fleets, this one only moves when the AMI is rebuilt.
+build-agent-sandbox-ami cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    K8S_VERSION=$(uv run {{CFG}} "$CLUSTER" eks_version)
+    PACKER_DIR="{{UPSTREAM}}/modules/nodepools-agent-sandbox/packer"
+
+    echo "Building ai-sandbox gVisor AMI for $CLUSTER ($REGION, k8s $K8S_VERSION)..."
+    cd "$PACKER_DIR"
+    packer init .
+    packer build \
+        -var "aws_region=${REGION}" \
+        -var "cluster_name=${CNAME}" \
+        -var "k8s_version=${K8S_VERSION}" \
+        {{args}} .
+
+    echo ""
+    echo "Built. The ai-sandbox fleet picks it up on the next node launch;"
+    echo "existing nodes keep their current AMI until they are recycled:"
+    echo "    just recycle-nodes $CLUSTER"
 
 # Run full integration test against a cluster
 integration-test cluster *args:
@@ -2521,19 +2581,58 @@ lint:
         return $rc
     }
 
+    # Terraform roots: every main.tf that is not a nested submodule of one. The
+    # exclusion has to name terraform/modules specifically — every root here lives
+    # under osdc/modules/, so a bare '*/modules/*' matches all of them and silently
+    # leaves nothing to lint.
+    _tf_roots() {
+        for parent in $(_src_dirs base) $(_src_dirs modules); do
+            find "$parent" -path '*/.scratch' -prune -o \
+                -name 'main.tf' -not -path '*/terraform/modules/*' -print0 2>/dev/null
+        done
+    }
+
     lint_tflint() {
         local roots=()
-        for parent in $(_src_dirs modules); do
-            while IFS= read -r -d '' f; do
-                roots+=("$(dirname "$f")")
-            done < <(find "$parent" -path '*/.scratch' -prune -o -name 'main.tf' -not -path '*/modules/*' -print0 2>/dev/null)
-        done
+        while IFS= read -r -d '' f; do
+            roots+=("$(dirname "$f")")
+        done < <(_tf_roots)
         [[ ${#roots[@]} -eq 0 ]] && return 0
         tflint --init --config "{{UPSTREAM}}/.tflint.hcl" 2>/dev/null || true
         local rc=0
         for dir in "${roots[@]}"; do
             echo "  linting: ${dir#{{UPSTREAM}}/}"
             tflint --chdir="$dir" --config "{{UPSTREAM}}/.tflint.hcl" || rc=1
+        done
+        return $rc
+    }
+
+    lint_tofu_validate() {
+        # `tofu fmt` only requires canonical HCL and tflint parses each root without
+        # resolving it, so a root can be green on both and fail the moment anyone
+        # runs it — an undeclared provider, a bad type, a typo'd attribute. This is
+        # the whole check a module root gets before its first deploy: `just plan`
+        # only reaches modules a cluster in clusters.yaml enables, and the plan
+        # workflow's matrix is prod clusters only.
+        #
+        # -backend=false: no state, no credentials, no lock table. What this cannot
+        # prove is the terraform_remote_state reads — those need a real plan against
+        # a cluster's state.
+        local roots=() rc=0
+        while IFS= read -r -d '' f; do
+            roots+=("$(dirname "$f")")
+        done < <(_tf_roots)
+        [[ ${#roots[@]} -eq 0 ]] && return 0
+        # Shared plugin cache: otherwise every root re-downloads the AWS provider.
+        export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${HOME}/.terraform.d/plugin-cache}"
+        mkdir -p "$TF_PLUGIN_CACHE_DIR"
+        for dir in "${roots[@]}"; do
+            echo "  validating: ${dir#{{UPSTREAM}}/}"
+            (
+                cd "$dir" || exit 1
+                tofu init -backend=false -input=false -no-color >/dev/null || exit 1
+                tofu validate -no-color
+            ) || rc=1
         done
         return $rc
     }
@@ -2554,6 +2653,7 @@ lint:
     # Format: "display name:function_name"
     LINTERS=(
         "tofu fmt:lint_tofu_fmt"
+        "tofu validate:lint_tofu_validate"
         "shellcheck:lint_shellcheck"
         "shfmt:lint_shfmt"
         "ruff check:lint_ruff_check"

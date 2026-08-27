@@ -302,6 +302,25 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         gpu_taints = ""
         gpu_tags = ""
 
+    # ----- Custom AMI override -----
+    # A def may select its own AMI by tag instead of the stock AL2023 alias, for
+    # fleets that need something baked into the image (the ai-sandbox fleet needs
+    # gVisor's runsc, which cannot be installed at boot without restarting
+    # containerd). Tags rather than a name glob so the AMI naming scheme can
+    # change without touching the nodepool.
+    #
+    # Trade-off worth knowing: `alias: al2023@latest` picks up AL2023 CVE fixes
+    # automatically on node rotation; a custom AMI only moves when it is rebuilt.
+    # The alias also tracks the cluster's Kubernetes version, which tags do not —
+    # a def using this knob owns keeping its image in step with an EKS bump.
+    ami_selector_tags = nodepool_def.get("ami_selector_tags") or {}
+    if ami_selector_tags:
+        tag_lines = "\n".join(f'        {k}: "{v}"' for k, v in sorted(ami_selector_tags.items()))
+        ami_family_block = "  amiFamily: AL2023"
+        ami_selector_block = f"""  amiSelectorTerms:
+    - tags:
+{tag_lines}"""
+
     # ----- Baremetal consolidate_after override -----
     # Baremetal instances take much longer to provision, so they get a longer
     # consolidation window to avoid unnecessary churn.
@@ -586,7 +605,13 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
 
     # Only set optional keys when explicitly provided — leaving them absent
     # lets generate_nodepool_yaml() fall through to its own defaults.
-    for key in ("node_compactor", "topology_manager_policy", "topology_manager_scope", "user_data_script"):
+    for key in (
+        "node_compactor",
+        "topology_manager_policy",
+        "topology_manager_scope",
+        "user_data_script",
+        "ami_selector_tags",
+    ):
         val = inst.get(key)
         if val is not None:
             nodepool_def[key] = val
