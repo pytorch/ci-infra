@@ -37,6 +37,60 @@ WORKFLOW_TIMEOUT_MINUTES = 60
 POLL_INTERVAL_SECONDS = 30
 
 
+ECR_REGION = "us-east-1"
+ECR_ACCOUNT = "308535385114"
+ECR_REPOSITORY = "pytorch/ci-image"
+
+
+def verify_ecr_image_exists(tag: str) -> None:
+    """Fail now if the ECR tag is absent, instead of hanging for two hours.
+
+    test-ecr-pull runs the image as a job `container:`, so a missing tag surfaces
+    as ImagePullBackOff during "Initialize containers" — which Kubernetes retries
+    until the 7200s hook timeout. The job log shows a hang with no cause, and two
+    very different situations look identical from there: pytorch has not rebuilt
+    for the current .ci/docker tree-SHA yet (transient, worth re-running later), or
+    the image name has been retired (permanent — clang18 became clang21 and the job
+    hung on every run until someone read the ECR API by hand).
+
+    Only an unambiguous ImageNotFoundException fails the run. If the check itself
+    cannot run — no aws CLI, no credentials, throttling — warn and continue rather
+    than blocking the whole integration test on an auxiliary lookup.
+    """
+    cmd = [
+        "aws",
+        "ecr",
+        "describe-images",
+        "--region",
+        ECR_REGION,
+        "--registry-id",
+        ECR_ACCOUNT,
+        "--repository-name",
+        ECR_REPOSITORY,
+        "--image-ids",
+        f"imageTag={tag}",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        log.warning("Could not verify the ECR tag (%s) — continuing; a miss will surface as a job timeout", exc)
+        return
+
+    if proc.returncode == 0:
+        log.info("ECR pull test — tag verified present")
+        return
+
+    if "ImageNotFoundException" in proc.stderr:
+        log.error("ECR image tag does not exist: %s", tag)
+        log.error("  repository: %s/%s (%s)", ECR_ACCOUNT, ECR_REPOSITORY, ECR_REGION)
+        log.error("  Either pytorch has not built this .ci/docker tree-SHA yet, or the image name")
+        log.error("  was retired. Check their docker-builds.yml matrix and pass a current name via")
+        log.error("  --ecr-pull-image-name (the default lives in this file).")
+        sys.exit(1)
+
+    log.warning("Could not verify the ECR tag: %s", (proc.stderr or "").strip()[:200])
+
+
 def branch_name(cluster_id: str) -> str:
     """Return a cluster-specific branch name to avoid collisions between parallel runs."""
     return f"osdc-integration-test-{cluster_id}"
@@ -207,7 +261,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
     parser.add_argument(
         "--ecr-pull-image-name",
-        default="pytorch-linux-jammy-py3.10-clang18",
+        default="pytorch-linux-jammy-linter",
         help="ECR image name used by the test-ecr-pull job (debug override)",
     )
     return parser.parse_args()
@@ -288,10 +342,11 @@ def main():
                 sys.exit(1)
             ecr_pull_resolved_tag = f"{ecr_image_name}-{ecr_pull_sha}"
             ecr_pull_image_url = (
-                f"308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{ecr_pull_resolved_tag}"
+                f"{ECR_ACCOUNT}.dkr.ecr.{ECR_REGION}.amazonaws.com/{ECR_REPOSITORY}:{ecr_pull_resolved_tag}"
             )
             log.info("ECR pull test — pytorch .ci/docker tree-SHA: %s", ecr_pull_sha)
             log.info("ECR pull test — image URL: %s", ecr_pull_image_url)
+            verify_ecr_image_exists(ecr_pull_resolved_tag)
         else:
             log.info("ECR pull test — skipped (cluster has no arc-runners module)")
             ecr_pull_sha = ""

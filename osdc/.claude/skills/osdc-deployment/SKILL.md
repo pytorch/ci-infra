@@ -291,29 +291,35 @@ arc:
   controller_memory_limit: "4Gi"
 ```
 
-**BuildKit:** Defaults provide only `replicas_per_arch: 12`. All other knobs are per-cluster overrides:
+**BuildKit:** Defaults provide `replicas_per_arch`, both instance-type maps, and `autoscaling.enabled`. Every cluster inherits the instance-type maps; the remaining knobs are per-cluster overrides:
 ```yaml
 defaults:
   buildkit:
     replicas_per_arch: 12     # Used when a cluster omits per-arch replica counts
+    amd64_instance_types:     # instance type -> pods per node, in preference order
+      m6id.24xlarge: 2
+      m6id.12xlarge: 1
+    arm64_instance_types:
+      m7gd.16xlarge: 4
+    autoscaling:
+      enabled: false
 clusters:
   my-cluster:
     buildkit:
-      amd64_instance_types:      # instance type -> pods per node
-        m6id.24xlarge: 2
-        m6id.12xlarge: 1
       amd64_replicas: 32
-      arm64_instance_types:
-        m7gd.16xlarge: 4
       arm64_replicas: 8
 ```
 Per-arch override keys are separate (`amd64_*` and `arm64_*`) — there is no flat `pods_per_node` key.
 
-`{amd64,arm64}_instance_types` maps each instance type to its pods per node.
-Listing several sizes gives Karpenter a fallback when one runs out of on-demand
-capacity. One Deployment means one pod spec, so the counts are constraints, not
-per-node settings: the pod takes the smallest size any entry allows, which makes
-every type hold at least its stated count. Placement is then bin-packing.
+`{amd64,arm64}_instance_types` maps each instance type to its pods per node, in
+preference order. Each entry becomes its own weighted NodePool, so the first is
+what a normal scale-up uses and later ones are only reached when the one above
+cannot provision (ICE, or the pool's limits). One Deployment means one pod spec:
+the first entry sizes the pod, and a later entry must hold at least its stated
+count of that pod or generation fails.
+
+No cluster currently overrides the maps — override only to give one cluster a
+different family or a different preference order.
 
 **Node Compactor:** All config under `node_compactor:` key. Knobs configurable via `clusters.yaml`: `enabled`, `interval_seconds` (20), `dry_run`, `min_nodes` (1), `min_node_age_seconds` (900), `capacity_reservation_nodes` (0), `max_uptime_hours` (48). Other knobs (`taint_rate`, `fleet_cooldown`, `spare_capacity_nodes`, `spare_capacity_ratio`, `spare_capacity_threshold`) are internal Python defaults in the compactor source, NOT configurable via clusters.yaml.
 

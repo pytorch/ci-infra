@@ -1,0 +1,204 @@
+# Network isolation for the ai-sandbox namespace.
+#
+# IMPORTANT (prototype limitation): under IPv6-only AWS VPC CNI, NetworkPolicy is
+# NOT a hard egress boundary — it does not apply to the IPv4-egress interface
+# (the same gap that made node-level iptables in cache-enforcer unreliable). This
+# is best-effort defense-in-depth ONLY. A boundary that would hold — a dedicated sandbox
+# subnet with no NAT/IGW route, plus Security-Groups-for-Pods — does not exist yet. Do
+# not treat these policies as the thing that guarantees the agent cannot exfiltrate.
+
+# Baseline: deny all ingress and egress in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Dispatcher ingress: callable from arc-runners over the network, like buildkitd
+# (mirrors buildkit's buildkitd-lb-ingress). The runner needs NO K8s RBAC — just this
+# network allow. Everything else is denied by default-deny above. Task pods take no
+# ingress at all: the dispatcher reads their results through the API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-agent-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-dispatcher
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: arc-runners
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Task egress: the sigv4-proxy, DNS, and HTTPS for the git clone.
+#
+# The clone is the honest exception, not an oversight: every task starts by cloning
+# a public repo straight from github.com, so a policy listing only the proxy and DNS
+# would describe a worker that fails at step one. It is expressed here rather than
+# left to the IPv6-only enforcement gap above, so the manifest says what the pod can
+# actually do. It is also the widest thing in this namespace — 443 to anywhere is an
+# exfiltration path. Closing it means git behind a proxy the way Bedrock already is,
+# on a subnet with no NAT/IGW route. Neither exists, and they have to land together:
+# the subnet on its own just breaks cloning.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-task-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-task
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: sigv4-proxy
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # git clone over HTTPS. NetworkPolicy selects on CIDR, not DNS, and GitHub's
+    # ranges move, so this cannot name github.com — port 443 to anywhere is the
+    # tightest expression available at this layer.
+    - to:
+        - ipBlock:
+            cidr: "::/0"
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Dispatcher egress: DNS and the Kubernetes API, nothing else.
+#
+# Deliberately NOT the 443-to-anywhere rule the task pods get: the dispatcher is the
+# component with RBAC, so it is the one that must not be able to reach the internet.
+# It never clones and never calls Bedrock — creating Jobs and reading their logs is all
+# it does.
+#
+# __K8S_API_CIDR__ is the `kubernetes` Service ClusterIP as a /128, substituted by
+# deploy.sh: pods reach the API server through that ClusterIP, so this cannot be
+# expressed as a namespaceSelector, and the address differs per cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-dispatcher-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-dispatcher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: "__K8S_API_CIDR__"
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Proxy ingress: only from task pods. The dispatcher never calls Bedrock.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sigv4-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: sandbox-task
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Proxy egress: DNS + external HTTPS/HTTP (this is the only sanctioned egress
+# out of the namespace; the proxy is the credential boundary).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sigv4-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: "::/0"
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
