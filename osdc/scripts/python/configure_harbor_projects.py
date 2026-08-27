@@ -73,6 +73,14 @@ REGISTRIES = [
     },
 ]
 
+# aws-ecr, not docker-registry: ECR tokens expire every 12h and only this
+# adapter refreshes them.
+ECR_REGISTRY = {
+    "name": "ecr-private",
+    "type": "aws-ecr",
+    "project_name": "ecr-cache",
+}
+
 DEFAULT_HARBOR_URL = "http://localhost:30002"
 DEFAULT_ADMIN_PASSWORD = None
 
@@ -347,6 +355,21 @@ def main():
         help="GitHub personal access token for ghcr.io",
     )
     parser.add_argument(
+        "--ecr-registry-url",
+        default=None,
+        help="Private ECR registry URL (e.g. https://<acct>.dkr.ecr.us-east-1.amazonaws.com). Omit to skip.",
+    )
+    parser.add_argument(
+        "--ecr-access-key",
+        default=None,
+        help="AWS access key id for the ECR proxy-cache endpoint",
+    )
+    parser.add_argument(
+        "--ecr-secret-key",
+        default=None,
+        help="AWS secret access key for the ECR proxy-cache endpoint",
+    )
+    parser.add_argument(
         "--no-wait",
         action="store_true",
         help="Don't wait for Harbor to be ready",
@@ -372,6 +395,17 @@ def main():
             "access_secret": args.github_token,
         }
         log_info("GitHub (ghcr.io) credentials provided")
+
+    if args.ecr_registry_url:
+        if not (args.ecr_access_key and args.ecr_secret_key):
+            parser.error("--ecr-registry-url requires --ecr-access-key and --ecr-secret-key")
+        REGISTRIES.append({**ECR_REGISTRY, "url": args.ecr_registry_url})
+        registry_credentials[ECR_REGISTRY["name"]] = {
+            "type": "basic",
+            "access_key": args.ecr_access_key,
+            "access_secret": args.ecr_secret_key,
+        }
+        log_info(f"Private ECR proxy cache enabled -> {args.ecr_registry_url}")
 
     session = create_session(args.harbor_url, args.admin_password)
 
