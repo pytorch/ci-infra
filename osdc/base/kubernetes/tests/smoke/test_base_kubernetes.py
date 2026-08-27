@@ -1,7 +1,9 @@
 """Smoke tests for base Kubernetes resources (DaemonSets, StorageClass, nodes)."""
 
+import json
+
 import pytest
-from helpers import assert_daemonset_healthy, filter_services
+from helpers import assert_daemonset_healthy, filter_services, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
@@ -24,6 +26,46 @@ class TestBaseDaemonSets:
 
     def test_registry_mirror_config(self, all_daemonsets, all_nodes):
         assert_daemonset_healthy(all_daemonsets, all_nodes, NAMESPACE, "registry-mirror-config")
+
+    def test_registry_mirror_ecr_gate_matches_cluster_config(self, all_daemonsets, resolve_config):
+        """Both directions: a stale ConfigMap routes CI pulls at a Harbor with no ECR endpoint."""
+        enabled = bool(resolve_config("harbor.ecr_pullthrough", False))
+        # --ignore-not-found prints nothing when absent, which is not JSON — so read
+        # it raw and parse only when there is something to parse.
+        raw = run_kubectl(
+            ["get", "configmap", "registry-mirror-ecr", "--ignore-not-found", "-o", "json"],
+            namespace=NAMESPACE,
+            json_output=False,
+        )
+        present = bool(raw.strip())
+        assert present == enabled, (
+            f"harbor.ecr_pullthrough={enabled} but registry-mirror-ecr ConfigMap "
+            f"{'exists' if present else 'is missing'} in {NAMESPACE}"
+        )
+        if enabled:
+            registry = json.loads(raw).get("data", {}).get("registry", "")
+            msg = f"registry-mirror-ecr points at {registry!r}, which is not an ECR registry host"
+            assert ".dkr.ecr." in registry, msg
+            assert registry.endswith(".amazonaws.com"), msg
+
+    def test_registry_mirror_reads_the_ecr_gate_optionally(self, all_daemonsets):
+        """optional: true is load-bearing — without it the DaemonSet fails to start fleet-wide."""
+        ds = next(
+            (d for d in all_daemonsets.get("items", []) if d["metadata"]["name"] == "registry-mirror-config"),
+            None,
+        )
+        assert ds is not None, "registry-mirror-config DaemonSet not found"
+        # The mirror script runs in the initContainer; the main container is a sleep.
+        spec = ds["spec"]["template"]["spec"]
+        pod_containers = spec.get("initContainers", []) + spec.get("containers", [])
+        env = [e for c in pod_containers for e in c.get("env", []) if e.get("name") == "ECR_PULLTHROUGH_REGISTRY"]
+        assert env, "registry-mirror-config has no ECR_PULLTHROUGH_REGISTRY env var"
+        ref = env[0].get("valueFrom", {}).get("configMapKeyRef", {})
+        assert ref.get("name") == "registry-mirror-ecr", f"unexpected configMapKeyRef: {ref}"
+        assert ref.get("optional") is True, (
+            "ECR_PULLTHROUGH_REGISTRY must be optional: true — every cluster without the "
+            "ConfigMap would otherwise fail to start the DaemonSet"
+        )
 
     def test_node_performance_tuning(self, all_daemonsets, all_nodes):
         assert_daemonset_healthy(all_daemonsets, all_nodes, NAMESPACE, "node-performance-tuning", allow_zero=True)
