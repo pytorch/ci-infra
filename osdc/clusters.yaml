@@ -45,6 +45,10 @@ defaults:
     registry_replicas: 4
     nginx_replicas: 6
     pdb_max_unavailable: 1  # conservative: at most 1 pod down per component
+    # Registry holding the PyTorch CI images, for harbor.ecr_pullthrough. Not
+    # derived from the deploying account: LF clusters are in 391835788720 and
+    # pull these same images cross-account.
+    ecr_pullthrough_registry: "308535385114.dkr.ecr.us-east-1.amazonaws.com"
 
   # --- Module defaults ---
   karpenter:
@@ -269,15 +273,24 @@ clusters:
         arm64_max: 8
     pypi_cache:
       replicas: 1
+    agent_sandbox:
+      # Bedrock model the agent invokes. Must be a cross-region inference profile
+      # ID (`us.` prefix), not a bare foundation-model ID: every Anthropic model
+      # in us-east-1 is INFERENCE_PROFILE-only, and the Claude 3 generation that
+      # still advertises ON_DEMAND is refused as provider-legacy. Haiku 4.5 is
+      # the cheapest active model.
+      default_model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     modules:
       - karpenter
       - arc
       - hf-cache
       - nodepools
+      - nodepools-agent-sandbox
       - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
+      - agent-sandbox
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -308,6 +321,10 @@ clusters:
       registry_replicas: 1
       nginx_replicas: 1
       pdb_max_unavailable: "100%"  # aggressive: staging has 1 replica each
+      # Proxy the private us-east-1 ECR through Harbor so CI image layers are
+      # served from this cluster's own bucket instead of cross-region S3.
+      # Staging-only while the ECR adapter's auth is being validated.
+      ecr_pullthrough: true
     karpenter:
       replicas: 1
       log_level: debug
@@ -346,15 +363,27 @@ clusters:
         arm64_max: 8
     pypi_cache:
       replicas: 1
+    agent_sandbox:
+      # Same model as ue1: a cross-region inference profile ID (`us.` prefix), not a
+      # bare foundation-model ID — every Anthropic model is INFERENCE_PROFILE-only and
+      # the Claude 3 generation still advertising ON_DEMAND is refused as
+      # provider-legacy. A `us.` profile routes within the US, so it resolves from
+      # us-east-2 as well, and the IRSA policy's region wildcard on foundation models
+      # already covers wherever it lands.
+      default_model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     modules:
       - karpenter
       - arc
       - hf-cache
       - nodepools
+      # The gVisor fleet. Its AMI is REGIONAL and must exist in us-east-2 before the
+      # fleet can launch a node: just build-agent-sandbox-ami meta-staging-aws-ue2
+      - nodepools-agent-sandbox
       - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
+      - agent-sandbox
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -372,6 +401,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.8.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
@@ -461,6 +492,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
@@ -557,6 +590,8 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.16.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:

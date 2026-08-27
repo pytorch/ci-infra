@@ -9,7 +9,7 @@
 #
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
 # __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__ __RCLONE_MEMORY_LIMIT__ __GOMEMLIMIT__
-# __DS_NAME__ __GPU_OP__ __MULTI_GPU_COUNTS__ __BUFFER_SIZE__
+# __DS_NAME__ __GPU_OP__ __MULTI_GPU_COUNTS__ __BUFFER_SIZE__ __TCP_RMEM_MAX__
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -114,6 +114,18 @@ spec:
               set -eu
               MOUNT=/mnt/hf_cache
               CACHE=/mnt/hf-cache-vfs
+
+              # Cap the per-socket TCP receive buffer. Under cgroup v2 socket memory is
+              # charged to the container, and it -- not the Go heap or page cache -- is what
+              # OOM-kills this mount: a kill on the 640Mi tier was measured at sock=501Mi,
+              # anon=132Mi, file=0Mi, with 277 concurrent S3 connections autotuning to ~1.6Mi
+              # each. rclone has no flag to cap VFS read concurrency, so bound the per-socket
+              # ceiling instead. Namespaced to this pod's netns (the DaemonSet is not
+              # hostNetwork), so it cannot affect the node or other pods. Non-fatal: a failed
+              # write must not take the mount down.
+              printf '4096\t87380\t%s' "__TCP_RMEM_MAX__" > /proc/sys/net/ipv4/tcp_rmem 2>/dev/null \
+                || echo "WARNING: could not cap tcp_rmem; socket memory is unbounded"
+              echo "tcp_rmem: $(cat /proc/sys/net/ipv4/tcp_rmem 2>/dev/null)"
               # Clear a stale FUSE left by a crash so rclone can remount. fusermount3 is
               # the FUSE3 binary in the rclone image (fusermount is not installed); it
               # clears just the FUSE, leaving the bind mount (a plain umount would drop it).
