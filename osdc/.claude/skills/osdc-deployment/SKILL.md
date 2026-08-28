@@ -349,9 +349,11 @@ Key workflows (all callable as reusable workflows via `workflow_call` from the o
 | `osdc-pre-merge.yml` | Lint + test on PR |
 | `osdc-plan-prod.yml` | `just plan <cluster>` (read-only tofu plan; CI-safe) |
 | `osdc-deploy-prod.yml` | Per-cluster prod deploy. Calls `_osdc-deploy.yml` |
-| `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip-checks` input (firefighting only). |
+| `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip_lint_test` input (firefighting only). |
 | `_osdc-plan.yml` | Reusable: `just plan <cluster>` and tee to `plan.txt` |
 | `_osdc-slow-tests.yml` | Reusable: `just load-test`, `just test-compactor`, `just test-janitor` |
 | `osdc-capacity-report.yml` | `just simulate-cluster` + `just analyze-utilization`, periodic |
 
 When adding a new `just` recipe that CI should run, plumb it through the corresponding reusable workflow.
+
+The OSDC-rooted CI jobs — the `deploy`/`smoke`/`integration` jobs in `_osdc-deploy.yml`, plus `osdc-drain.yml` and `osdc-undrain.yml` — set up their toolchain via the local composite action `./.github/actions/osdc-setup` (installs just + mise + `uv sync`). Its setup steps are retried on transient failures by **retry-by-duplication** (`continue-on-error` on the first attempt plus a copy gated on `steps.<id>.outcome == 'failure'`), chosen over a retry action deliberately: GitHub Actions has no native step retry, and a retry action would run unpinnable third-party code on the deploy / merge-queue path. `actions/checkout` and `aws-actions/configure-aws-credentials` are intentionally NOT wrapped because they already retry internally.
