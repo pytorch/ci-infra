@@ -190,13 +190,9 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      # Staging mirrors prod's big+half shape on much smaller instances. The
-      # integration test only builds alpine, so pod size is irrelevant to it —
-      # the binding requirement is reaching 8 active backends within its 8 min
-      # deadline. That is 4 nodes for amd64 (prod's count too) but 4 for arm64
-      # against prod's 2, since prod fits 4 pods on a m7gd.16xlarge. arm64 is
-      # the arch to watch: buildkit images are not pre-mirrored, so every cold
-      # node pulls through staging's single-replica Harbor.
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
       amd64_instance_types:
         m6id.4xlarge: 2
         m6id.2xlarge: 1
@@ -205,19 +201,12 @@ clusters:
         m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        # Warm baseline of one pod per arch = one 2xlarge. Not 0: KEDA scales on
-        # haproxy_backend_current_sessions, which cannot rise above 0 once the
-        # backend has no servers, so a zero-replica pool never wakes up.
+        # Not 0: the session metric can never leave 0 with no backends behind it.
         amd64_min: 1
-        # max is headroom over the integration test's 8-backend target, not a
-        # capacity estimate: at max == target a single lagging pod leaves 7/8
-        # and the build fails on the deadline.
+        # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
         amd64_fallback: 4
-        # 2, not 1: both warm pods land on the one 4xlarge the primary pool
-        # provisions either way, so this halves the cold nodes a burst needs
-        # for free.
-        arm64_min: 2
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
         arm64_fallback: 4
     modules:
@@ -289,13 +278,9 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      # Staging mirrors prod's big+half shape on much smaller instances. The
-      # integration test only builds alpine, so pod size is irrelevant to it —
-      # the binding requirement is reaching 8 active backends within its 8 min
-      # deadline. That is 4 nodes for amd64 (prod's count too) but 4 for arm64
-      # against prod's 2, since prod fits 4 pods on a m7gd.16xlarge. arm64 is
-      # the arch to watch: buildkit images are not pre-mirrored, so every cold
-      # node pulls through staging's single-replica Harbor.
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
       amd64_instance_types:
         m6id.4xlarge: 2
         m6id.2xlarge: 1
@@ -304,19 +289,12 @@ clusters:
         m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        # Warm baseline of one pod per arch = one 2xlarge. Not 0: KEDA scales on
-        # haproxy_backend_current_sessions, which cannot rise above 0 once the
-        # backend has no servers, so a zero-replica pool never wakes up.
+        # Not 0: the session metric can never leave 0 with no backends behind it.
         amd64_min: 1
-        # max is headroom over the integration test's 8-backend target, not a
-        # capacity estimate: at max == target a single lagging pod leaves 7/8
-        # and the build fails on the deadline.
+        # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
         amd64_fallback: 4
-        # 2, not 1: both warm pods land on the one 4xlarge the primary pool
-        # provisions either way, so this halves the cold nodes a burst needs
-        # for free.
-        arm64_min: 2
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
         arm64_fallback: 4
     pypi_cache:
@@ -403,13 +381,9 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      # Staging mirrors prod's big+half shape on much smaller instances. The
-      # integration test only builds alpine, so pod size is irrelevant to it —
-      # the binding requirement is reaching 8 active backends within its 8 min
-      # deadline. That is 4 nodes for amd64 (prod's count too) but 4 for arm64
-      # against prod's 2, since prod fits 4 pods on a m7gd.16xlarge. arm64 is
-      # the arch to watch: buildkit images are not pre-mirrored, so every cold
-      # node pulls through staging's single-replica Harbor.
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
       amd64_instance_types:
         m6id.4xlarge: 2
         m6id.2xlarge: 1
@@ -418,19 +392,12 @@ clusters:
         m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        # Warm baseline of one pod per arch = one 2xlarge. Not 0: KEDA scales on
-        # haproxy_backend_current_sessions, which cannot rise above 0 once the
-        # backend has no servers, so a zero-replica pool never wakes up.
+        # Not 0: the session metric can never leave 0 with no backends behind it.
         amd64_min: 1
-        # max is headroom over the integration test's 8-backend target, not a
-        # capacity estimate: at max == target a single lagging pod leaves 7/8
-        # and the build fails on the deadline.
+        # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
         amd64_fallback: 4
-        # 2, not 1: both warm pods land on the one 4xlarge the primary pool
-        # provisions either way, so this halves the cold nodes a burst needs
-        # for free.
-        arm64_min: 2
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
         arm64_fallback: 4
     pypi_cache:
