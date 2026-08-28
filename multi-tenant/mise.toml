@@ -1,0 +1,30 @@
+# mise.toml - Tool version management for multi-tenant B200 provisioning
+# https://mise.jdx.dev/
+
+[tools]
+python = "3.12"
+uv = "latest"
+awscli = "2"
+jq = "latest"
+
+[env]
+PROJECT_NAME = "multi-tenant"
+AWS_REGION = "us-east-1"
+
+# Raise the Ansible connection/become-prompt timeout (default ~10s). The B200s
+# are live GPU runners behind the VPN, so sudo can be slow to prompt under load
+# and trip "Timeout waiting for privilege escalation prompt".
+ANSIBLE_TIMEOUT = "60"
+
+# SSH resilience for the flaky VPN link to the B200s: retry dropped connections,
+# and add keepalives so a mid-run stall doesn't tear down the session. SSH_ARGS
+# keeps Ansible's ControlMaster defaults and appends ServerAlive* (send a probe
+# every 15s, give up after 6 misses ~= 90s).
+ANSIBLE_SSH_RETRIES = "3"
+ANSIBLE_SSH_ARGS = "-C -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o ServerAliveCountMax=6"
+
+VIRTUAL_ENV = "{{config_root}}/.venv"
+PATH = "{{config_root}}/.venv/bin:{{env.PATH}}"
+
+[settings]
+auto_install = true

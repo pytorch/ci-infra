@@ -151,12 +151,14 @@ listenerTemplate:
       - name: listener
         resources:
           limits:
-            cpu: "200m"
-            memory: "256Mi"
+            cpu: "250m"
+            memory: "1331Mi"
           requests:
-            cpu: "100m"
-            memory: "128Mi"
+            cpu: "250m"
+            memory: "1331Mi"
         env:
+          - name: GOMEMLIMIT
+            value: "1198MiB"
           - name: CAPACITY_AWARE_ENABLED
             value: "true"
           - name: CAPACITY_AWARE_PROACTIVE_CAPACITY
@@ -169,6 +171,8 @@ listenerTemplate:
             value: "{{HUD_FAILURE_BASE_CAPACITY}}"
           - name: CAPACITY_AWARE_RECALCULATE_INTERVAL
             value: "30s"
+          - name: CAPACITY_AWARE_REPORT_INTERVAL
+            value: "10s"
           - name: CAPACITY_AWARE_PLACEHOLDER_TIMEOUT
             value: "20m"
           - name: CAPACITY_AWARE_WORKFLOW_CPU
@@ -461,7 +465,7 @@ data:
               value: "{{HF_CACHE_REGION}}"
             # END_HF_CACHE
             - name: TORCH_CI_MAX_MEMORY
-              value: "{{MEMORY_BYTES}}"
+              value: "{{MEMORY_BYTES}}"{{IMEX_ENV}}
           # Workflow container gets the actual compute resources
           resources:
             requests:

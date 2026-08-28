@@ -318,7 +318,7 @@ Per-arch override keys are separate (`amd64_*` and `arm64_*`) — there is no fl
 - `logging.grafana_cloud_loki_url` — Grafana Cloud Loki push endpoint.
 - `alloy_chart_version` — Alloy Helm chart version (shared by monitoring + logging Alloy DaemonSets).
 - `keda.chart_version` — KEDA operator Helm chart version (used by the `keda` module; consumed by buildkit autoscaling).
-- `zombie_cleanup.{enabled,pending_max_age_hours,running_max_age_hours,dry_run}` — orphan-pod GC tuning.
+- `zombie_cleanup.{enabled,pending_max_age_hours,running_max_age_hours,busy_max_age_hours,dry_run}` — orphan-pod GC tuning.
 - `pypi_cache.{instance_type,cuda_versions,python_versions,target_architectures,target_manylinux}` — PyPI wheel cache matrix (see `osdc-pypi-cache` for slug semantics; `cuda_versions` and `python_versions` are mandatory for this module).
 
 ### ARC Module — No Terraform

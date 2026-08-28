@@ -1,0 +1,5516 @@
+"""
+GPU Developer CLI - Main entry point
+Reserve and manage GPU development servers
+"""
+
+import click
+import os
+import sys
+import time
+from typing import Optional
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich import print as rprint
+from rich.spinner import Spinner
+from rich.live import Live
+
+from .auth import authenticate_user, validate_ssh_key_matches_github_user
+from .reservations import (
+    ReservationManager,
+    _generate_vscode_command,
+    _add_agent_forwarding_to_ssh,
+    create_ssh_config_for_reservation,
+    remove_ssh_config_for_reservation,
+    get_ssh_config_path,
+    is_ssh_include_enabled,
+)
+from .config import Config, load_config
+from .interactive import (
+    select_gpu_type_interactive,
+    select_gpu_count_interactive,
+    select_duration_interactive,
+    select_jupyter_interactive,
+    select_reservation_interactive,
+    ask_name_interactive,
+    select_edit_action_interactive,
+    ask_github_username_interactive,
+    ask_extension_hours_interactive,
+    check_interactive_support,
+    select_disk_interactive,
+)
+
+console = Console()
+
+
+_east1_table = None
+
+def _fetch_reservations_cross_region(reservation_mgr, user_filter, statuses, config=None):
+    """Fetch reservations from current region + prod-east1 if on prod."""
+    global _east1_table
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_primary():
+        return reservation_mgr.list_reservations(
+            user_filter=user_filter, statuses_to_include=statuses)
+
+    def _fetch_east1():
+        global _east1_table
+        cfg = config or load_config()
+        if cfg.user_config.get("environment") != "prod":
+            return []
+        east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+        if not east1_env or not user_filter:
+            return []
+        if _east1_table is None:
+            _east1_table = cfg.session.resource(
+                "dynamodb", region_name=east1_env["region"]
+            ).Table("pytorch-gpu-dev-reservations")
+        results = []
+        for st in (statuses or ["active"]):
+            resp = _east1_table.query(
+                IndexName="UserStatusIndex",
+                KeyConditionExpression="user_id = :uid AND #s = :status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":uid": user_filter, ":status": st},
+            )
+            for item in resp.get("Items", []):
+                item["_region"] = "us-east-1"
+                results.append(item)
+        return results
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f1 = ex.submit(_fetch_primary)
+            f2 = ex.submit(_fetch_east1)
+            reservations = f1.result()
+            reservations.extend(f2.result())
+    except Exception:
+        reservations = _fetch_primary()
+    return reservations
+
+
+def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
+    """Format timestamp as relative time if within 24h, otherwise absolute"""
+    if not timestamp_str or timestamp_str == "N/A":
+        return "N/A"
+
+    try:
+        from datetime import datetime, timezone, timedelta
+
+        # Parse the timestamp
+        if isinstance(timestamp_str, str):
+            if timestamp_str.endswith("Z"):
+                dt_utc = datetime.fromisoformat(
+                    timestamp_str.replace("Z", "+00:00"))
+            elif "+" in timestamp_str or timestamp_str.endswith("00:00"):
+                dt_utc = datetime.fromisoformat(timestamp_str)
+            else:
+                naive_dt = datetime.fromisoformat(timestamp_str)
+                dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+        else:
+            dt_utc = datetime.fromtimestamp(timestamp_str, tz=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        delta = dt_utc - now if relative_to == "expires" else now - dt_utc
+
+        # If more than 24 hours, use absolute time
+        if abs(delta.total_seconds()) > 24 * 3600:
+            dt_local = dt_utc.astimezone()
+            return dt_local.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Format relative time
+        total_seconds = abs(delta.total_seconds())
+
+        if total_seconds < 60:
+            if relative_to == "expires":
+                return f"expires in {int(total_seconds)}s"
+            else:
+                return f"{int(total_seconds)}s ago"
+        elif total_seconds < 3600:
+            minutes = int(total_seconds // 60)
+            if relative_to == "expires":
+                return f"expires in {minutes}min"
+            else:
+                return f"{minutes}min ago"
+        else:
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            if minutes > 0:
+                if relative_to == "expires":
+                    return f"expires in {hours}h{minutes}min"
+                else:
+                    return f"{hours}h{minutes}min ago"
+            else:
+                if relative_to == "expires":
+                    return f"expires in {hours}h"
+                else:
+                    return f"{hours}h ago"
+
+    except (ValueError, TypeError):
+        # Fallback to original format
+        return str(timestamp_str)[:19] if len(str(timestamp_str)) > 10 else str(timestamp_str)
+
+
+def _format_expires_with_remaining(expires_at) -> str:
+    """Format expiration time showing both absolute time and remaining time (for list view)"""
+    if not expires_at or expires_at == "N/A":
+        return "N/A"
+
+    try:
+        from datetime import datetime, timezone
+
+        # Parse the timestamp
+        if isinstance(expires_at, str):
+            if expires_at.endswith("Z"):
+                expires_dt_utc = datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00"))
+            elif "+" in expires_at or expires_at.endswith("00:00"):
+                expires_dt_utc = datetime.fromisoformat(expires_at)
+            else:
+                naive_dt = datetime.fromisoformat(expires_at)
+                expires_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+        else:
+            # Legacy Unix timestamp
+            expires_dt_utc = datetime.fromtimestamp(expires_at, tz=timezone.utc)
+
+        # Convert to local timezone for display
+        expires_dt = expires_dt_utc.astimezone()
+        time_str = expires_dt.strftime("%H:%M")
+
+        # Calculate remaining time
+        now = datetime.now(timezone.utc)
+        delta = expires_dt_utc - now
+        total_seconds = delta.total_seconds()
+
+        if total_seconds <= 0:
+            return f"{time_str} (expired)"
+
+        # Format remaining time
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+
+        if hours > 0:
+            if minutes > 0:
+                remaining = f"{hours}h{minutes}m left"
+            else:
+                remaining = f"{hours}h left"
+        else:
+            remaining = f"{minutes}m left"
+
+        return f"{time_str} ({remaining})"
+
+    except (ValueError, TypeError):
+        return "Invalid"
+
+
+def _show_single_reservation(connection_info: dict) -> None:
+    """Display detailed information for a single reservation"""
+    status = connection_info.get("status", "unknown")
+    gpu_count = connection_info.get("gpu_count", 1)
+    gpu_type = connection_info.get("gpu_type", "Unknown")
+    instance_type = connection_info.get("instance_type", "unknown")
+
+    # Format GPU information (MIG-aware)
+    gpu_info = _format_gpu_display(gpu_count, gpu_type)
+
+    # Format timestamps - only show launched_at (started time), not created time
+    launched_at = connection_info.get("launched_at", "N/A")
+    expires_at = connection_info.get("expires_at", "N/A")
+
+    # Get persistent disk status
+    ebs_volume_id = connection_info.get("ebs_volume_id", None)
+    has_persistent_disk = bool(ebs_volume_id and ebs_volume_id.strip())
+
+    # Convert timestamps to readable format
+    def format_timestamp(timestamp_str):
+        if not timestamp_str or timestamp_str == "N/A":
+            return "N/A"
+        try:
+            from datetime import datetime, timezone
+
+            if isinstance(timestamp_str, str):
+                # Handle different ISO format variations
+                if timestamp_str.endswith("Z"):
+                    # Format: 2025-01-11T23:30:00Z
+                    dt_utc = datetime.fromisoformat(
+                        timestamp_str.replace("Z", "+00:00")
+                    )
+                elif "+" in timestamp_str or timestamp_str.endswith("00:00"):
+                    # Format: 2025-01-11T23:30:00+00:00
+                    dt_utc = datetime.fromisoformat(timestamp_str)
+                else:
+                    # Format: 2025-01-11T23:30:00 (naive datetime, assume UTC)
+                    naive_dt = datetime.fromisoformat(timestamp_str)
+                    dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+
+                dt_local = dt_utc.astimezone()  # Convert to local timezone
+                return dt_local.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                # Legacy Unix timestamp
+                dt = datetime.fromtimestamp(timestamp_str)
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            return str(timestamp_str)[:19]  # Fallback to first 19 chars
+
+    launched_formatted = _format_relative_time(launched_at, "now")
+    expires_formatted = _format_relative_time(expires_at, "expires")
+
+    # Format persistent disk status - show disk name if available
+    disk_name = connection_info.get("disk_name")
+    if disk_name:
+        disk_status = f"Persistent (disk: {disk_name})"
+    elif has_persistent_disk:
+        disk_status = "Persistent"
+    else:
+        disk_status = "Temporary"
+
+    if status == "active":
+        jupyter_info = ""
+        if connection_info.get("jupyter_enabled") and connection_info.get(
+            "jupyter_url"
+        ):
+            jupyter_info = (
+                f"[blue]Jupyter Lab:[/blue] {connection_info['jupyter_url']}\n"
+            )
+        elif connection_info.get("jupyter_enabled") and not connection_info.get(
+            "jupyter_url"
+        ):
+            jupyter_info = (
+                f"[blue]Jupyter Lab:[/blue] [yellow]Starting...[/yellow]\n"
+            )
+        else:
+            # Show enable command if Jupyter is not enabled
+            short_id = connection_info["reservation_id"][:8]
+            jupyter_info = f"[dim]Jupyter Lab:[/dim] [yellow]Not enabled[/yellow] [dim]→[/dim] [cyan]gpu-dev edit {short_id} --enable-jupyter[/cyan]\n"
+
+        # Format secondary users information
+        secondary_users = connection_info.get("secondary_users", [])
+        secondary_users_info = ""
+        if secondary_users:
+            users_list = ", ".join(secondary_users)
+            secondary_users_info = (
+                f"[blue]Secondary Users:[/blue] {users_list}\n"
+            )
+        else:
+            # Show add-user command if no secondary users
+            short_id = connection_info["reservation_id"][:8]
+            secondary_users_info = f"[dim]Secondary Users:[/dim] [yellow]None[/yellow] [dim]→[/dim] [cyan]gpu-dev edit {short_id} --add-user <github_username>[/cyan]\n"
+
+        # Generate VS Code command
+        vscode_command = _generate_vscode_command(
+            connection_info["ssh_command"]
+        )
+        vscode_info = ""
+        if vscode_command:
+            vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command}\n"
+
+        # Add agent forwarding to SSH command for display
+        ssh_with_forwarding = _add_agent_forwarding_to_ssh(
+            connection_info["ssh_command"]
+        )
+
+        # Generate convenience connect command
+        short_id = connection_info["reservation_id"][:8]
+        connect_command = f"[cyan]gpu-dev connect {short_id}[/cyan]"
+
+        # Get SSH config path for this reservation
+        reservation_id = connection_info["reservation_id"]
+        reservation_name = connection_info.get("name")
+        pod_name = connection_info.get("pod_name", "")
+        # SSH host alias keys off the reservation id (works for warm-claimed pods,
+        # whose pod_name != gpu-dev-<resid8>). pod_name is shown separately below.
+        host_alias = f"gpu-dev-{short_id}"
+        ssh_config_path = get_ssh_config_path(reservation_id, reservation_name)
+        use_include = is_ssh_include_enabled()
+
+        # Use SSH config in commands if it exists
+        from pathlib import Path
+        if Path(ssh_config_path).exists() and pod_name:
+            if use_include:
+                # User approved Include - show simple commands
+                from .reservations import _make_vscode_link
+                ssh_command_display = f"[green]ssh {host_alias}[/green]"
+                vscode_url = _make_vscode_link(host_alias)
+                vscode_cmd_text = f"code --remote ssh-remote+{host_alias} /home/dev"
+                vscode_command_display = f"[link={vscode_url}][green]{vscode_cmd_text}[/green][/link]"
+                vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n"
+            else:
+                # User declined Include - show commands with -F flag
+                ssh_command_display = f"[green]ssh -F {ssh_config_path} {host_alias}[/green]"
+                vscode_command_display = f"Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config (or: [green]gpu-dev config ssh-include enable[/green])"
+                vscode_info = f"[blue]VS Code/Cursor:[/blue] {vscode_command_display}\n"
+        else:
+            # Fallback to full commands if SSH config doesn't exist
+            ssh_command_display = ssh_with_forwarding
+            vscode_command_display = vscode_command if vscode_command else ""
+            vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n" if vscode_command_display else ""
+
+        # Check for warnings
+        warning_message = connection_info.get("warning", "")
+        warning_section = ""
+        if warning_message:
+            warning_section = f"\n\n{warning_message}"
+
+        # Check for OOM events
+        oom_count = connection_info.get("oom_count", 0)
+        last_oom_at = connection_info.get("last_oom_at")
+        oom_section = ""
+        if oom_count and int(oom_count) > 0:
+            oom_time_display = format_timestamp(last_oom_at) if last_oom_at else "Unknown"
+            oom_section = f"\n[red]⚠️  OOM Events:[/red] [red]{oom_count} OOM(s) detected (last: {oom_time_display})[/red]"
+
+        # Show pod internal IP for multinode reservations
+        pod_ip_info = ""
+        pod_ip = connection_info.get("pod_ip")
+        if pod_ip and connection_info.get("is_multinode"):
+            pod_ip_info = f"[blue]Internal IP:[/blue] {pod_ip}\n"
+
+        panel_content = (
+            f"[green]Reservation Details[/green]\n\n"
+            f"[blue]Quick Connect:[/blue] {connect_command}\n"
+            f"[blue]SSH Command:[/blue] {ssh_command_display}\n"
+            + vscode_info
+            + jupyter_info
+            + f"[blue]Pod Name:[/blue] {connection_info['pod_name']}\n"
+            + pod_ip_info
+            + f"[blue]GPUs:[/blue] {gpu_info}\n"
+            f"[blue]Instance Type:[/blue] {instance_type}\n"
+            + secondary_users_info
+            + f"[blue]Storage:[/blue] {disk_status}\n"
+            f"[blue]Started:[/blue] {launched_formatted}\n"
+            f"[blue]Expires:[/blue] {expires_formatted}"
+            + oom_section
+            + warning_section
+        )
+        panel = Panel.fit(panel_content, title="🚀 Active Reservation")
+        console.print(panel)
+    elif status in ["queued", "pending", "preparing"]:
+        panel_content = (
+            f"[yellow]Reservation Details[/yellow]\n\n"
+            f"[blue]Status:[/blue] {status.title()}\n"
+            f"[blue]GPUs Requested:[/blue] {gpu_info}\n"
+            f"[blue]Storage:[/blue] {disk_status}\n"
+            f"[blue]Expected Instance:[/blue] {instance_type if instance_type != 'unknown' else 'TBD'}"
+        )
+        if status == "preparing":
+            panel_content += f"\n[blue]Pod Name:[/blue] {connection_info.get('pod_name', 'N/A')}"
+            # Show current detailed status from unified status tracking
+            current_detailed_status = connection_info.get(
+                "current_detailed_status", "")
+            if current_detailed_status:
+                panel_content += (
+                    f"\n[blue]Current Status:[/blue] {current_detailed_status}"
+                )
+
+        panel = Panel.fit(
+            panel_content, title=f"⏳ {status.title()} Reservation"
+        )
+        console.print(panel)
+
+        if status == "queued":
+            rprint(
+                "[yellow]💡 SSH access will be available once your reservation becomes active[/yellow]"
+            )
+        elif status == "preparing":
+            rprint(
+                "[yellow]💡 Your environment is being prepared. SSH access will be available shortly.[/yellow]"
+            )
+    else:
+        panel_content = (
+            f"[red]Reservation Details[/red]\n\n"
+            f"[blue]Status:[/blue] {status.title()}\n"
+            f"[blue]GPUs:[/blue] {gpu_info}\n"
+            f"[blue]Storage:[/blue] {disk_status}\n"
+            f"[blue]Started:[/blue] {launched_formatted}\n"
+            f"[blue]Ended:[/blue] {expires_formatted}"
+        )
+
+        # Show failure reason for failed reservations
+        if status == "failed":
+            failure_reason = connection_info.get(
+                "failure_reason",
+                connection_info.get("current_detailed_status", "Unknown error")
+            )
+            panel_content += f"\n[blue]Error:[/blue] {failure_reason}"
+
+        panel = Panel.fit(
+            panel_content, title=f"📋 {status.title()} Reservation"
+        )
+        console.print(panel)
+
+        # Show pod logs for failed reservations
+        if status == "failed":
+            pod_logs = connection_info.get("pod_logs", "")
+            if pod_logs and pod_logs.strip():
+                from rich.text import Text
+
+                rprint("\n[red]🔍 Pod logs (last 20 lines) - Details:[/red]")
+
+                # Create logs panel
+                log_text = Text(pod_logs)
+                log_panel = Panel(
+                    log_text,
+                    title="🐚 Container Startup Logs",
+                    title_align="left",
+                    border_style="red",
+                    expand=False,
+                )
+                console.print(log_panel)
+
+
+def _validate_ssh_key_or_exit(config: Config, live: Live) -> bool:
+    """
+    Validate SSH key matches configured GitHub username.
+    Returns True if valid, False if validation failed (and exits with error messages).
+    """
+    validation_result = validate_ssh_key_matches_github_user(config, live)
+    if not validation_result["valid"]:
+        live.stop()
+        rprint("[red]❌ Github SSH key validation failed[/red]")
+
+        # Provide helpful suggestions
+        if validation_result["ssh_user"] and validation_result["configured_user"]:
+            rprint("\n[yellow]💡 Fix by updating your config:[/yellow]")
+            rprint(
+                "   [cyan]gpu-dev config set github_user {validation_result['ssh_user']}[/cyan]"
+            )
+        elif not validation_result["configured_user"]:
+            rprint("\n[yellow]💡 Fix by configuring your GitHub username:[/yellow]")
+            rprint(
+                "   [cyan]gpu-dev config set github_user <your-github-username>[/cyan]"
+            )
+        else:
+            rprint("\n[yellow]💡 gpu-dev utilizes Github keys for auth![/yellow]")
+            rprint(
+                "[yellow]💡 Check https://fburl.com/gh-ssh for info on how to add your ssh key to Github[/yellow]"
+            )
+        return False
+
+    return True
+
+
+@click.group()
+@click.version_option(package_name="gpu-dev")
+@click.pass_context
+def main(ctx: click.Context) -> None:
+    """\b
+    GPU Developer CLI - Reserve and manage GPU development servers
+
+    Reserve GPU-enabled development environments with SSH access.
+    Supports 1, 2, 4, 8, or 16 GPU configurations with automatic resource management.
+
+    \b
+    Interactive Mode (NEW):
+        gpu-dev reserve                         # Interactive reservation (auto-detected)
+        gpu-dev cancel                          # Interactive cancellation
+        gpu-dev edit                            # Interactive edit
+
+    \b
+    Command-line Mode:
+        gpu-dev reserve --gpus 2 --hours 4     # Reserve 2 GPUs for 4 hours
+        gpu-dev reserve --jupyter               # Reserve with Jupyter Lab
+        gpu-dev cancel abc12345                 # Cancel specific reservation
+        gpu-dev edit abc12345 --enable-jupyter # Enable Jupyter on reservation
+
+    \b
+    Information Commands:
+        gpu-dev list                            # Check your reservations
+        gpu-dev show                            # Show detailed info for active/pending reservations
+        gpu-dev show abc12345                   # Get detailed reservation info
+        gpu-dev connect                         # Connect to active reservation via SSH
+        gpu-dev avail                           # Check GPU availability by type
+        gpu-dev status                          # Check cluster status
+        gpu-dev help                            # Show this help message
+
+    \b
+    Configuration:
+        gpu-dev config ssh-include enable       # Enable SSH config auto-include
+        gpu-dev config ssh-include disable      # Disable SSH config auto-include
+
+    Interactive mode is automatically enabled when running commands without
+    parameters in a terminal. Use --no-interactive to disable.
+
+    Use 'gpu-dev <command> --help' for detailed help on each command.
+    """
+    ctx.ensure_object(dict)
+
+
+@main.command()
+@click.option(
+    "--gpus",
+    "-g",
+    type=click.Choice(["1", "2", "4", "8", "12", "16",
+                      "20", "24", "32", "40", "48"]),
+    help="Number of GPUs to reserve (multiples of max-per-node for multinode setups)",
+)
+@click.option(
+    "--gpu-type",
+    "-t",
+    type=click.Choice(
+        ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86", "cpu-spot"], case_sensitive=False
+    ),
+    help="GPU type to reserve. Full GPUs: b200, h200, h100, a100, rtxpro6000, a10g, t4, l4, t4-small. H100 MIG slices: h100-mig-1g (10 GB), h100-mig-2g (20 GB), h100-mig-3g (40 GB). B200 MIG slices (on the mixed B200 node): b200-mig-1g (23 GB), b200-mig-2g (45 GB), b200-mig-3g (90 GB). CPU: cpu-arm, cpu-x86.",
+)
+@click.option(
+    "--hours",
+    "-h",
+    type=float,
+    help="Reservation duration in hours (supports decimals, max 24)",
+)
+@click.option("--name", "-n", type=str, help="Optional name for the reservation")
+@click.option(
+    "--jupyter",
+    is_flag=True,
+    help="Enable Jupyter Lab access (can be enabled later with 'gpu-dev edit')",
+)
+@click.option(
+    "--ignore-no-persist",
+    is_flag=True,
+    help="Skip persistent disk warning for multiple reservations",
+)
+@click.option(
+    "--no-persist",
+    is_flag=True,
+    help="Create reservation without persistent disk",
+)
+@click.option(
+    "--recreate-env",
+    is_flag=True,
+    help="Recreate shell environment (bashrc/zshrc/oh-my-zsh) even on existing persistent disk",
+)
+@click.option(
+    "--interactive/--no-interactive",
+    default=None,
+    help="Force interactive mode on/off (auto-detected by default)",
+)
+@click.option(
+    "--distributed",
+    "-d",
+    is_flag=True,
+    help="Required flag for multinode GPU reservations (> single node max)",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose debug output",
+)
+@click.option(
+    "--trace",
+    is_flag=True,
+    help="Enable timing trace - shows duration of each reservation step",
+)
+@click.option(
+    "--dockerfile",
+    type=click.Path(exists=True, readable=True),
+    help="Path to custom Dockerfile to use instead of default container image (max 512KB)",
+)
+@click.option(
+    "--dockerimage",
+    type=str,
+    help="Custom Docker image to use instead of default container image (e.g., pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel)",
+)
+@click.option(
+    "--preserve-entrypoint",
+    is_flag=True,
+    help="Preserve the original container ENTRYPOINT/CMD instead of overriding with bash script",
+)
+@click.option(
+    "--disk",
+    type=str,
+    help="Named persistent disk to use (e.g., 'pytorch-main'), or 'none' for temporary storage only. Use 'gpu-dev disk list' to see available disks.",
+)
+@click.option(
+    "--ref",
+    type=str,
+    default=None,
+    help="Pytorch ref to pre-stage in /home/dev/pytorch: a branch/tag, a PR (pr/123, #123, or bare 123), or a commit sha. Defaults to master; 'none' to skip. Ignored with --disk.",
+)
+@click.option(
+    "--node-label",
+    "-l",
+    type=str,
+    multiple=True,
+    help="Request nodes with specific label (format: key=value). Example: --node-label nsight=true for Nsight profiling nodes",
+)
+@click.option("--spot", is_flag=True, default=False,
+              help="Acknowledge spot instance (~1/3 cost, may be preempted with 2-min notice). Required for spot-only types.")
+@click.option("--fast-cache", is_flag=True, default=False, hidden=True,
+              help="Use NVMe local cache for faster session restore (experimental).")
+@click.option("--no-connect", is_flag=True, default=False,
+              help="Don't auto-SSH into the pod once active. By default an interactive (TTY) reserve drops you straight in; scripts/non-TTY never auto-connect.")
+@click.pass_context
+def reserve(
+    ctx: click.Context,
+    gpus: Optional[str],
+    gpu_type: Optional[str],
+    hours: Optional[float],
+    name: Optional[str],
+    jupyter: bool,
+    ignore_no_persist: bool,
+    no_persist: bool,
+    recreate_env: bool,
+    interactive: Optional[bool],
+    distributed: bool,
+    verbose: bool,
+    trace: bool,
+    dockerfile: Optional[str],
+    dockerimage: Optional[str],
+    preserve_entrypoint: bool,
+    disk: Optional[str],
+    ref: Optional[str],
+    node_label: tuple,
+    no_connect: bool = False,
+    spot: bool = False,
+    fast_cache: bool = False,
+) -> None:
+    """Reserve GPU development server(s)
+
+    Creates a reservation for GPU-enabled development environment with SSH access.
+    The environment includes PyTorch, CUDA, and common ML tools pre-installed.
+
+    \b
+    Interactive Mode (NEW):
+        gpu-dev reserve                          # Interactive mode - guided setup
+
+    The interactive mode will:
+    - Show GPU availability table
+    - Let you select GPU type with arrow keys
+    - Choose number of GPUs
+    - Select duration with presets
+    - Optional Jupyter Lab and naming
+
+    \b
+    Command-line Mode:
+        gpu-dev reserve -g 4 -h 2.5             # 4 GPUs for 2.5 hours
+        gpu-dev reserve -g 8 -h 12 -n "training" # 8 GPUs, named reservation
+        gpu-dev reserve --jupyter                # Include Jupyter Lab access
+        gpu-dev reserve --gpu-type h200 -g 2    # 2 H200 GPUs
+        gpu-dev reserve -g 16 --distributed     # 16 GPUs (2 nodes), required for multinode
+
+    GPU Options:
+        Single-node: 1, 2, 4, 8 GPUs (depending on GPU type)
+        Multinode: Multiples of max GPUs per node (e.g., 16=2×8, 24=3×8 for H100)
+
+    Authentication: Uses your AWS credentials and GitHub SSH keys
+    """
+    try:
+        # Handle --disk none (case insensitive) to explicitly request no persistent disk
+        explicit_no_disk_from_param = False
+        if disk and disk.lower() == "none":
+            explicit_no_disk_from_param = True
+            disk = None
+
+        # --ref implies ephemeral: staging only happens when no persistent disk is
+        # attached (a default disk would silently skip the ref). So a bare --ref
+        # (no explicit --disk) means "no persistent disk" — otherwise the ref is a
+        # no-op. --disk still wins (ref ignored, as documented).
+        if ref and ref.strip().lower() not in ("", "none") and not disk and not no_persist:
+            no_persist = True
+            rprint("[dim]--ref → ephemeral pod (no persistent disk) so the ref can be staged[/dim]")
+
+        # Determine if we should use interactive mode
+        use_interactive = interactive
+        if use_interactive is None:
+            # Auto-detect: use interactive if no key parameters provided
+            # For CPU instances, gpus parameter is optional (defaults to 0)
+            gpu_required = gpus is None and (
+                gpu_type is None or not gpu_type.lower().startswith("cpu-"))
+            use_interactive = (
+                gpu_required or gpu_type is None or hours is None
+            ) and check_interactive_support()
+
+        # GPU config for validation (includes CPU-only instances)
+        gpu_configs = {
+            "t4": {"max_gpus": 4, "instance_type": "g4dn.12xlarge"},
+            "l4": {"max_gpus": 4, "instance_type": "g6.12xlarge"},
+            "a10g": {"max_gpus": 4, "instance_type": "g5.12xlarge"},
+            "rtxpro6000": {"max_gpus": 4, "instance_type": "g7e.24xlarge"},
+            "t4-small": {"max_gpus": 1, "instance_type": "g4dn.xlarge"},
+            "a100": {"max_gpus": 8, "instance_type": "p4d.24xlarge"},
+            "h100": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
+            "h100-mig-1g": {"max_gpus": 16, "instance_type": "p5.48xlarge"},
+            "h100-mig-2g": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
+            "h100-mig-3g": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
+            "b200-mig-1g": {"max_gpus": 4, "instance_type": "p6-b200.48xlarge"},
+            "b200-mig-2g": {"max_gpus": 2, "instance_type": "p6-b200.48xlarge"},
+            "b200-mig-3g": {"max_gpus": 2, "instance_type": "p6-b200.48xlarge"},
+            "h200": {"max_gpus": 8, "instance_type": "p5e.48xlarge"},
+            "b200": {"max_gpus": 8, "instance_type": "p6-b200.48xlarge"},
+            "b300": {"max_gpus": 8, "instance_type": "p6-b300.48xlarge"},
+            "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
+            "cpu-x86": {"max_gpus": 0, "instance_type": "c7i.4xlarge"},
+            "cpu-spot": {"max_gpus": 0, "instance_type": "c7i.2xlarge"},
+        }
+
+        # Early validation of GPU type to extract max_gpus (needed for disk selection)
+        if gpu_type:
+            gpu_type = gpu_type.lower()
+            if gpu_type not in gpu_configs:
+                valid_types = ", ".join(sorted(gpu_configs.keys()))
+                rprint(
+                    f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid_types}[/red]"
+                )
+                return
+            max_gpus = gpu_configs[gpu_type]["max_gpus"]
+        else:
+            max_gpus = None  # Will be set later in interactive mode
+
+        # --no-persist and --disk contradict each other (ephemeral vs named disk).
+        # Fail fast rather than silently dropping the disk (no_persist used to win).
+        if no_persist and disk and disk.lower() != "none":
+            rprint("[red]❌ --no-persist and --disk are mutually exclusive — drop one.[/red]")
+            sys.exit(2)
+
+        if use_interactive:
+            # Interactive mode - gather parameters interactively
+            rprint("[cyan]🎯 Interactive reservation mode[/cyan]")
+            rprint(
+                "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
+
+            # Auto-acknowledge spot in spot-only environments so users don't need --spot
+            from .config import Config as _Cfg
+            _env_name = load_config().user_config.get("environment", "prod")
+            _spot_types_env = _Cfg.ENVIRONMENTS.get(_env_name, {}).get("spot_types", [])
+
+            # Run auth + SSH validation + availability fetch in parallel — they're independent
+            # and total wall-clock time drops from sum to max(each).
+            from concurrent.futures import ThreadPoolExecutor
+            config = load_config()
+            reservation_mgr = ReservationManager(config)
+
+            with Live(
+                Spinner("dots", text="🚀 Loading…"), console=console
+            ) as live:
+                with ThreadPoolExecutor(max_workers=3) as ex:
+                    f_auth = ex.submit(authenticate_user, config)
+                    # SSH validation may invoke `ssh git@github.com` interactively for password-protected keys;
+                    # do it on the main thread when the cache is cold so prompts work. Probe cache first.
+                    from .auth import _load_ssh_cache, validate_ssh_key_matches_github_user
+                    cached_ssh = _load_ssh_cache(config.get_github_username() or "")
+                    if cached_ssh is not None:
+                        f_ssh = None
+                        ssh_result = cached_ssh
+                    else:
+                        f_ssh = ex.submit(validate_ssh_key_matches_github_user, config, None)
+                        ssh_result = None
+                    # Fetch availability whenever a picker needs it: the GPU-type
+                    # picker (no gpu_type) or the count picker (no gpus).
+                    need_interactive = gpu_type is None or gpus is None
+                    if need_interactive:
+                        f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
+
+                    # Surface auth failure first (most actionable).
+                    try:
+                        user_info = f_auth.result()
+                    except RuntimeError as e:
+                        live.stop()
+                        rprint(f"[red]❌ {str(e)}[/red]")
+                        return
+
+                    if ssh_result is None:
+                        ssh_result = f_ssh.result()
+                    availability_info = f_avail.result() if need_interactive else None
+
+            # Surface SSH validation failure with the same UX as before.
+            if not ssh_result.get("valid"):
+                rprint("[red]❌ Github SSH key validation failed[/red]")
+                if ssh_result.get("ssh_user") and ssh_result.get("configured_user"):
+                    rprint("\n[yellow]💡 Fix by updating your config:[/yellow]")
+                    rprint(f"   [cyan]gpu-dev config set github_user {ssh_result['ssh_user']}[/cyan]")
+                elif not ssh_result.get("configured_user"):
+                    rprint("\n[yellow]💡 Fix by configuring your GitHub username:[/yellow]")
+                    rprint("   [cyan]gpu-dev config set github_user <your-github-username>[/cyan]")
+                else:
+                    rprint("\n[yellow]💡 gpu-dev utilizes Github keys for auth![/yellow]")
+                    rprint("[yellow]💡 Check https://fburl.com/gh-ssh for info on how to add your ssh key to Github[/yellow]")
+                return
+
+            if need_interactive and not availability_info:
+                rprint("[red]❌ Could not get GPU availability information[/red]")
+                return
+
+            # Interactive GPU type selection (spot hidden unless --spot)
+            if gpu_type is None:
+                gpu_type = select_gpu_type_interactive(availability_info, show_spot=spot)
+                if gpu_type is None:
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
+
+            # Handle spot: prefix from cross-region selection — use a TEMPORARY config
+            # for prod-east1 without persisting the environment change to disk.
+            if isinstance(gpu_type, str) and gpu_type.startswith("spot:"):
+                gpu_type = gpu_type[5:]  # strip prefix
+                spot = True
+                rprint(f"\n[cyan]⚡ Switching to spot cluster (us-east-1) for {gpu_type.upper()}[/cyan]")
+                rprint("[dim]Spot instance: ~70% cheaper, may be preempted, separate disks.[/dim]\n")
+                # Build a temporary Config pointing at prod-east1 WITHOUT touching disk
+                import os as _os
+                east1_cfg = Config.ENVIRONMENTS.get("prod-east1", {})
+                _os.environ["AWS_DEFAULT_REGION"] = east1_cfg["region"]
+                config = Config()
+                config.aws_region = east1_cfg["region"]
+                reservation_mgr = ReservationManager(config)
+                try:
+                    user_info = authenticate_user(config)
+                except RuntimeError as e:
+                    rprint(f"[red]❌ {str(e)}[/red]")
+                    return
+
+            # Auto-acknowledge spot for spot types in this environment
+            if _spot_types_env and gpu_type and gpu_type.lower() in _spot_types_env and not spot:
+                spot = True
+                rprint(f"[dim]{gpu_type.upper()} is a spot instance in this environment — --spot auto-acknowledged. May be preempted by AWS.[/dim]")
+
+            # Interactive GPU count selection
+            if gpus is None:
+                gpu_type_lower = gpu_type.lower()
+                if gpu_type_lower not in gpu_configs:
+                    rprint(f"[red]❌ Invalid GPU type '{gpu_type}'[/red]")
+                    return
+
+                max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
+                if gpu_type_lower.startswith("cpu-"):
+                    # CPU instances have a single option (0 GPUs) — don't prompt.
+                    gpu_count = 0
+                else:
+                    result = select_gpu_count_interactive(
+                        gpu_type_lower, max_gpus, availability_info=availability_info)
+                    if result is None:
+                        rprint("[yellow]Reservation cancelled.[/yellow]")
+                        return
+                    # If user picked a MIG slice, the function returns (gpu_type, count).
+                    if isinstance(result, tuple):
+                        gpu_type, gpu_count = result
+                        gpu_type_lower = gpu_type.lower()
+                        max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
+                    else:
+                        gpu_count = result
+
+                # Show distributed warning for interactive multinode selections (always show)
+                if gpu_count > max_gpus:
+                    num_nodes = gpu_count // max_gpus
+                    rprint(
+                        f"\n[yellow]⚠️  You selected {gpu_count} GPUs. This is supported for distributed workflows.[/yellow]")
+                    rprint(
+                        f"[yellow]This will reserve {num_nodes} pods that have:[/yellow]")
+                    rprint("[yellow]• A shared network drive[/yellow]")
+                    rprint("[yellow]• Network connectivity to each other[/yellow]")
+                    rprint(
+                        f"[yellow]• Hostname resolution (<podname>-headless.gpu-dev.svc.cluster.local)[/yellow]")
+                    rprint(
+                        f"[yellow]• Master port 29500 available on all nodes[/yellow]\n")
+
+                    try:
+                        choice = click.confirm(
+                            "Do you want to continue?", default=False)
+                        if not choice:
+                            rprint(
+                                "[yellow]Reservation cancelled by user[/yellow]")
+                            return
+                    except (KeyboardInterrupt, click.Abort):
+                        rprint(
+                            "\n[yellow]Reservation cancelled by user[/yellow]")
+                        return
+            else:
+                gpu_count = int(gpus)
+
+            # Track if user explicitly requests no persistent disk
+            explicit_no_disk = explicit_no_disk_from_param
+
+            # Interactive disk selection (if not multinode - only master node gets persistent disk)
+            # This comes BEFORE duration so user knows what they're reserving
+            if disk is None and not explicit_no_disk_from_param and not no_persist:
+                disk = select_disk_interactive(user_info["user_id"], config)
+                # Check if user cancelled
+                if disk == "__cancelled__":
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
+                # Check if user explicitly chose "no disk"
+                if disk == "__no_disk__":
+                    explicit_no_disk = True
+                    disk = None
+
+            # Interactive duration selection
+            if hours is None:
+                hours = select_duration_interactive(gpu_type=gpu_type)
+                if hours is None:
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
+
+            # Interactive Jupyter selection (if not already set via flag)
+            if not jupyter:  # Only ask if not already enabled via flag
+                jupyter_interactive = select_jupyter_interactive()
+                if jupyter_interactive is None:
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
+                jupyter = jupyter_interactive
+
+            # Interactive name selection
+            if name is None:
+                name = ask_name_interactive()
+                # name can be None, that's fine
+
+        else:
+            # Non-interactive mode - use defaults and validate
+            # Route --spot to east1 when on prod (env vars override config region)
+            if spot and load_config().user_config.get("environment") == "prod":
+                east1_cfg = Config.ENVIRONMENTS.get("prod-east1", {})
+                if east1_cfg:
+                    import os as _os
+                    _os.environ["AWS_REGION"] = east1_cfg["region"]
+
+            if gpu_type is None:
+                gpu_type = "a100"
+            if hours is None:
+                hours = 8.0
+
+            # Set default GPU count based on GPU type
+            if gpus is None:
+                if gpu_type and gpu_type.lower().startswith("cpu-"):
+                    gpus = "0"  # CPU instances default to 0 GPUs
+                else:
+                    gpus = "1"  # GPU instances default to 1 GPU
+
+            gpu_count = int(gpus)
+
+            # Non-interactive disk selection (if not specified via flag)
+            # Only for single-node reservations
+            if disk is None and max_gpus is not None and gpu_count <= max_gpus and not explicit_no_disk_from_param and not no_persist:
+                # In non-interactive mode, check if terminal supports interactive prompts
+                if check_interactive_support():
+                    # Load config and authenticate if not already done
+                    if 'config' not in locals():
+                        config = load_config()
+                        try:
+                            user_info = authenticate_user(config)
+                        except RuntimeError as e:
+                            rprint(f"[red]❌ {str(e)}[/red]")
+                            return
+                    disk = select_disk_interactive(user_info["user_id"], config)
+                    # Check if user cancelled
+                    if disk == "__cancelled__":
+                        rprint("[yellow]Reservation cancelled.[/yellow]")
+                        return
+                    # Check if user explicitly chose "no disk"
+                    if disk == "__no_disk__":
+                        explicit_no_disk = True
+                        disk = None
+                # Otherwise leave disk as None (no persistent disk)
+
+        # Validate GPU type and count (for both modes)
+        # GPU type already validated earlier, just extract max_gpus if not already set
+        if max_gpus is None:
+            gpu_type = gpu_type.lower()
+            if gpu_type not in gpu_configs:
+                valid_types = ", ".join(sorted(gpu_configs.keys()))
+                rprint(
+                    f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid_types}[/red]"
+                )
+                return
+            max_gpus = gpu_configs[gpu_type]["max_gpus"]
+        elif gpu_type:
+            gpu_type = gpu_type.lower()  # Ensure normalized
+
+        # Special validation for CPU-only instances
+        if gpu_type.startswith("cpu-"):
+            if gpu_count != 0:
+                rprint(
+                    f"[red]❌ CPU-only instances must have --gpus=0 or omit --gpus, not {gpu_count}[/red]")
+                return
+        elif gpu_count == 0:
+            rprint(
+                f"[red]❌ GPU type '{gpu_type}' must have --gpus > 0. Use cpu-arm or cpu-x86 for CPU-only instances[/red]")
+            return
+
+        # Check if this is a multinode request
+        if gpu_count > max_gpus:
+            # Validate that it's a valid multiple for multinode
+            if gpu_count % max_gpus != 0:
+                rprint(
+                    f"[red]❌ For multinode deployments, GPU count must be a multiple of {max_gpus} (max per node for {gpu_type})[/red]"
+                )
+                rprint(
+                    f"[yellow]Valid counts: {max_gpus}, {max_gpus*2}, {max_gpus*3}, etc.[/yellow]")
+                return
+
+            # Calculate number of nodes needed
+            num_nodes = gpu_count // max_gpus
+
+            # For non-interactive mode, require --distributed flag
+            if not use_interactive and not distributed:
+                rprint(
+                    f"\n[red]❌ Multinode GPU reservations require the --distributed flag[/red]")
+                rprint(
+                    f"[yellow]You requested {gpu_count} GPUs ({num_nodes} nodes × {max_gpus} GPUs)[/yellow]")
+                rprint(f"[yellow]This creates a distributed setup with:[/yellow]")
+                rprint("[yellow]• Shared network drive between nodes[/yellow]")
+                rprint("[yellow]• Network connectivity between pods[/yellow]")
+                rprint(
+                    f"[yellow]• Hostname resolution (<podname>-headless.gpu-dev.svc.cluster.local)[/yellow]")
+                rprint(
+                    f"[yellow]• Master port 29500 available on all nodes[/yellow]")
+                rprint(
+                    f"\n[cyan]Add --distributed to proceed: gpu-dev reserve -g {gpu_count} --distributed[/cyan]")
+                return
+
+        # Validate parameters (CPU types have no duration limit)
+        is_cpu_type = gpu_type and gpu_type.startswith("cpu-")
+        if not is_cpu_type and hours > 24:
+            rprint("[red]Maximum reservation time is 24 hours for GPU instances[/red]")
+            return
+
+        if hours < 0.0833:  # Less than 5 minutes
+            rprint(
+                "[red]❌ Minimum reservation time is 5 minutes (0.0833 hours)[/red]")
+            return
+
+        # Validate Docker options
+        if dockerfile and dockerimage:
+            rprint("[red]❌ Cannot specify both --dockerfile and --dockerimage[/red]")
+            return
+
+        # Process Dockerfile if provided
+        dockerfile_s3_key = None
+        if dockerfile:
+            try:
+                import os
+                import tarfile
+                import tempfile
+                import uuid
+
+                # Check file size (512KB limit for individual Dockerfile)
+                file_size = os.path.getsize(dockerfile)
+                if file_size > 512 * 1024:
+                    rprint(
+                        f"[red]❌ Dockerfile too large: {file_size} bytes (max 512KB)[/red]")
+                    return
+
+                # Create build context (Dockerfile + any files in same directory)
+                dockerfile_dir = os.path.dirname(os.path.abspath(dockerfile))
+                dockerfile_name = os.path.basename(dockerfile)
+
+                rprint(
+                    f"[cyan]📦 Creating build context from {dockerfile_dir}[/cyan]")
+
+                # Create a temporary tar.gz with the build context
+                with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as temp_tar:
+                    with tarfile.open(temp_tar.name, 'w:gz') as tar:
+                        # Add all files from the Dockerfile directory
+                        for root, dirs, files in os.walk(dockerfile_dir):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                # Calculate relative path from dockerfile_dir
+                                arcname = os.path.relpath(
+                                    file_path, dockerfile_dir)
+                                tar.add(file_path, arcname=arcname)
+
+                        # Ensure Dockerfile is at root with standard name if needed
+                        if dockerfile_name.lower() != 'dockerfile':
+                            dockerfile_path = os.path.join(
+                                dockerfile_dir, dockerfile_name)
+                            tar.add(dockerfile_path, arcname='Dockerfile')
+
+                    # Check compressed size limit (SQS has 1 MiB limit, base64 adds ~33% overhead)
+                    compressed_size = os.path.getsize(temp_tar.name)
+                    # ~700KB to allow for base64 overhead and other message fields
+                    max_tar_size = 700 * 1024
+                    if compressed_size > max_tar_size:
+                        os.unlink(temp_tar.name)
+                        rprint(
+                            f"[red]❌ Build context too large: {compressed_size} bytes (max ~700KB compressed)[/red]")
+                        return
+
+                    # Base64 encode the tar.gz for SQS message
+                    import base64
+                    with open(temp_tar.name, 'rb') as f:
+                        build_context_data = base64.b64encode(
+                            f.read()).decode('utf-8')
+
+                    dockerfile_s3_key = build_context_data  # Pass base64 data instead of S3 key
+
+                    # Cleanup temp file
+                    os.unlink(temp_tar.name)
+
+                    rprint(
+                        f"[green]✅ Build context prepared: {compressed_size} bytes compressed[/green]")
+
+            except Exception as e:
+                rprint(f"[red]❌ Error processing Dockerfile: {str(e)}[/red]")
+                return
+
+        # Use a single spinner context for the entire process
+        with Live(
+            Spinner("dots", text="📡 Starting reservation process..."), console=console
+        ) as live:
+            # Setup config and reservation manager
+            if use_interactive:
+                # Already have config, user_info, and reservation_mgr from interactive setup
+                pass
+            else:
+                # Load config for non-interactive mode
+                live.update(
+                    Spinner("dots", text="📡 Contacting reservation service...")
+                )
+                config = load_config()
+
+                live.update(Spinner("dots", text="📡 Authenticating..."))
+
+                # Authenticate using AWS credentials - if you can call AWS, you're authorized
+                try:
+                    user_info = authenticate_user(config)
+                except RuntimeError as e:
+                    live.stop()
+                    rprint(f"[red]❌ {str(e)}[/red]")
+                    return
+
+                # Validate SSH key matches configured GitHub username (cached, ~0ms)
+                if not _validate_ssh_key_or_exit(config, live):
+                    return
+
+                live.update(Spinner("dots", text="📡 Preparing reservation..."))
+                reservation_mgr = ReservationManager(config)
+
+                # Track if user explicitly requests no persistent disk
+                explicit_no_disk = explicit_no_disk_from_param
+
+                # Validate disk if specified
+                if disk:
+                    from .disks import list_disks
+                    existing_disks = list_disks(user_info["user_id"], config)
+                    disk_names = [d["name"] for d in existing_disks]
+
+                    if disk not in disk_names:
+                        # Disk doesn't exist, ask for confirmation
+                        live.stop()
+                        rprint(f"\n[yellow]⚠️  Disk '{disk}' does not exist[/yellow]")
+
+                        # Check if we can prompt for confirmation
+                        if check_interactive_support():
+                            from rich.prompt import Confirm
+                            create_disk = Confirm.ask(
+                                f"Do you want to create a new disk named '{disk}'?",
+                                default=False
+                            )
+
+                            if not create_disk:
+                                rprint("[yellow]Reservation cancelled[/yellow]")
+                                return
+
+                            rprint(f"[cyan]✓ Will create new disk '{disk}' during reservation[/cyan]\n")
+                        else:
+                            # Non-interactive mode, cannot prompt
+                            rprint(f"[red]❌ Disk '{disk}' does not exist[/red]")
+                            rprint(f"[yellow]Available disks: {', '.join(disk_names) if disk_names else 'none'}[/yellow]")
+                            rprint(f"[yellow]Create the disk first: gpu-dev disk create {disk}[/yellow]")
+                            return
+
+                        live.start()
+                    else:
+                        # Disk exists, check if it's in use
+                        from .disks import get_disk_in_use_status
+                        disk_info = next((d for d in existing_disks if d['name'] == disk), None)
+
+                        if disk_info and disk_info['in_use']:
+                            live.stop()
+                            res_id = disk_info.get('reservation_id', 'unknown')
+                            rprint(f"\n[yellow]⚠️  Disk '{disk}' is currently in use by reservation {res_id[:8]}[/yellow]")
+
+                            # Check if we can prompt for alternative
+                            if check_interactive_support():
+                                import questionary
+                                from .interactive import custom_style
+
+                                # Build choices
+                                choices = []
+
+                                # Show all non-deleted disks, marking in-use ones as disabled
+                                all_disks = [d for d in existing_disks if not d.get('is_deleted', False)]
+                                available_disks = [d for d in all_disks if not d['in_use']]
+                                in_use_disks = [d for d in all_disks if d['in_use']]
+
+                                if available_disks:
+                                    choices.append(questionary.Separator("=== Available Disks ==="))
+                                    for d in available_disks:
+                                        display = f"{d['name']} ({d['size_gb']}GB, {d['snapshot_count']} snapshots)"
+                                        choices.append(questionary.Choice(
+                                            title=display,
+                                            value=("select", d['name'])
+                                        ))
+
+                                if in_use_disks:
+                                    choices.append(questionary.Separator("=== In Use ==="))
+                                    for d in in_use_disks:
+                                        res_id = d.get('reservation_id', '?')[:8]
+                                        display = f"{d['name']} ({d['size_gb']}GB) — in use by {res_id}"
+                                        choices.append(questionary.Choice(
+                                            title=display,
+                                            value=("in_use", d['name']),
+                                            disabled="currently in use",
+                                        ))
+
+                                choices.append(questionary.Separator("=== Options ==="))
+                                choices.append(questionary.Choice(
+                                    title="Create a new disk",
+                                    value=("create", None)
+                                ))
+                                choices.append(questionary.Choice(
+                                    title="Continue without persistent disk (temporary storage)",
+                                    value=("no_disk", None)
+                                ))
+                                choices.append(questionary.Choice(
+                                    title="Cancel reservation",
+                                    value=("cancel", None)
+                                ))
+
+                                answer = questionary.select(
+                                    "What would you like to do?",
+                                    choices=choices,
+                                    style=custom_style
+                                ).ask()
+
+                                if not answer or answer[0] == "cancel":
+                                    rprint("[yellow]Reservation cancelled[/yellow]")
+                                    return
+
+                                action, value = answer
+
+                                if action == "select":
+                                    disk = value
+                                    rprint(f"[cyan]✓ Using disk '{disk}'[/cyan]\n")
+                                elif action == "create":
+                                    from rich.prompt import Prompt
+                                    new_disk_name = Prompt.ask("Enter new disk name")
+                                    disk = new_disk_name
+                                    rprint(f"[cyan]✓ Will create new disk '{disk}' during reservation[/cyan]\n")
+                                elif action == "no_disk":
+                                    disk = None
+                                    explicit_no_disk = True
+                                    rprint("[cyan]✓ Continuing without persistent disk (temporary storage)[/cyan]\n")
+
+                                live.start()
+                            else:
+                                # Non-interactive mode, cannot prompt
+                                rprint(f"[red]❌ Disk '{disk}' is already in use[/red]")
+                                rprint(f"[yellow]Use a different disk or wait for the reservation to end[/yellow]")
+                                return
+
+            # Submit reservation request
+            live.update(
+                Spinner("dots", text="📡 Submitting reservation request...")
+            )
+
+            persistent_reservations = []
+            # Only warn about a same-disk conflict when the user actually wants a
+            # disk. If they explicitly asked for none (--no-persist / --disk none),
+            # the "you'll start empty" warning is redundant noise — skip it.
+            if not ignore_no_persist and not no_persist and not explicit_no_disk_from_param:
+                existing_reservations = reservation_mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=[
+                        "active", "preparing", "queued", "pending"],
+                )
+
+                # Find reservations that use the SAME disk as the one selected
+                # (named disk system allows multiple disks, so only block if same disk is in use)
+                selected_disk_name = disk or "default"
+                persistent_reservations = [
+                    res
+                    for res in existing_reservations
+                    if res.get("ebs_volume_id") and res.get("ebs_volume_id").strip()
+                    and res.get("disk_name", "default") == selected_disk_name
+                ]
+
+            # Stop spinner before user interaction
+            if persistent_reservations:
+                live.stop()
+                # Should only be one
+                persistent_res = persistent_reservations[0]
+                persistent_res_id = persistent_res.get(
+                    "reservation_id", "unknown")[:8]
+
+                rprint(
+                    f"\n[yellow]⚠️  Warning: Disk '{selected_disk_name}' is currently mounted on reservation {persistent_res_id}[/yellow]"
+                )
+                rprint(
+                    f"[yellow]This new reservation will NOT have disk '{selected_disk_name}' and will start empty.[/yellow]"
+                )
+                rprint(
+                    "[yellow]Your data will NOT be automatically backed up when it expires.[/yellow]"
+                )
+                rprint("\n[cyan]Options:[/cyan]")
+                rprint(
+                    "1. Continue and make this new reservation without persistent data disk"
+                )
+                rprint(
+                    f"2. Cancel existing reservation: [cyan]gpu-dev cancel {persistent_res_id}[/cyan]"
+                )
+                rprint(
+                    f"3. Use a different disk: [cyan]gpu-dev reserve --disk <other-disk-name>[/cyan]"
+                )
+                rprint(
+                    f"4. Use [cyan]--ignore-no-persist[/cyan] flag to skip this warning"
+                )
+
+                # Ask for confirmation
+                try:
+                    choice = click.confirm(
+                        "\nDo you want to continue with a new reservation (no persistent disk)?"
+                    )
+                    if not choice:
+                        rprint("[yellow]Reservation cancelled by user[/yellow]")
+                        return
+                except (KeyboardInterrupt, click.Abort):
+                    rprint("\n[yellow]Reservation cancelled by user[/yellow]")
+                    return
+
+                # Restart spinner for submission
+                live.start()
+                live.update(
+                    Spinner("dots", text="📡 Submitting reservation request...")
+                )
+            else:
+                # No persistent reservations - continue with same spinner
+                live.update(
+                    Spinner("dots", text="📡 Submitting reservation request...")
+                )
+
+            # Determine if this is multinode and submit appropriate reservation
+            # If user confirmed to continue without persistent disk, set flag
+            # --no-persist explicitly disables persistent disk
+            no_persistent_disk = no_persist or bool(persistent_reservations) or explicit_no_disk or explicit_no_disk_from_param
+
+            # Parse node labels from --node-label options (format: key=value)
+            node_labels = {}
+            for label in node_label:
+                if "=" in label:
+                    key, value = label.split("=", 1)
+                    node_labels[key.strip()] = value.strip()
+                else:
+                    console.print(f"[yellow]Warning: Invalid node-label format '{label}', expected key=value[/yellow]")
+
+            max_gpus = gpu_configs[gpu_type]["max_gpus"]
+
+            # Fast path: synchronous warm-pool claim, always attempted (no opt-out
+            # flag — direct is the only path). Single-node, ephemeral, default-image,
+            # on-demand only; the server re-checks eligibility and we fall back to
+            # SQS silently on any miss / no warm pod / no Function-URL access.
+            if gpu_count <= max_gpus and not disk and not ref and not dockerfile_s3_key and not dockerimage and not spot:
+                live.stop()
+                _t0 = time.time()
+                direct_res = reservation_mgr.claim_direct(
+                    user_id=user_info["user_id"], gpu_count=gpu_count, gpu_type=gpu_type,
+                    duration_hours=hours, name=name,
+                    github_user=user_info["github_user"], ref=ref)
+                if direct_res:
+                    _show_direct_success(direct_res, time.time() - _t0)
+                    _maybe_show_sdk_tip()
+                    _maybe_autoconnect(ctx, direct_res.get("reservation_id"), no_connect)
+                    return
+                live.start()
+                live.update(Spinner("dots", text="📡 Submitting reservation request..."))
+
+            if gpu_count > max_gpus:
+                # Multinode reservation
+                num_nodes = gpu_count // max_gpus
+                live.update(
+                    Spinner(
+                        "dots", text=f"📡 Submitting multinode reservation ({num_nodes} nodes)...")
+                )
+                reservation_ids = reservation_mgr.create_multinode_reservation(
+                    user_id=user_info["user_id"],
+                    gpu_count=gpu_count,
+                    gpu_type=gpu_type,
+                    duration_hours=hours,
+                    name=name,
+                    github_user=user_info["github_user"],
+                    jupyter_enabled=jupyter,
+                    recreate_env=recreate_env,
+                    dockerfile=dockerfile_s3_key,
+                    dockerimage=dockerimage,
+                    no_persistent_disk=no_persistent_disk,
+                    preserve_entrypoint=preserve_entrypoint,
+                    disk_name=disk,
+                    spot=spot,
+                    node_labels=node_labels if node_labels else None,
+                    ref=ref,
+                )
+            else:
+                # Single node reservation
+                reservation_id = reservation_mgr.create_reservation(
+                    user_id=user_info["user_id"],
+                    gpu_count=gpu_count,
+                    gpu_type=gpu_type,
+                    duration_hours=hours,
+                    name=name,
+                    github_user=user_info["github_user"],
+                    jupyter_enabled=jupyter,
+                    recreate_env=recreate_env,
+                    dockerfile=dockerfile_s3_key,
+                    dockerimage=dockerimage,
+                    no_persistent_disk=no_persistent_disk,
+                    preserve_entrypoint=preserve_entrypoint,
+                    disk_name=disk,
+                    spot=spot,
+                    node_labels=node_labels if node_labels else None,
+                    trace=trace,
+                    fast_cache=fast_cache,
+                    ref=ref,
+                )
+                reservation_ids = [reservation_id] if reservation_id else None
+
+        if reservation_ids:
+            if len(reservation_ids) > 1:
+                rprint(
+                    f"[green]✅ Multinode reservation submitted: {len(reservation_ids)} nodes requested[/green]"
+                )
+                # Poll for multinode completion
+                completed_reservations = reservation_mgr.wait_for_multinode_reservation_completion(
+                    reservation_ids=reservation_ids, timeout_minutes=None, verbose=verbose
+                )
+
+                if not completed_reservations:
+                    rprint(
+                        f"[yellow]💡 Use 'gpu-dev show' to check multinode reservation status[/yellow]"
+                    )
+                else:
+                    # Show connection details for all nodes
+                    rprint(
+                        f"\n[green]🎉 All {len(reservation_ids)} nodes are ready![/green]")
+                    for i, reservation in enumerate(completed_reservations):
+                        rprint(
+                            f"\n[cyan]━━━ Node {i+1}/{len(reservation_ids)} ━━━[/cyan]")
+                        # Convert raw reservation data to connection_info format expected by _show_single_reservation
+                        try:
+                            reservation_id = reservation.get(
+                                "reservation_id", "")
+                            connection_info = reservation_mgr.get_connection_info(
+                                reservation_id, user_info["user_id"])
+                            if connection_info:
+                                _show_single_reservation(connection_info)
+                            else:
+                                rprint(
+                                    f"[red]❌ Could not get connection info for {reservation_id[:8]}[/red]")
+                        except Exception as e:
+                            rprint(f"[red]❌ Error: {str(e)}[/red]")
+            else:
+                rprint(
+                    f"[green]✅ Reservation request submitted: {reservation_ids[0][:8]}...[/green]"
+                )
+                # Poll for single node completion (SSH config is always created)
+                completed_reservation = reservation_mgr.wait_for_reservation_completion(
+                    reservation_id=reservation_ids[0], timeout_minutes=None, verbose=verbose
+                )
+
+                if not completed_reservation:
+                    rprint(
+                        f"[yellow]💡 Use 'gpu-dev show {reservation_ids[0][:8]}' to check connection details later[/yellow]"
+                    )
+                else:
+                    if trace:
+                        reservation_mgr.display_reservation_trace(reservation_ids[0])
+                    _maybe_show_sdk_tip()
+                    _maybe_autoconnect(ctx, reservation_ids[0], no_connect)
+        else:
+            rprint("[red]❌ Failed to create reservation[/red]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+@main.command(context_settings={"ignore_unknown_options": True})
+@click.argument("ref", required=False)
+@click.argument("test_args", nargs=-1, required=False)
+@click.option("--lint", is_flag=True, default=False,
+              help="Run a PyTorch lint job (lintrunner) on a CPU box instead of a python test — "
+                   "mirrors CI's lint (.github/scripts/lintrunner.sh): regenerates version/type "
+                   "stubs then runs the python/general linters. Defaults to --gpu-type cpu-x86, "
+                   "no torch build. PR ref lints its diff; main lints all files; extra args override scope.")
+@click.option("--clang", is_flag=True, default=False,
+              help="With --lint, also run the C++ linters (CLANGTIDY/CLANGFORMAT). CI runs these in a "
+                   "separate job — they generate clang build files and are heavy on a full tree.")
+@click.option("--gpu-type", default=None, help="GPU type for the repro box (default: b200; cpu-x86 with --lint).")
+@click.option("--gpus", type=int, default=1, show_default=True)
+@click.option("--hours", type=float, default=3.0, show_default=True,
+              help="Lifetime ceiling for the box.")
+@click.option("--no-connect", is_flag=True, default=False,
+              help="CI mode: run the test/lint, auto-cancel, exit code = result. Default (on a TTY) drops you into the box to iterate.")
+@click.option("--keep", is_flag=True, default=False,
+              help="Never cancel the box (skip the cancel prompt / auto-cancel).")
+@click.pass_context
+def repro(ctx, ref, test_args, lint, clang, gpu_type, gpus, hours, no_connect, keep):
+    """Reserve a box, check out a PR/commit, run a test (or lint), then drop you in.
+
+    By default (in a terminal) repro runs the test and then **connects you into the
+    box** at ~/pytorch — the ref is checked out, so you can fix and re-run. The box
+    stays alive until you cancel it (you're prompted on exit). Use --no-connect for
+    CI/scripts (run the test, auto-cancel, process exit code = the test result).
+
+    REF: pr/<N>, #<N>, a bare PR number, a branch, or a commit sha. PRs use
+    pull/<N>/merge (what CI tests), falling back to /head.
+
+    TEST_ARGS are passed straight to `python` inside ~/pytorch, e.g.
+
+      gpu-dev repro pr/185264 test/inductor/test_flex_attention.py TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda
+
+    --lint runs lintrunner on a CPU box instead (no GPU, no torch build), mirroring
+    CI's lint (regenerate version/type stubs, then the python/general linters), e.g.
+
+      gpu-dev repro --lint                          # lint main (all files)
+      gpu-dev repro --lint pr/185264                # lint the PR diff (CI-equivalent)
+      gpu-dev repro --lint pr/185264 --all-files    # lint everything
+      gpu-dev repro --lint --clang pr/185264        # also run C++ clang-tidy/format
+
+    The box stays up after the run: on a TTY you're dropped in and prompted to
+    cancel on exit (use --keep to leave it running; --no-connect auto-cancels).
+    """
+    import shlex
+    import subprocess
+    import sys
+    if not ref:
+        if not lint:
+            rprint("[red]❌ Provide a REF (pr/N, branch, or commit) — or use --lint to lint main.[/red]")
+            sys.exit(2)
+        ref = "main"  # bare `repro --lint` lints current main
+    if not lint and not test_args:
+        rprint("[red]❌ Provide a test, e.g. gpu-dev repro pr/123 test/foo.py — or pass --lint for a lint job.[/red]")
+        sys.exit(2)
+    gpu_type = (gpu_type or ("cpu-x86" if lint else "b200")).lower()
+    if gpu_type.startswith("cpu"):
+        gpus = 0  # CPU reservations must have gpu_count=0
+    config = load_config()
+    reservation_mgr = ReservationManager(config)
+    try:
+        user_info = authenticate_user(config)
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]"); return
+
+    # Resolve the ref in-pod -> WANT (sha, for the by-sha cache) + FREF (fetch ref).
+    # A MERGED pr/N reproduces the actual squash/merge commit on main (the real trunk
+    # state that was red) — NOT pull/N/merge (the PR re-applied onto *current* trunk,
+    # which goes green once the fix lands). Open PRs keep pull/N/merge (= CI's view).
+    r = ref.strip(); prnum = None
+    if r.startswith("pr/"): prnum = r[3:]
+    elif r.startswith("#"): prnum = r[1:]
+    elif r.isdigit(): prnum = r
+    gh = "https://github.com/pytorch/pytorch.git"
+    if prnum:
+        api = f"https://api.github.com/repos/pytorch/pytorch/pulls/{prnum}"
+        resolve = (
+            f"PRJSON=$(curl -s -m 10 -H 'Accept: application/vnd.github+json' -H 'User-Agent: gpu-dev' {api} 2>/dev/null); "
+            "MCS=$(printf '%s' \"$PRJSON\" | grep -oE '\"merge_commit_sha\": *\"[0-9a-f]+\"' | head -1 | cut -d'\"' -f4); "
+            "if printf '%s' \"$PRJSON\" | grep -q '\"merged\": *true' && [ -n \"$MCS\" ]; then "
+            f"WANT=\"$MCS\"; FREF=\"$MCS\"; echo \"[repro] pr/{prnum} is merged -> reproducing trunk commit $MCS\"; "
+            f"else FREF=pull/{prnum}/merge; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); "
+            f"[ -n \"$WANT\" ] || {{ FREF=pull/{prnum}/head; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); echo '[repro] open PR, no /merge -> /head'; }}; fi; ")
+    else:
+        rq = shlex.quote(r)
+        resolve = (f"FREF={rq}; WANT=$(timeout 15 git ls-remote {gh} {rq} 2>/dev/null | head -1 | cut -f1); "
+                   f"[ -n \"$WANT\" ] || case {rq} in *[!0-9a-fA-F]*) WANT= ;; *) WANT={rq} ;; esac; ")
+    # in-pod fallback checkout (by-sha miss + farm unavailable): fetch the resolved ref,
+    # else check out the sha directly (reachable for a merged-PR land commit / trunk).
+    checkout = ("git fetch origin \"$FREF\" 2>/dev/null && git checkout -f FETCH_HEAD "
+                "|| git checkout -f \"$WANT\" 2>/dev/null "
+                "|| { git fetch --force origin 2>/dev/null && git checkout -f \"$WANT\"; }")
+
+    testcmd = " ".join(shlex.quote(a) for a in test_args)
+    # by-sha artifact cache: if a fully-built tree for the resolved SHA already exists
+    # (shared EFS, seeded by the build node + prior repros), stage it -> ZERO build.
+    # Otherwise build, then publish the result so the next dev (anyone) gets it instant.
+    remote = (
+        "set -e; cd /home/dev/pytorch; "
+        "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
+        "BYSHA=/ccache_shared/prebuilt/by-sha; QUEUE=/ccache_shared/prebuilt/build-queue; HIT=; "
+        # bs <sha>: stage a fully-built by-sha tree into /home/dev/pytorch (zero build); 0 on success.
+        # explicit ext check, not a glob: the pod login shell is zsh, where an unmatched glob is a hard error.
+        # require the .sha completion gate (written last) so we never stage a half-published tarball.
+        "bs() { local s=\"$1\" tb=; [ -f \"$BYSHA/$s.sha\" ] || return 1; for e in zst gz; do [ -f \"$BYSHA/$s.tar.$e\" ] && { tb=\"$BYSHA/$s.tar.$e\"; break; }; done; [ -n \"$tb\" ] || return 1; "
+        "rm -rf /home/dev/pytorch.new; mkdir -p /home/dev/pytorch.new; "
+        "case \"$tb\" in *.zst) zstd -dc \"$tb\" 2>/dev/null | tar -C /home/dev/pytorch.new --strip-components=1 -xf - 2>/dev/null ;; "
+        "*) tar -C /home/dev/pytorch.new --strip-components=1 -xzf \"$tb\" 2>/dev/null ;; esac; "
+        "[ -d /home/dev/pytorch.new/.git ] || { rm -rf /home/dev/pytorch.new; return 1; }; "
+        "rm -rf /home/dev/pytorch; mv /home/dev/pytorch.new /home/dev/pytorch; return 0; }; "
+        + resolve +
+        "echo \"[repro] target ${WANT:-?}\"; "
+        # 1) already cached -> stage it (zero build)
+        "if [ -n \"$WANT\" ] && bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] by-sha cache HIT -> staged prebuilt tree (zero build)'; fi; "
+        # 2) not cached, build farm alive -> request an off-pod build, wait, then stage
+        "if [ -z \"$HIT\" ] && [ -n \"$WANT\" ] && [ -n \"$(find \"$QUEUE/.worker-alive\" -mmin -2 2>/dev/null)\" ]; then "
+        "echo \"[repro] no cached build; requesting off-pod build of $WANT (build farm; streaming progress)…\"; printf '%s\\n' \"$FREF\" > \"$QUEUE/$WANT.req\" 2>/dev/null || true; "
+        # poll for the artifact; meanwhile tail the farm's build log (ninja [x/N]) so it's not a silent hang.
+        "i=0; LL=0; while [ $i -lt 400 ]; do [ -f \"$BYSHA/$WANT.sha\" ] && break; [ -f \"$QUEUE/$WANT.req\" ] || break; "
+        "if [ -f \"$QUEUE/$WANT.log\" ]; then NL=$(wc -l < \"$QUEUE/$WANT.log\" 2>/dev/null || echo 0); "
+        "if [ \"$NL\" -gt \"$LL\" ]; then tail -n +$((LL+1)) \"$QUEUE/$WANT.log\" 2>/dev/null | grep -aE '\\[[0-9]+/[0-9]+\\]|Building wheel|Successfully built|error' | tail -1 | sed 's/^/  [farm] /'; LL=$NL; fi; fi; "
+        "sleep 3; i=$((i+1)); done; "
+        "if bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] off-pod build ready -> staged (zero build)'; else echo '[repro] off-pod build unavailable, building locally'; fi; fi; "
+        # 3) fall back to in-pod fetch + build (+ cache the result for the next dev)
+        "if [ -z \"$HIT\" ]; then "
+        "echo \"[repro] checking out $FREF\"; " + checkout + "; "
+        "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
+        "git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 >/dev/null 2>&1 || true; "
+        "if ! PYTHONPATH=/home/dev/pytorch python -c 'import torch' 2>/dev/null; then "
+        "echo \"[repro] prebuilt torch != this commit -> rebuilding (ccache-accelerated, but the further this commit is from viable/strict, the more recompiles). checked-out: $(git log -1 --format='%h %ci')\"; "
+        # mold -run routes the libtorch_cuda.so relink through mold (~15s vs minutes); guarded.
+        # Explicit if/else (not `$M pip`): the pod login shell is zsh, which doesn't word-split
+        # unquoted vars. -v streams the cmake/ninja [x/N] progress instead of pip's blind spinner.
+        "if command -v mold >/dev/null 2>&1; then mold -run pip install --break-system-packages -e . --no-build-isolation -v; "
+        "else pip install --break-system-packages -e . --no-build-isolation -v; fi; fi; "
+        # cache this build for the next dev (detached so it survives the ssh session)
+        "SHA=$(git rev-parse HEAD 2>/dev/null); "
+        "if command -v publish-pytorch-build >/dev/null 2>&1 && [ -n \"$SHA\" ] && [ ! -f \"$BYSHA/$SHA.sha\" ]; then "
+        "echo '[repro] caching this build (by-sha) for next time…'; "
+        "setsid publish-pytorch-build \"$SHA\" >/dev/null 2>&1 < /dev/null & fi; "
+        "fi; "
+        f"echo '[repro] running: python {testcmd}'; "
+        f"PYTHONPATH=/home/dev/pytorch python {testcmd}"
+    )
+
+    runlabel, rerun_hint = "test", f"python {testcmd}"
+    if lint:
+        # Mirror pytorch CI's lint (.github/scripts/lintrunner.sh): regenerate version +
+        # type stubs (so mypy/pyrefly are accurate), then run the python/general linters.
+        # CLANGTIDY/CLANGFORMAT are a separate CI job (need generated build files, very
+        # heavy on a full tree) -> opt-in via --clang. No torch build. Source-only tree
+        # (cloned if a CPU pod doesn't have one). Scope mirrors CI: a PR lints its diff
+        # (merge-base), main lints all files; extra args override the scope.
+        if test_args:
+            scope = " ".join(test_args)
+        elif prnum:
+            scope = "--merge-base-with origin/main"
+        else:
+            scope = "--all-files"
+        runlabel = "lint"
+        rerun_hint = f"lintrunner --skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT {scope}"
+        clang_block = (
+            "echo '[lint] === C++ linters (CLANGTIDY/CLANGFORMAT) — generating clang build files (heavy)… ==='; "
+            "python -m tools.linter.clang_tidy.generate_build_files 2>/dev/null || true; "
+            f"lintrunner --force-color --take CLANGTIDY,CLANGFORMAT {scope}; rr=$?; [ $rr -ne 0 ] && RC=$rr; "
+        ) if clang else (
+            "echo '[lint] C++ linters (CLANGTIDY/CLANGFORMAT) skipped — add --clang to run them'; "
+        )
+        remote = (
+            "set +e; "
+            "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
+            "if [ ! -d /home/dev/pytorch/.git ]; then echo '[lint] no pytorch tree on this pod — cloning (partial)…'; "
+            "rm -rf /home/dev/pytorch; git clone --filter=blob:none https://github.com/pytorch/pytorch.git /home/dev/pytorch; fi; "
+            "cd /home/dev/pytorch; "
+            + resolve +
+            "echo \"[lint] target ${WANT:-?}\"; "
+            "git fetch origin main 2>/dev/null || true; "
+            "echo \"[lint] checking out $FREF\"; " + checkout + "; "
+            "echo \"[lint] HEAD $(git rev-parse --short HEAD)\"; "
+            "command -v lintrunner >/dev/null 2>&1 || pip install --break-system-packages -q lintrunner; "
+            # CI codegen so mypy/pyrefly see generated files (version.py + type stubs)
+            "echo '[lint] regenerating version + type stubs (CI parity)…'; "
+            "python -m tools.generate_torch_version --is-debug=false 2>/dev/null || true; "
+            "python -m tools.pyi.gen_pyi --native-functions-path aten/src/ATen/native/native_functions.yaml "
+            "--tags-path aten/src/ATen/native/tags.yaml --deprecated-functions-path tools/autograd/deprecated.yaml 2>/dev/null || true; "
+            "python torch/utils/data/datapipes/gen_pyi.py 2>/dev/null || true; "
+            "echo '[lint] lintrunner init…'; lintrunner init; RC=0; "
+            f"echo '[lint] === python/general linters: lintrunner {scope} ==='; "
+            f"lintrunner --force-color --skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT {scope}; rr=$?; [ $rr -ne 0 ] && RC=$rr; "
+            + clang_block +
+            "exit $RC"
+        )
+
+    # Reserve — warm claim (instant) first, else cold ephemeral. Always no-persist
+    # (so the prebuilt tree is staged; a default disk would skip staging).
+    desc = f"{gpus}x {gpu_type}" if gpus else gpu_type
+    rprint(f"[cyan]🔬 repro: reserving {desc} (warm if available)…[/cyan]")
+    rid = ssh_cmd = None
+    try:
+        res = reservation_mgr.claim_direct(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gpu_type,
+            duration_hours=hours, name="repro", github_user=user_info["github_user"], ref=None)
+    except Exception:
+        res = None
+    if res:
+        rid, ssh_cmd = res.get("reservation_id"), res.get("ssh_command")
+        rprint(f"[green]⚡ warm pod claimed: {str(rid)[:8]}[/green]")
+    else:
+        rprint("[cyan]   no warm pod — cold reserve (≈2 min)…[/cyan]")
+        rid = reservation_mgr.create_reservation(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gpu_type,
+            duration_hours=hours, name="repro", github_user=user_info["github_user"],
+            no_persistent_disk=True)
+        if not rid:
+            rprint("[red]❌ reservation failed[/red]"); return
+        reservation_mgr.wait_for_reservation_completion(reservation_id=rid, timeout_minutes=None, verbose=True)
+        conn = reservation_mgr.get_connection_info(rid, user_info["user_id"]) or {}
+        ssh_cmd = conn.get("ssh_command")
+    if not ssh_cmd or ssh_cmd.startswith("ssh user@"):
+        rprint(f"[red]❌ no SSH connection for {str(rid)[:8]}[/red]"); return
+
+    # Ensure non-interactive host-key handling, then run the test, streaming output.
+    if "StrictHostKeyChecking" not in ssh_cmd:
+        ssh_cmd = ssh_cmd.replace("ssh ", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ", 1)
+    rprint(f"[dim]→ {ssh_cmd}[/dim]\n")
+    rid8 = str(rid)[:8]
+    # lintrunner only renders its live progress bar to a TTY -> run lint over an SSH
+    # PTY (-t) so you see per-linter progress instead of silence. (-t is polite: in a
+    # non-TTY CI run it just proceeds without a PTY.)
+    run_ssh = ssh_cmd.replace("ssh ", "ssh -t ", 1) if lint else ssh_cmd
+    if lint and "--all-files" in (scope or ""):
+        rprint("[yellow]note:[/yellow] full-tree lint (ruff/mypy/pyrefly over ALL files) — several minutes. "
+               "Lint a PR (gpu-dev repro --lint pr/N) for a fast diff-only run.\n")
+    rc = 1
+    try:
+        rc = subprocess.run(f"{run_ssh} {shlex.quote(remote)}", shell=True).returncode
+    except KeyboardInterrupt:
+        rprint("\n[yellow]interrupted[/yellow]"); rc = 130
+
+    verdict = f"[green]✓ {runlabel} passed[/green]" if rc == 0 else f"[red]✗ {runlabel} failed (exit {rc})[/red]"
+
+    # Default (TTY): drop into the box so you can fix and re-run. --no-connect is the
+    # CI path: auto-cancel and exit with the test's code.
+    connect = (not no_connect) and sys.stdout.isatty()
+    if connect:
+        rprint(f"\n{verdict} — dropping you into the box at ~/pytorch ({ref} checked out).")
+        rprint(f"[dim]  re-run:  {rerun_hint}[/dim]")
+        rprint(f"[dim]  finish:  gpu-dev cancel  (from inside)  •  or exit this shell[/dim]\n")
+        shell_cmd = f"{ssh_cmd} -t {shlex.quote('cd /home/dev/pytorch 2>/dev/null; exec ${SHELL:-bash} -l')}"
+        try:
+            subprocess.run(shell_cmd, shell=True)
+        except KeyboardInterrupt:
+            pass
+        if keep:
+            rprint(f"[cyan]📌 left {rid8} running — connect: gpu-dev connect {rid8} • cancel: gpu-dev cancel {rid8}[/cyan]")
+            return
+        try:
+            drop = click.confirm(f"Cancel repro box {rid8}?", default=True)
+        except (KeyboardInterrupt, EOFError, click.Abort):
+            drop = False
+        if drop:
+            try:
+                reservation_mgr.cancel_reservation(rid, user_info["user_id"])
+                rprint(f"[green]🧹 cancelled {rid8}[/green]")
+            except Exception as e:
+                rprint(f"[yellow]cancel failed for {rid8}: {e}[/yellow]")
+        else:
+            rprint(f"[cyan]📌 left {rid8} running — connect: gpu-dev connect {rid8} • cancel: gpu-dev cancel {rid8}[/cyan]")
+        return
+
+    # --no-connect / non-TTY: auto-cancel unless --keep, exit code = test result.
+    if keep:
+        rprint(f"[cyan]📌 kept {rid8} — gpu-dev connect {rid8} • gpu-dev cancel {rid8}[/cyan]")
+    else:
+        try:
+            reservation_mgr.cancel_reservation(rid, user_info["user_id"])
+            rprint(f"[green]🧹 cancelled repro box {rid8}[/green]")
+        except Exception as e:
+            rprint(f"[yellow]auto-cancel failed for {rid8}: {e}[/yellow]")
+    rprint(f"\n[bold]repro exit code: {rc}[/bold] ({verdict})")
+    sys.exit(rc)
+
+
+_SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
+                     "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000",
+                     "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86", "cpu-spot"]
+
+
+def _build_submit_remote_script(workdir: str, remote_cmd: str, ref: Optional[str],
+                                no_build: bool) -> str:
+    """Build the remote shell script `submit` runs over SSH (under `bash -lc`).
+
+    Without --ref this is just `cd <workdir> && <cmd>`. With --ref the pytorch
+    tree is staged in the *background* in-pod (stage-pytorch &), and the tree is
+    only chowned to dev + the ref fully checked out at the very end. Running the
+    user command before that finishes is the footgun Driss hit: a root-owned tree
+    (git "dubious ownership") and a source/installed-torch mismatch (the ref is
+    checked out but the prebuilt .so is the stale base build -> `import torch`
+    fails). So with --ref we prepend a preamble that:
+      1. waits for staging to finish (`.pytorch-staging` marker removed at end),
+      2. marks /home/dev/pytorch a git safe.directory for the dev user,
+      3. unless --no-build, rebuilds incrementally so installed torch == the
+         checked-out source (warm build/ -> ~tens of seconds; a rebuild failure
+         exits 90 before the user command runs).
+    The rebuild/safe.directory only touch pytorch when staging actually ran
+    (`.pytorch-ready` present), so --disk reservations (ref ignored, no staging)
+    are unaffected.
+    """
+    import shlex
+    cd_run = f"cd {shlex.quote(workdir)} && {remote_cmd}"
+    if not ref:
+        return cd_run
+    lines = [
+        'if [ -e /home/dev/.pytorch-staging ]; then',
+        '  echo "[gpu-dev] waiting for background pytorch --ref staging to finish…"',
+        '  for _i in $(seq 1 3600); do [ -e /home/dev/.pytorch-staging ] || break; sleep 1; done',
+        'fi',
+        'if [ -f /home/dev/.pytorch-ready ]; then',
+        '  git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true',
+    ]
+    if not no_build:
+        lines += [
+            '  echo "[gpu-dev] rebuilding torch to match --ref (pip install -e . --no-build-isolation)…"',
+            '  ( cd /home/dev/pytorch && pip install -e . --no-build-isolation ) || { echo "[gpu-dev] torch rebuild failed"; exit 90; }',
+        ]
+    lines += ['fi', cd_run]
+    return "\n".join(lines)
+
+
+@main.command(context_settings={"ignore_unknown_options": True})
+@click.option("--gpu-type", type=click.Choice(_SUBMIT_GPU_TYPES, case_sensitive=False), default="a100", show_default=True)
+@click.option("--gpus", type=int, default=1, show_default=True, help="GPU count (multinode if > per-node max).")
+@click.option("--hours", type=float, default=1.0, show_default=True, help="Reservation lifetime ceiling — job auto-cancels well before this if it finishes.")
+@click.option("--disk", type=str, default=None, help="Persistent disk name (master node only). Omit for ephemeral storage.")
+@click.option("--ref", type=str, default=None,
+              help="Pytorch ref to pre-stage in /home/dev/pytorch: branch/tag, PR (pr/123, #123, or bare 123), or commit sha. Defaults to master; 'none' to skip. Ignored with --disk.")
+@click.option("--no-persistent-disk", is_flag=True, help="Skip persistent disk entirely.")
+@click.option("--spot", is_flag=True, default=False,
+              help="Acknowledge spot instance (~1/3 cost, may be preempted). Required for spot-only types.")
+@click.option("--dockerfile", type=click.Path(exists=True, dir_okay=False, resolve_path=True), default=None,
+              help="Local Dockerfile to build into the pod image (build context = the Dockerfile's directory).")
+@click.option("--dockerimage", type=str, default=None,
+              help="Pre-built container image reference (e.g. ghcr.io/me/img:tag) to run instead of the default.")
+@click.option("--preserve-entrypoint", is_flag=True,
+              help="Keep the custom image's ENTRYPOINT/CMD instead of letting gpu-dev wrap with the SSH harness. Note: submit needs SSH to work.")
+@click.option("--runtime", type=click.Path(exists=True, file_okay=False, resolve_path=True), default=None,
+              help="Local directory to rsync to /workspace/submit-<id>/ on master node before run.")
+@click.option("--no-pull", is_flag=True, help="Skip syncing the remote workspace back to --runtime after the job finishes.")
+@click.option("--no-build", is_flag=True,
+              help="With --ref, skip the incremental torch rebuild before the command (Python-only PRs / quick checks). Default: rebuild so `import torch` reflects the ref.")
+@click.option("--keep-alive", is_flag=True, help="Don't cancel the reservation when the job exits.")
+@click.option("--name", type=str, default=None, help="Reservation name.")
+@click.option("--timeout", type=int, default=24 * 60, show_default=True,
+              help="Minutes to wait for the reservation to become active. Defaults to 24h since GPU reservations may queue when the cluster is full.")
+@click.argument("command", nargs=-1, required=True)
+@click.pass_context
+def submit(ctx, gpu_type, gpus, hours, disk, ref, no_persistent_disk, spot, dockerfile, dockerimage, preserve_entrypoint,
+           runtime, no_pull, no_build, keep_alive, name, timeout, command):
+    """Submit a job: reserve, sync code, run, sync results back, auto-cancel.
+
+    \b
+    Examples:
+      gpu-dev submit --runtime ./ -- python train.py
+      gpu-dev submit --gpus 16 --gpu-type h100 --runtime . -- bash run.sh
+      gpu-dev submit --keep-alive -- nvidia-smi
+
+    The job runs on rank 0 (master pod). For multinode jobs, MULTINODE_HOSTS / RANK /
+    SIZE / MASTER_ADDR / MASTER_PORT are exported on every pod so torchrun and friends
+    work without manual wiring. Exit code mirrors the remote command's exit code.
+    """
+    import subprocess
+    import shlex
+    import sys
+    from pathlib import Path
+
+    if not command:
+        rprint("[red]❌ Provide a command after --, e.g. gpu-dev submit --runtime ./ -- python train.py[/red]")
+        sys.exit(2)
+
+    # Catch the common typo where the user drops the leading -- on an option name and
+    # the option's value gets swept into the command (because submit accepts arbitrary
+    # commands via ignore_unknown_options). Without this guard the remote shell happily
+    # runs `gpus 1 bash run.sh` and the user wonders why.
+    _submit_flag_names = {"gpus", "gpu-type", "hours", "disk", "no-persistent-disk",
+                          "dockerfile", "dockerimage", "preserve-entrypoint", "runtime",
+                          "no-pull", "keep-alive", "name", "timeout"}
+    if command[0] in _submit_flag_names:
+        rprint(f"[red]❌ '{command[0]}' looks like a missing '--'. Did you mean '--{command[0]}'? "
+               f"Put your command after '--', e.g. gpu-dev submit --{command[0]} <value> ... -- bash run.sh[/red]")
+        sys.exit(2)
+
+    # rsync is on macOS by default and on virtually every Linux distro; bail early with a
+    # readable message if the user has somehow uninstalled it locally rather than failing
+    # mid-flight after the reservation has already been created.
+    if runtime:
+        import shutil
+        if not shutil.which("rsync"):
+            rprint("[red]❌ rsync not found on PATH locally. Install it (Mac: 'brew install rsync', Debian/Ubuntu: 'sudo apt install rsync') and retry.[/red]")
+            sys.exit(2)
+
+    gt = gpu_type.lower()
+    # Per-type max GPUs (mirrors gpu_configs in reserve flow)
+    max_per_node = {
+        "t4": 4, "l4": 4, "a10g": 4, "rtxpro6000": 4, "t4-small": 1,
+        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
+        "h100-mig-1g": 16, "h100-mig-2g": 8, "h100-mig-3g": 8,
+        "b200-mig-1g": 4, "b200-mig-2g": 2, "b200-mig-3g": 2,
+        "cpu-arm": 0, "cpu-x86": 0,
+    }.get(gt)
+    if max_per_node is None:
+        rprint(f"[red]❌ Unknown gpu-type '{gpu_type}'[/red]")
+        sys.exit(2)
+
+    is_multinode = gt not in ("cpu-arm", "cpu-x86") and gpus > max_per_node
+    if is_multinode and gpus % max_per_node != 0:
+        rprint(f"[red]❌ For multinode {gt}, --gpus must be a multiple of {max_per_node}[/red]")
+        sys.exit(2)
+
+    config = load_config()
+    try:
+        user_info = authenticate_user(config)
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        sys.exit(2)
+
+    rm = ReservationManager(config)
+
+    # Determine effective disk handling. Multinode: only master gets persistent disk; we always
+    # SSH into rank 0, so passing --disk is fine.
+    disk_name = None if no_persistent_disk else disk
+
+    # Build dockerfile context if provided (mirrors the reserve-flow logic)
+    dockerfile_payload = None
+    if dockerfile:
+        import os, tarfile, tempfile, base64
+        if os.path.getsize(dockerfile) > 512 * 1024:
+            rprint("[red]❌ Dockerfile too large (max 512KB)[/red]")
+            sys.exit(2)
+        ctx_dir = os.path.dirname(os.path.abspath(dockerfile))
+        rprint(f"[cyan]📦 Building tar.gz context from {ctx_dir}[/cyan]")
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            with tarfile.open(tmp.name, "w:gz") as tar:
+                for root, _, files in os.walk(ctx_dir):
+                    for f in files:
+                        full = os.path.join(root, f)
+                        tar.add(full, arcname=os.path.relpath(full, ctx_dir))
+                if os.path.basename(dockerfile).lower() != "dockerfile":
+                    tar.add(dockerfile, arcname="Dockerfile")
+            tar_size = os.path.getsize(tmp.name)
+            if tar_size > 700 * 1024:
+                os.unlink(tmp.name)
+                rprint(f"[red]❌ Build context too large: {tar_size}B (max ~700KB compressed)[/red]")
+                sys.exit(2)
+            with open(tmp.name, "rb") as fh:
+                dockerfile_payload = base64.b64encode(fh.read()).decode("utf-8")
+            os.unlink(tmp.name)
+        rprint(f"[green]✅ Dockerfile context: {tar_size}B compressed[/green]")
+
+    if dockerimage and not preserve_entrypoint:
+        rprint("[dim]Note: passing --dockerimage without --preserve-entrypoint, so gpu-dev wraps the image with the SSH harness.[/dim]")
+    if preserve_entrypoint and not (dockerfile or dockerimage):
+        rprint("[red]❌ --preserve-entrypoint requires --dockerfile or --dockerimage[/red]")
+        sys.exit(2)
+
+    rprint(f"[cyan]🎫 Reserving {gpus}x {gpu_type.upper()} for up to {hours}h...[/cyan]")
+    if is_multinode:
+        reservation_ids = rm.create_multinode_reservation(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
+            duration_hours=hours, name=name, github_user=user_info["github_user"],
+            no_persistent_disk=no_persistent_disk, disk_name=disk_name,
+            spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
+            preserve_entrypoint=preserve_entrypoint, source_command="submit", ref=ref)
+        if not reservation_ids:
+            rprint("[red]❌ Failed to create multinode reservation[/red]")
+            sys.exit(2)
+        primary_id = reservation_ids[0]
+    else:
+        primary_id = rm.create_reservation(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
+            duration_hours=hours, name=name, github_user=user_info["github_user"],
+            no_persistent_disk=no_persistent_disk, disk_name=disk_name,
+            spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
+            preserve_entrypoint=preserve_entrypoint, source_command="submit", ref=ref)
+        if not primary_id:
+            rprint("[red]❌ Failed to create reservation[/red]")
+            sys.exit(2)
+        reservation_ids = [primary_id]
+
+    short_id = primary_id[:8]
+    cancelled = {"done": False}
+
+    def maybe_cancel(reason: str):
+        if cancelled["done"] or keep_alive:
+            return
+        cancelled["done"] = True
+        rprint(f"[yellow]🛑 Cancelling reservation {short_id} ({reason})[/yellow]")
+        for rid in reservation_ids:
+            try:
+                rm.cancel_reservation(rid, user_info["user_id"])
+            except Exception as ce:
+                rprint(f"[dim]   cancel {rid[:8]} failed: {ce}[/dim]")
+
+    try:
+        if timeout >= 60:
+            wait_str = f"up to {timeout//60}h{(' ' + str(timeout%60) + 'm') if timeout%60 else ''}"
+        else:
+            wait_str = f"up to {timeout}m"
+        rprint(f"[cyan]⏳ Waiting for reservation {short_id} to become active ({wait_str}; can queue when cluster is full)...[/cyan]")
+        if is_multinode:
+            results = rm.wait_for_multinode_reservation_completion(reservation_ids, timeout_minutes=timeout)
+        else:
+            single = rm.wait_for_reservation_completion(primary_id, timeout_minutes=timeout)
+            results = [single] if single else None
+        if not results:
+            rprint("[red]❌ Reservation never became active[/red]")
+            maybe_cancel("activation timeout")
+            sys.exit(1)
+
+        # Resolve master pod (rank 0)
+        conn = rm.get_connection_info(primary_id, user_info["user_id"])
+        if not conn:
+            rprint("[red]❌ Could not fetch connection info[/red]")
+            maybe_cancel("no connection info")
+            sys.exit(1)
+        if conn.get("is_multinode"):
+            nodes = sorted(conn["nodes"], key=lambda n: n.get("node_index", 0))
+            master = nodes[0]
+            master_id, master_pod, master_fqdn, master_name = (
+                master["reservation_id"], master["pod_name"],
+                master.get("fqdn"), master.get("name"))
+        else:
+            master_id, master_pod, master_fqdn, master_name = (
+                primary_id, conn["pod_name"], conn.get("fqdn"), conn.get("name"))
+
+        # Ensure SSH config exists
+        gpu_dev_dir = Path.home() / ".gpu-dev"
+        config_file = gpu_dev_dir / f"{master_id[:8]}-sshconfig"
+        if not config_file.exists():
+            if not (master_fqdn and master_pod):
+                rprint("[red]❌ Master pod has no FQDN yet — can't SSH[/red]")
+                maybe_cancel("no fqdn")
+                sys.exit(1)
+            create_ssh_config_for_reservation(master_fqdn, master_pod, master_id, master_name)
+
+        # Host alias matches the Host line written by create_ssh_config_for_reservation
+        # (keyed off the reservation id, so warm-claimed masters resolve too).
+        ssh_alias = f"gpu-dev-{master_id[:8]}"
+        ssh_base = ["ssh", "-F", str(config_file), "-o", "StrictHostKeyChecking=accept-new"]
+        rsync_e = " ".join(shlex.quote(x) for x in ssh_base)
+
+        # Working directory and rsync up
+        if runtime:
+            workdir = f"/workspace/submit-{master_id[:8]}"
+            rprint(f"[cyan]📦 Syncing {runtime} → {ssh_alias}:{workdir}[/cyan]")
+            r = subprocess.run(ssh_base + [ssh_alias, f"mkdir -p {shlex.quote(workdir)}"])
+            if r.returncode != 0:
+                rprint("[red]❌ Failed to create remote workspace[/red]")
+                maybe_cancel("mkdir failed"); sys.exit(2)
+            r = subprocess.run([
+                "rsync", "-az", "--delete", "-e", rsync_e,
+                f"{runtime.rstrip('/')}/", f"{ssh_alias}:{workdir}/",
+            ])
+            if r.returncode != 0:
+                rprint("[red]❌ Upload rsync failed[/red]")
+                maybe_cancel("upload failed"); sys.exit(2)
+        else:
+            workdir = "/home/dev"
+
+        # Run remote command via login shell so MULTINODE_* etc. are loaded. With
+        # --ref, the script first waits for background pytorch staging + rebuilds
+        # so `import torch` matches the checked-out ref (see helper docstring).
+        remote_cmd = " ".join(shlex.quote(c) for c in command)
+        rprint(f"[cyan]🚀 Running on {ssh_alias}: {remote_cmd}[/cyan]\n")
+        if ref and not no_build:
+            rprint("[dim]   (--ref: will wait for staging + rebuild torch first; pass --no-build to skip)[/dim]")
+        remote_script = _build_submit_remote_script(workdir, remote_cmd, ref, no_build)
+        ssh_run = ssh_base + [ssh_alias, f"bash -lc {shlex.quote(remote_script)}"]
+        rc = subprocess.call(ssh_run)
+        rprint(f"\n[dim]Job exited with code {rc}[/dim]")
+
+        # Sync back results before cancelling
+        if runtime and not no_pull:
+            rprint(f"[cyan]📥 Syncing {ssh_alias}:{workdir}/ → {runtime}[/cyan]")
+            pull = subprocess.run([
+                "rsync", "-az", "-e", rsync_e,
+                f"{ssh_alias}:{workdir}/", f"{runtime.rstrip('/')}/",
+            ])
+            if pull.returncode != 0:
+                rprint(f"[yellow]⚠️  Result rsync exited with {pull.returncode} — your output may be incomplete[/yellow]")
+
+        maybe_cancel("job complete")
+        sys.exit(rc)
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]Interrupted — cancelling[/yellow]")
+        maybe_cancel("user interrupt")
+        sys.exit(130)
+    except SystemExit:
+        raise
+    except Exception as e:
+        rprint(f"[red]❌ Submit error: {e}[/red]")
+        maybe_cancel("submit error")
+        sys.exit(2)
+
+
+@main.command()
+@click.option(
+    "--user",
+    "-u",
+    type=str,
+    help='Show reservations for specific user (use "all" for all users, default: current user)',
+)
+@click.option(
+    "--status",
+    "-s",
+    type=str,
+    help='Filter by status (comma-separated, default: active,preparing,queued,pending). Use "all" for all statuses. Available: active,preparing,queued,pending,expired,cancelled,failed,all',
+)
+@click.option(
+    "--details",
+    "-d",
+    is_flag=True,
+    help="Show additional details including CLI version used for reservation",
+)
+@click.option(
+    "--watch",
+    "-w",
+    is_flag=True,
+    help="Watch mode: continuously update the list every 2 seconds (exit with Ctrl+C)",
+)
+@click.pass_context
+def list(ctx: click.Context, user: Optional[str], status: Optional[str], details: bool = False, watch: bool = False) -> bool:
+    """List GPU reservations (shows in-progress + recent failed reservations by default)
+
+    By default, shows your in-progress reservations (active, preparing, queued, pending)
+    plus recent failed/cancelled reservations (last hour).
+    Use --user all to see all users' reservations.
+    Use --status to filter by specific statuses.
+    Use --watch to continuously monitor reservations (refreshes every 2 seconds).
+
+    \b
+    Examples:
+        gpu-dev list                             # Your in-progress reservations
+        gpu-dev list --watch                     # Watch mode - continuously refresh
+        gpu-dev list --user all                 # All users' in-progress reservations
+        gpu-dev list --status expired           # Your expired reservations
+        gpu-dev list --status active,expired    # Your active + expired
+        gpu-dev list --status all               # All your reservations (any status)
+        gpu-dev list --user all --status all    # All reservations for all users
+
+    Available statuses: active, preparing, queued, pending, expired, cancelled, failed, all
+    """
+
+    def fetch_and_display_reservations(first_load: bool = False) -> bool:
+        """Fetch and display reservations. Returns True on success, False on error."""
+        try:
+            config = load_config()
+
+            # Authenticate using AWS credentials
+            try:
+                user_info = authenticate_user(config)
+                current_user = user_info["user_id"]
+                reservation_mgr = ReservationManager(config)
+
+                # Determine user filter
+                if user == "all":
+                    user_filter = None  # Show all users
+                elif user:
+                    user_filter = user  # Show specific user
+                else:
+                    # Show only current user (default)
+                    user_filter = current_user
+
+                # Determine status filter
+                if status:
+                    # Handle special "all" case
+                    if status.strip().lower() == "all":
+                        statuses_to_include = None  # None means all statuses
+                    else:
+                        # Parse comma-separated statuses and validate
+                        requested_statuses = [s.strip()
+                                              for s in status.split(",")]
+                        valid_statuses = [
+                            "active",
+                            "preparing",
+                            "queued",
+                            "pending",
+                            "expired",
+                            "cancelled",
+                            "failed",
+                        ]
+
+                        # Validate all requested statuses
+                        invalid_statuses = [
+                            s for s in requested_statuses if s not in valid_statuses
+                        ]
+                        if invalid_statuses:
+                            rprint(
+                                f"[red]❌ Invalid status(es): {', '.join(invalid_statuses)}[/red]"
+                            )
+                            rprint(
+                                f"[yellow]Valid statuses: {', '.join(valid_statuses)}, all[/yellow]"
+                            )
+                            return False
+
+                        statuses_to_include = requested_statuses
+                else:
+                    # Default: active statuses only (fast path)
+                    # failed/cancelled are fetched separately and filtered to last hour
+                    statuses_to_include = [
+                        "active", "preparing", "queued", "pending"]
+
+                # For default view, fetch active statuses + recent failures in parallel
+                if not status:
+                    from datetime import datetime, timezone, timedelta
+                    from concurrent.futures import ThreadPoolExecutor
+                    one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+                    def fetch_active():
+                        return reservation_mgr.list_reservations(
+                            user_filter=user_filter, statuses_to_include=statuses_to_include)
+
+                    def fetch_recent_failures():
+                        return reservation_mgr.list_reservations(
+                            user_filter=user_filter,
+                            statuses_to_include=["failed", "cancelled", "expired"],
+                            created_after=one_hour_ago)
+
+                    # Also fetch from prod-east1 (cross-region) if we're on prod
+                    def fetch_east1():
+                        try:
+                            east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+                            if not east1_env or config.user_config.get("environment") != "prod":
+                                return []
+                            import boto3 as _b3
+                            east1_ddb = _b3.resource("dynamodb", region_name=east1_env["region"])
+                            east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
+                            results = []
+                            # Fetch active + recent failures/expired (last 24h) from east1
+                            all_statuses = (statuses_to_include or ["active", "preparing", "queued", "pending"]) + ["failed", "expired", "cancelled"]
+                            for s in all_statuses:
+                                resp = east1_table.query(
+                                    IndexName="StatusIndex",
+                                    KeyConditionExpression="#s = :status",
+                                    ExpressionAttributeNames={"#s": "status"},
+                                    ExpressionAttributeValues={":status": s},
+                                )
+                                for item in resp.get("Items", []):
+                                    if user_filter and item.get("user_id") != user_filter:
+                                        continue
+                                    # For failed/expired/cancelled, only show if ended recently
+                                    if s in ("failed", "expired", "cancelled"):
+                                        ended = item.get("reservation_ended") or item.get("expired_at") or item.get("created_at", "")
+                                        if ended and ended < one_hour_ago:
+                                            continue
+                                    item["_region"] = "east1"
+                                    results.append(item)
+                            return results
+                        except Exception:
+                            return []
+
+                    with ThreadPoolExecutor(max_workers=3) as executor:
+                        active_future = executor.submit(fetch_active)
+                        failures_future = executor.submit(fetch_recent_failures)
+                        east1_future = executor.submit(fetch_east1)
+                        prod_results = active_future.result() + failures_future.result()
+                        for r in prod_results:
+                            if "_region" not in r:
+                                r["_region"] = "prod"
+                        east1_results = east1_future.result()
+                        for r in east1_results:
+                            if "_region" not in r:
+                                r["_region"] = "east1"
+                        reservations = prod_results + east1_results
+                else:
+                    prod_res = reservation_mgr.list_reservations(
+                        user_filter=user_filter, statuses_to_include=statuses_to_include
+                    )
+                    for r in prod_res:
+                        if "_region" not in r:
+                            r["_region"] = "prod"
+                    east1_res = fetch_east1() if not status else []
+                    if not east1_res:
+                        try:
+                            east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+                            if east1_env and config.user_config.get("environment") == "prod":
+                                import boto3 as _b3
+                                east1_ddb = _b3.resource("dynamodb", region_name=east1_env["region"])
+                                east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
+                                for s in (statuses_to_include or ["active", "preparing", "queued", "pending"]):
+                                    resp = east1_table.query(
+                                        IndexName="StatusIndex",
+                                        KeyConditionExpression="#s = :status",
+                                        ExpressionAttributeNames={"#s": "status"},
+                                        ExpressionAttributeValues={":status": s},
+                                    )
+                                    for item in resp.get("Items", []):
+                                        if user_filter and item.get("user_id") != user_filter:
+                                            continue
+                                        item["_region"] = "east1"
+                                        east1_res.append(item)
+                        except Exception:
+                            pass
+                    reservations = prod_res + east1_res
+            except RuntimeError as e:
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return False
+
+            # Filter failed/cancelled reservations to only show recent ones (last hour)
+            if not status or "all" not in (status.split(",") if status else []):
+                filtered_reservations = reservations
+
+                reservations = filtered_reservations
+
+            if not reservations:
+                rprint("[yellow]📋 No reservations found[/yellow]")
+                return True
+
+            # Sort reservations to show successful/pending ones at the bottom
+            def sort_key(reservation):
+                status = reservation.get("status", "unknown")
+                # Priority order: failed first, cancelled/expired middle, active/preparing/queued/pending last
+                if status == "failed":
+                    return 0  # Show first (most important)
+                elif status in ["cancelled", "expired"]:
+                    return 1  # Show second (less urgent but still notable)
+                elif status in ["active", "preparing", "queued", "pending"]:
+                    return 2  # Show last (current work)
+                else:
+                    return 1.5  # Unknown statuses between cancelled and active
+
+            reservations = sorted(reservations, key=sort_key)
+
+            # Create table with enhanced columns for queue info
+            # Check if we have cross-region reservations
+            _regions = frozenset(r.get("_region", "") for r in reservations if r.get("_region"))
+            _has_multi_region = len(_regions) > 1 or "east1" in _regions
+
+            table = Table(title="GPU Reservations")
+            table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Type", style="dim", no_wrap=True)
+            table.add_column("User", style="green")
+            table.add_column("GPUs", style="magenta")
+            table.add_column("Status")
+            table.add_column("Storage", style="dim", no_wrap=True)
+            table.add_column("Queue Info", style="cyan")
+            table.add_column("Created", style="blue")
+            table.add_column("Expires/ETA", style="red")
+            if _has_multi_region:
+                table.add_column("Region", style="dim")
+            if details:
+                table.add_column("CLI Ver", style="dim", no_wrap=True)
+                table.add_column("Lambda Ver", style="dim", no_wrap=True)
+
+            for reservation in reservations:
+                try:
+                    # Safely get reservation data with defaults
+                    reservation_id = reservation.get(
+                        "reservation_id", "unknown")
+                    user_id = reservation.get("user_id", "unknown")
+                    gpu_count = reservation.get("gpu_count", 1)
+                    gpu_type = reservation.get("gpu_type", "unknown")
+                    res_status = reservation.get("status", "unknown")
+                    created_at = reservation.get("created_at", "N/A")
+
+                    # Extract persistent disk info for storage indicator
+                    ebs_volume_id = reservation.get("ebs_volume_id", None)
+
+                    # Format user display (part before @)
+                    user_display = user_id
+                    if "@" in user_id:
+                        user_display = user_id.split("@")[0]
+
+                    # Format GPU information (MIG-friendly via _format_gpu_display)
+                    if gpu_type and gpu_type not in ["unknown", "Unknown"]:
+                        if gpu_count == 0:
+                            gpu_display = gpu_type
+                        else:
+                            gpu_display = _format_gpu_display(gpu_count, gpu_type)
+                    else:
+                        gpu_display = str(gpu_count)
+
+                    # Format expiration time or ETA
+                    expires_at = reservation.get("expires_at", "N/A")
+
+                    if res_status == "active" and expires_at != "N/A":
+                        # Use the new helper that shows time + remaining
+                        expires_formatted = _format_expires_with_remaining(expires_at)
+                    elif res_status in ["queued", "pending"]:
+                        estimated_wait = reservation.get(
+                            "estimated_wait_minutes", "?")
+                        if estimated_wait and estimated_wait not in ("?", "None", None):
+                            expires_formatted = f"~{estimated_wait}min"
+                        else:
+                            expires_formatted = "Waiting..."
+                    elif res_status in ("expired", "failed", "cancelled"):
+                        reason = reservation.get("failure_reason", "")
+                        ended = reservation.get("reservation_ended") or reservation.get("expired_at", "")
+                        ended_str = ""
+                        if ended:
+                            try:
+                                from datetime import datetime, timezone
+                                ended_dt = datetime.fromisoformat(ended.replace("Z", "+00:00"))
+                                ended_str = ended_dt.astimezone().strftime("%H:%M")
+                            except Exception:
+                                pass
+                        if "preempted" in reason.lower():
+                            expires_formatted = f"Preempted{' @' + ended_str if ended_str else ''}"
+                        elif res_status == "cancelled":
+                            expires_formatted = f"Cancelled{' @' + ended_str if ended_str else ''}"
+                        elif reason:
+                            short = reason.split("\n")[0][:20]
+                            expires_formatted = short
+                        else:
+                            expires_formatted = res_status.capitalize()
+                    else:
+                        expires_formatted = "N/A"
+
+                    # Format queue info for queued reservations
+                    queue_info = ""
+                    if res_status in ["queued", "pending"]:
+                        detail = reservation.get("current_detailed_status") or reservation.get("detailed_status") or ""
+                        if "capacity" in detail.lower() or "spot" in detail.lower():
+                            queue_info = "Waiting for spot"
+                        else:
+                            queue_info = "Spot pending"
+                    elif res_status == "active":
+                        # Show pod IP for multinode, SSH hint for single-node
+                        pod_ip = reservation.get("pod_ip", "")
+                        is_multinode = reservation.get("is_multinode", False)
+                        if is_multinode and pod_ip:
+                            queue_info = f"IP: {pod_ip}"
+                        else:
+                            ssh_command = reservation.get("ssh_command", "")
+                            if ssh_command and "dev@" in ssh_command:
+                                try:
+                                    node_info = (
+                                        ssh_command.split("dev@")[1].split()[0]
+                                        if "dev@" in ssh_command
+                                        else "Ready"
+                                    )
+                                    queue_info = f"Ready: {node_info}"
+                                except (IndexError, AttributeError):
+                                    queue_info = "Ready"
+                            else:
+                                queue_info = "Ready"
+
+                    # Format storage indicator - show disk name if available
+                    disk_name = reservation.get("disk_name")
+                    if disk_name:
+                        storage_display = f"disk: {disk_name}"
+                    elif ebs_volume_id and ebs_volume_id.strip():
+                        storage_display = "persistent"
+                    else:
+                        storage_display = "temporary"
+
+                    # Format created_at datetime (similar to expires formatting)
+                    created_formatted = "N/A"
+                    if created_at and created_at != "N/A":
+                        try:
+                            from datetime import datetime
+
+                            if isinstance(created_at, str):
+                                # Handle different ISO format variations
+                                if created_at.endswith("Z"):
+                                    created_dt_utc = datetime.fromisoformat(
+                                        created_at.replace("Z", "+00:00")
+                                    )
+                                elif "+" in created_at or created_at.endswith("00:00"):
+                                    created_dt_utc = datetime.fromisoformat(
+                                        created_at)
+                                else:
+                                    # Assume naive datetime is UTC
+                                    from datetime import timezone
+
+                                    naive_dt = datetime.fromisoformat(
+                                        created_at)
+                                    created_dt_utc = naive_dt.replace(
+                                        tzinfo=timezone.utc)
+
+                                created_dt = created_dt_utc.astimezone()  # Convert to local
+                                created_formatted = created_dt.strftime(
+                                    "%m-%d %H:%M")
+                            else:
+                                # Legacy timestamp
+                                created_dt = datetime.fromtimestamp(created_at)
+                                created_formatted = created_dt.strftime(
+                                    "%m-%d %H:%M")
+                        except (ValueError, TypeError):
+                            # Fallback to old format
+                            if len(str(created_at)) > 10:
+                                created_formatted = str(created_at)[:10]
+                            else:
+                                created_formatted = str(created_at)
+
+                    # Check for OOM events
+                    oom_count = reservation.get("oom_count", 0)
+                    if oom_count:
+                        oom_count = int(oom_count)
+
+                    # Add color coding to status and determine if whole row should be dimmed
+                    dim_row = False
+                    if res_status == "failed":
+                        status_display = f"[red]{res_status}[/red]"
+                    elif res_status in ["cancelled", "expired"]:
+                        status_display = f"[dim]{res_status}[/dim]"
+                        dim_row = True  # Grey out entire row for cancelled/expired
+                    elif res_status in ["queued", "pending", "preparing"]:
+                        status_display = f"[yellow]{res_status}[/yellow]"
+                    elif res_status == "active":
+                        if oom_count > 0:
+                            # Show OOM indicator for active reservations that have OOMed
+                            status_display = f"[green]{res_status}[/green] [red](OOM x{oom_count})[/red]"
+                        else:
+                            status_display = f"[green]{res_status}[/green]"
+                    else:
+                        # No color for unknown statuses
+                        status_display = str(res_status)
+
+                    # Extract CLI and Lambda versions if details flag is set
+                    cli_version_display = ""
+                    lambda_version_display = ""
+                    if details:
+                        cli_version = reservation.get("cli_version", "")
+                        cli_version_display = cli_version if cli_version else "<0.2.5"
+
+                        lambda_version = reservation.get("lambda_version", "")
+                        lambda_version_display = lambda_version if lambda_version else "<0.2.6"
+
+                    # Format source command type
+                    source_cmd = reservation.get("source_command", "reserve")
+                    type_display = source_cmd if source_cmd else "reserve"
+
+                    # Apply dimming to entire row for cancelled/expired reservations
+                    row_data = [
+                        f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(
+                            reservation_id)[:8],
+                        f"[dim]{type_display}[/dim]" if dim_row else type_display,
+                        f"[dim]{user_display}[/dim]" if dim_row else user_display,
+                        f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
+                        status_display,
+                        f"[dim]{storage_display}[/dim]" if dim_row else storage_display,
+                        f"[dim]{queue_info}[/dim]" if dim_row else queue_info,
+                        f"[dim]{created_formatted}[/dim]" if dim_row else created_formatted,
+                        f"[dim]{expires_formatted}[/dim]" if dim_row else expires_formatted,
+                    ]
+
+                    if details:
+                        row_data.append(
+                            f"[dim]{cli_version_display}[/dim]" if dim_row else cli_version_display)
+                        row_data.append(
+                            f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
+
+                    if _has_multi_region:
+                        region = reservation.get("_region", "prod")
+                        if region in ("us-east-1", "east1"):
+                            row_data.append("[yellow]east1[/yellow]")
+                        else:
+                            row_data.append("prod")
+
+                    table.add_row(*row_data)
+
+                except Exception as row_error:
+                    # Skip malformed reservations but log the error
+                    rprint(
+                        f"[yellow]⚠️  Skipping malformed reservation: {str(row_error)}[/yellow]"
+                    )
+                    continue
+
+            console.print(table)
+            return True
+
+        except Exception as e:
+            rprint(f"[red]❌ Error in list command: {str(e)}[/red]")
+            # Debug info for troubleshooting
+            import traceback
+
+            rprint(f"[dim]Debug traceback: {traceback.format_exc()}[/dim]")
+            return False
+
+    # Watch mode: continuously refresh the list
+    if watch:
+        import time
+        from datetime import datetime
+        from rich.console import Group
+
+        try:
+            config = load_config()
+            # Authenticate once at the start
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+            except RuntimeError as e:
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return False
+
+            # Use Live display to avoid flickering
+            with Live(console=console, refresh_per_second=4) as live:
+                while True:
+                    try:
+                        # Get current timestamp
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        # Determine user filter
+                        if user == "all":
+                            user_filter = None
+                        elif user:
+                            user_filter = user
+                        else:
+                            user_filter = user_info["user_id"]
+
+                        # Determine status filter
+                        if status:
+                            if status.strip().lower() == "all":
+                                statuses_to_include = None
+                            else:
+                                statuses_to_include = [s.strip() for s in status.split(",")]
+                        else:
+                            statuses_to_include = ["active", "preparing", "queued", "pending", "failed", "cancelled"]
+
+                        # Fetch reservations
+                        reservations = reservation_mgr.list_reservations(
+                            user_filter=user_filter, statuses_to_include=statuses_to_include
+                        )
+
+                        # Apply time filtering for failed/cancelled
+                        if not status or "all" not in (status.split(",") if status else []):
+                            from datetime import timezone, timedelta
+                            now = datetime.now(timezone.utc)
+                            one_hour_ago = now - timedelta(hours=1)
+
+                            filtered_reservations = []
+                            for reservation in reservations:
+                                reservation_status = reservation.get("status", "unknown")
+                                if reservation_status in ["active", "preparing", "queued", "pending"]:
+                                    filtered_reservations.append(reservation)
+                                elif reservation_status in ["failed", "cancelled"]:
+                                    created_at = reservation.get("created_at")
+                                    if created_at:
+                                        try:
+                                            if isinstance(created_at, str):
+                                                if created_at.endswith("Z"):
+                                                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                                elif "+" in created_at or created_at.endswith("00:00"):
+                                                    created_dt = datetime.fromisoformat(created_at)
+                                                else:
+                                                    naive_dt = datetime.fromisoformat(created_at)
+                                                    created_dt = naive_dt.replace(tzinfo=timezone.utc)
+                                            else:
+                                                created_dt = datetime.fromtimestamp(created_at, tz=timezone.utc)
+
+                                            if created_dt >= one_hour_ago:
+                                                filtered_reservations.append(reservation)
+                                        except (ValueError, TypeError):
+                                            filtered_reservations.append(reservation)
+                                else:
+                                    filtered_reservations.append(reservation)
+
+                            reservations = filtered_reservations
+
+                        # Build the table (reuse existing table building logic)
+                        if reservations:
+                            # Sort reservations
+                            def sort_key(reservation):
+                                res_status = reservation.get("status", "unknown")
+                                if res_status == "failed":
+                                    return 0
+                                elif res_status in ["cancelled", "expired"]:
+                                    return 1
+                                elif res_status in ["active", "preparing", "queued", "pending"]:
+                                    return 2
+                                else:
+                                    return 1.5
+
+                            reservations = sorted(reservations, key=sort_key)
+
+                            # Create table
+                            table = Table(title="GPU Reservations")
+                            table.add_column("ID", style="cyan", no_wrap=True)
+                            table.add_column("Type", style="dim", no_wrap=True)
+                            table.add_column("User", style="green")
+                            table.add_column("GPUs", style="magenta")
+                            table.add_column("Status")
+                            table.add_column("Storage", style="dim", no_wrap=True)
+                            table.add_column("Queue Info", style="cyan")
+                            table.add_column("Created", style="blue")
+                            table.add_column("Expires/ETA", style="red")
+
+                            # Add rows (simplified version - just the key fields)
+                            for reservation in reservations[:20]:  # Limit to 20 for watch mode
+                                try:
+                                    res_id = reservation.get("reservation_id", "unknown")[:8]
+                                    user_id = reservation.get("user_id", "unknown")
+                                    user_display = user_id.split("@")[0] if "@" in user_id else user_id
+                                    gpu_count = reservation.get("gpu_count", 1)
+                                    gpu_type = reservation.get("gpu_type", "unknown")
+                                    res_status = reservation.get("status", "unknown")
+
+                                    if gpu_type and gpu_type not in ["unknown", "Unknown"]:
+                                        if gpu_count == 0:
+                                            gpu_display = gpu_type
+                                        else:
+                                            gpu_display = _format_gpu_display(gpu_count, gpu_type)
+                                    else:
+                                        gpu_display = str(gpu_count)
+
+                                    # Check for OOM events
+                                    oom_count = reservation.get("oom_count", 0)
+                                    if oom_count:
+                                        oom_count = int(oom_count)
+
+                                    # Status display
+                                    if res_status == "failed":
+                                        status_display = f"[red]{res_status}[/red]"
+                                    elif res_status in ["cancelled", "expired"]:
+                                        status_display = f"[dim]{res_status}[/dim]"
+                                    elif res_status in ["queued", "pending", "preparing"]:
+                                        status_display = f"[yellow]{res_status}[/yellow]"
+                                    elif res_status == "active":
+                                        if oom_count > 0:
+                                            status_display = f"[green]{res_status}[/green] [red](OOM x{oom_count})[/red]"
+                                        else:
+                                            status_display = f"[green]{res_status}[/green]"
+                                    else:
+                                        status_display = str(res_status)
+
+                                    ebs_volume_id = reservation.get("ebs_volume_id", None)
+                                    disk_name = reservation.get("disk_name")
+                                    if disk_name:
+                                        storage_display = f"disk: {disk_name}"
+                                    elif ebs_volume_id and ebs_volume_id.strip():
+                                        storage_display = "persistent"
+                                    else:
+                                        storage_display = "temporary"
+
+                                    queue_info = ""
+                                    if res_status in ["queued", "pending"]:
+                                        detail = reservation.get("current_detailed_status") or reservation.get("detailed_status") or ""
+                                        if "capacity" in detail.lower() or "spot" in detail.lower():
+                                            queue_info = "Waiting for spot"
+                                        else:
+                                            queue_info = "Spot pending"
+                                    elif res_status == "active":
+                                        queue_info = "Ready"
+
+                                    # Format created_at
+                                    created_at = reservation.get("created_at", "N/A")
+                                    created_formatted = "N/A"
+                                    if created_at and created_at != "N/A":
+                                        try:
+                                            if isinstance(created_at, str):
+                                                if created_at.endswith("Z"):
+                                                    created_dt_utc = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                                elif "+" in created_at or created_at.endswith("00:00"):
+                                                    created_dt_utc = datetime.fromisoformat(created_at)
+                                                else:
+                                                    from datetime import timezone
+                                                    naive_dt = datetime.fromisoformat(created_at)
+                                                    created_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                                                created_dt = created_dt_utc.astimezone()
+                                                created_formatted = created_dt.strftime("%m-%d %H:%M")
+                                            else:
+                                                created_dt = datetime.fromtimestamp(created_at)
+                                                created_formatted = created_dt.strftime("%m-%d %H:%M")
+                                        except (ValueError, TypeError):
+                                            created_formatted = str(created_at)[:10] if len(str(created_at)) > 10 else str(created_at)
+
+                                    # Format expires_at
+                                    expires_at = reservation.get("expires_at", "N/A")
+                                    if res_status == "active" and expires_at != "N/A":
+                                        # Use the helper that shows time + remaining
+                                        expires_formatted = _format_expires_with_remaining(expires_at)
+                                    elif res_status in ["queued", "pending"]:
+                                        estimated_wait = reservation.get("estimated_wait_minutes", "?")
+                                        if estimated_wait and estimated_wait not in ("?", "None", None):
+                                            expires_formatted = f"~{estimated_wait}min"
+                                        else:
+                                            expires_formatted = "Waiting..."
+                                    else:
+                                        expires_formatted = "N/A"
+
+                                    source_cmd = reservation.get("source_command", "reserve")
+                                    type_display = source_cmd if source_cmd else "reserve"
+                                    table.add_row(res_id, type_display, user_display, gpu_display, status_display,
+                                                storage_display, queue_info, created_formatted, expires_formatted)
+                                except:
+                                    continue
+
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            display_group = Group(header, "", table)
+                            live.update(display_group)
+                        else:
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            no_reservations = "[yellow]📋 No reservations found[/yellow]"
+                            display_group = Group(header, "", no_reservations)
+                            live.update(display_group)
+
+                        # Wait before next refresh
+                        time.sleep(2)
+
+                    except KeyboardInterrupt:
+                        live.stop()
+                        rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+                        break
+                    except Exception as e:
+                        error_msg = f"[red]❌ Error: {str(e)}[/red]"
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                        display_group = Group(header, "", error_msg)
+                        live.update(display_group)
+                        time.sleep(2)
+
+            # If we exit the while loop normally (via break)
+            return True
+
+        except KeyboardInterrupt:
+            rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+            return True
+    else:
+        # Single fetch mode
+        with Live(
+            Spinner("dots", text="📡 Fetching reservations..."), console=console
+        ) as live:
+            result = fetch_and_display_reservations(first_load=True)
+            live.stop()
+        return result
+
+
+@main.command()
+@click.argument("reservation_id", required=False)
+@click.option(
+    "--all",
+    "-a",
+    is_flag=True,
+    help="Cancel all your cancellable reservations (requires confirmation)",
+)
+@click.option(
+    "--interactive/--no-interactive",
+    default=None,
+    help="Force interactive mode on/off (auto-detected by default)",
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Skip confirmation prompt when using --all",
+)
+@click.pass_context
+def cancel(
+    ctx: click.Context,
+    reservation_id: Optional[str],
+    all: bool,
+    interactive: Optional[bool],
+    force: bool,
+) -> None:
+    """Cancel a GPU reservation
+
+    Cancels an active, queued, or pending reservation and releases resources.
+    You can only cancel your own reservations.
+
+    \b
+    Interactive Mode (NEW):
+        gpu-dev cancel                           # Interactive mode - select from list
+
+    Interactive mode shows a table of your cancellable reservations and lets you
+    select one with arrow keys. If you have multiple reservations, an "All" option
+    will be available to cancel all reservations at once.
+
+    \b
+    Command-line Mode:
+        gpu-dev cancel abc12345                  # Cancel reservation abc12345
+        gpu-dev cancel abc1                      # Short form also works
+        gpu-dev cancel --all                     # Cancel ALL your reservations (with confirmation)
+
+    Note: Cancelled reservations cannot be restored. Active pods will be terminated.
+    """
+    try:
+        # Validate conflicting options
+        if all and reservation_id:
+            rprint("[red]❌ Cannot specify both --all and a reservation ID[/red]")
+            return
+
+        # Inside a gpu-dev pod, `gpu-dev cancel` (no id) shuts down THIS reservation
+        # directly. The pod knows its own reservation (GPU_DEV_RESERVATION_ID) and
+        # owner (GPU_DEV_USER_ID), so we skip the github_user / interactive list —
+        # which can't work in a pod that has no `gpu-dev config set github_user`.
+        pod_rid = os.environ.get("GPU_DEV_RESERVATION_ID", "").strip()
+        pod_uid = os.environ.get("GPU_DEV_USER_ID", "").strip()
+        if pod_rid and pod_uid and pod_uid != "warm" and not reservation_id and not all:
+            rprint("[yellow]🛑 Shutting down this reservation — if you're connected to this pod, your session will close shortly.[/yellow]")
+            try:
+                reservation_mgr = ReservationManager(load_config())
+                ok = reservation_mgr.cancel_reservation(pod_rid, pod_uid)
+            except Exception as e:
+                ok = False
+                rprint(f"[red]❌ Could not cancel from inside the pod: {e}[/red]")
+            if not ok:
+                rprint(f"[dim]If that didn't work, cancel from your laptop: gpu-dev cancel {pod_rid[:8]}[/dim]")
+            return
+
+        # Handle --all flag (non-interactive)
+        if all:
+            with Live(
+                Spinner("dots", text="📡 Loading your reservations..."), console=console
+            ) as live:
+                config = load_config()
+                try:
+                    user_info = authenticate_user(config)
+                except RuntimeError as e:
+                    live.stop()
+                    rprint(f"[red]❌ {str(e)}[/red]")
+                    return
+
+                reservation_mgr = ReservationManager(config)
+
+                # Get cancellable reservations (cross-region)
+                reservations = _fetch_reservations_cross_region(
+                    reservation_mgr, user_info["user_id"],
+                    ["active", "queued", "pending", "preparing"], config)
+
+            live.stop()
+
+            if not reservations:
+                rprint("[yellow]📋 No cancellable reservations found[/yellow]")
+                return
+
+            # Show reservations and confirm
+            rprint(
+                f"[yellow]⚠️  You are about to cancel {len(reservations)} reservation(s):[/yellow]\n"
+            )
+
+            # Create table of reservations to be cancelled
+            table = Table()
+            table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("GPUs", style="magenta")
+            table.add_column("Status", style="yellow")
+            table.add_column("Created", style="blue")
+
+            for reservation in reservations:
+                reservation_id_display = reservation.get("reservation_id", "unknown")[
+                    :8
+                ]
+                gpu_count = reservation.get("gpu_count", 1)
+                gpu_type = reservation.get("gpu_type", "unknown")
+                status = reservation.get("status", "unknown")
+                created_at = reservation.get("created_at", "N/A")
+
+                # Format GPU information (MIG-aware)
+                gpu_display = _format_gpu_display(gpu_count, gpu_type)
+
+                # Format created_at
+                created_formatted = "N/A"
+                if created_at and created_at != "N/A":
+                    try:
+                        from datetime import datetime
+
+                        if isinstance(created_at, str):
+                            if created_at.endswith("Z"):
+                                created_dt_utc = datetime.fromisoformat(
+                                    created_at.replace("Z", "+00:00")
+                                )
+                            elif "+" in created_at or created_at.endswith("00:00"):
+                                created_dt_utc = datetime.fromisoformat(
+                                    created_at)
+                            else:
+                                from datetime import timezone
+
+                                naive_dt = datetime.fromisoformat(created_at)
+                                created_dt_utc = naive_dt.replace(
+                                    tzinfo=timezone.utc)
+
+                            created_dt = created_dt_utc.astimezone()
+                            created_formatted = created_dt.strftime(
+                                "%m-%d %H:%M")
+                        else:
+                            created_dt = datetime.fromtimestamp(created_at)
+                            created_formatted = created_dt.strftime(
+                                "%m-%d %H:%M")
+                    except (ValueError, TypeError):
+                        created_formatted = (
+                            str(created_at)[:10]
+                            if len(str(created_at)) > 10
+                            else str(created_at)
+                        )
+
+                table.add_row(
+                    reservation_id_display, gpu_display, status, created_formatted
+                )
+
+            console.print(table)
+
+            # Confirmation prompt (skip if --force flag is used)
+            if not force:
+                rprint(
+                    f"\n[red]⚠️  Are you sure you want to cancel ALL {len(reservations)} reservations? This cannot be undone.[/red]")
+                try:
+                    confirmed = click.confirm(
+                        "Do you want to proceed?", default=False
+                    )
+                    if not confirmed:
+                        rprint("[yellow]Cancellation cancelled by user[/yellow]")
+                        return
+                except (KeyboardInterrupt, click.Abort):
+                    rprint("\n[yellow]Cancellation cancelled by user[/yellow]")
+                    return
+
+            # Cancel all reservations
+            cancelled_count = 0
+            failed_count = 0
+
+            with Live(
+                Spinner("dots", text="📡 Cancelling reservations..."), console=console
+            ) as live:
+                # Build east1 reservation manager for cross-region cancellations
+                east1_mgr = None
+                east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+                if east1_env:
+                    import os as _os
+                    _east1_config = Config()
+                    _east1_config.aws_region = east1_env["region"]
+                    east1_mgr = ReservationManager(_east1_config)
+
+                for reservation in reservations:
+                    res_id = reservation.get("reservation_id", "")
+                    if res_id:
+                        # Use east1 manager for east1 reservations
+                        mgr = east1_mgr if reservation.get("_region") in ("east1", "us-east-1") and east1_mgr else reservation_mgr
+                        success = mgr.cancel_reservation(
+                            res_id, user_info["user_id"]
+                        )
+                        if success:
+                            cancelled_count += 1
+                            # Remove SSH config file for this reservation
+                            remove_ssh_config_for_reservation(res_id)
+                        else:
+                            failed_count += 1
+
+            live.stop()
+
+            # Report results
+            if cancelled_count > 0:
+                rprint(
+                    f"[green]✅ Successfully cancelled {cancelled_count} reservation(s)[/green]"
+                )
+            if failed_count > 0:
+                rprint(
+                    f"[red]❌ Failed to cancel {failed_count} reservation(s)[/red]")
+
+            return
+
+        # Determine if we should use interactive mode
+        use_interactive = interactive
+        if use_interactive is None:
+            # Auto-detect: use interactive if no reservation_id provided
+            use_interactive = reservation_id is None and check_interactive_support()
+
+        if use_interactive:
+            # Interactive mode - show reservations and let user select
+            rprint("[cyan]🎯 Interactive cancellation mode[/cyan]")
+            rprint(
+                "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
+
+            with Live(
+                Spinner("dots", text="📡 Loading your reservations..."), console=console
+            ) as live:
+                config = load_config()
+                try:
+                    user_info = authenticate_user(config)
+                except RuntimeError as e:
+                    live.stop()
+                    rprint(f"[red]❌ {str(e)}[/red]")
+                    return
+
+                reservation_mgr = ReservationManager(config)
+
+                # Get cancellable reservations (active, queued, pending, preparing)
+                reservations = reservation_mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=[
+                        "active", "queued", "pending", "preparing"],
+                )
+
+            live.stop()
+
+            if not reservations:
+                rprint("[yellow]📋 No cancellable reservations found[/yellow]")
+                return
+
+            # Interactive selection
+            selected_id = select_reservation_interactive(
+                reservations, "cancel")
+            if selected_id is None:
+                rprint("[yellow]Cancellation cancelled.[/yellow]")
+                return
+
+            # Handle quit selection
+            if selected_id == "__QUIT__":
+                rprint("[yellow]Cancellation cancelled - no changes made.[/yellow]")
+                return
+
+            # Handle "all" selection
+            if selected_id == "__ALL__":
+                # Confirmation prompt for cancelling all (skip if --force flag is used)
+                if not force:
+                    rprint(
+                        f"\n[red]⚠️  Are you sure you want to cancel ALL {len(reservations)} reservations? This cannot be undone.[/red]")
+                    try:
+                        confirmed = click.confirm(
+                            "Do you want to proceed?", default=False
+                        )
+                        if not confirmed:
+                            rprint(
+                                "[yellow]Cancellation cancelled by user[/yellow]")
+                            return
+                    except (KeyboardInterrupt, click.Abort):
+                        rprint(
+                            "\n[yellow]Cancellation cancelled by user[/yellow]")
+                        return
+
+                # Cancel all reservations
+                cancelled_count = 0
+                failed_count = 0
+
+                with Live(
+                    Spinner("dots", text="📡 Cancelling all reservations..."),
+                    console=console,
+                ) as live:
+                    for reservation in reservations:
+                        res_id = reservation.get("reservation_id", "")
+                        if res_id:
+                            success = reservation_mgr.cancel_reservation(
+                                res_id, user_info["user_id"]
+                            )
+                            if success:
+                                cancelled_count += 1
+                                # Remove SSH config file for this reservation
+                                remove_ssh_config_for_reservation(res_id)
+                            else:
+                                failed_count += 1
+
+                live.stop()
+
+                # Report results
+                if cancelled_count > 0:
+                    rprint(
+                        f"[green]✅ Successfully cancelled {cancelled_count} reservation(s)[/green]"
+                    )
+                if failed_count > 0:
+                    rprint(
+                        f"[red]❌ Failed to cancel {failed_count} reservation(s)[/red]"
+                    )
+
+                return
+
+            reservation_id = selected_id
+
+        if not reservation_id:
+            rprint("[red]❌ No reservation ID provided[/red]")
+            return
+
+        # Proceed with cancellation
+        with Live(
+            Spinner("dots", text="📡 Contacting reservation service..."),
+            console=console,
+        ) as live:
+            if not use_interactive:
+                # Load config if not already loaded
+                config = load_config()
+                try:
+                    user_info = authenticate_user(config)
+                    reservation_mgr = ReservationManager(config)
+                except RuntimeError as e:
+                    live.stop()
+                    rprint(f"[red]❌ {str(e)}[/red]")
+                    return
+
+            success = reservation_mgr.cancel_reservation(
+                reservation_id, user_info["user_id"]
+            )
+
+        live.stop()
+
+        if success:
+            # Remove SSH config file for this reservation
+            remove_ssh_config_for_reservation(reservation_id)
+            rprint(
+                f"[green]✅ Reservation {reservation_id[:8]} cancelled[/green]")
+            # Cancelling from inside a gpu-dev pod kills the pod you're in — make the
+            # impending SSH drop expected instead of an abrupt "Broken pipe".
+            if os.environ.get("GPU_DEV_USER_ID"):
+                rprint(
+                    "[yellow]🛑 Shutting down this reservation — if you're connected to this pod, your session will close shortly.[/yellow]")
+        else:
+            rprint(
+                f"[red]❌ Failed to cancel reservation {reservation_id[:8]}[/red]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+@main.command()
+@click.argument("reservation_id", required=False)
+@click.pass_context
+def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
+    """Show detailed information for reservations
+
+    Shows comprehensive details for reservations. If no reservation ID is provided,
+    shows details for your active and pending reservations only. If a reservation ID is provided,
+    shows detailed information for that specific reservation.
+
+    Arguments:
+        RESERVATION_ID: Optional reservation ID (8-character prefix is sufficient)
+
+    \b
+    Examples:
+        gpu-dev show                             # Show details for active/pending reservations only
+        gpu-dev show abc12345                    # Show details for abc12345
+        gpu-dev show abc1                        # Short form works too
+
+    When showing multiple reservations, the output includes:
+        - Your active and pending reservations with full details
+        - SSH connection commands for active reservations
+        - Status information for all shown reservations
+
+    When showing a specific reservation, the output includes:
+        - SSH connection command
+        - Pod name and namespace
+        - GPU count and type
+        - Reservation start time
+        - Expiration time
+        - Current status
+
+    Note: Use 'gpu-dev list' to see recent failed/cancelled reservations.
+    """
+    try:
+        with Live(
+            Spinner("dots", text="📡 Fetching reservation details..."), console=console
+        ) as live:
+            config = load_config()
+
+            # Authenticate using AWS credentials
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+
+                if reservation_id is None:
+                    # Show user's active and pending reservations only
+                    reservations = reservation_mgr.list_reservations(
+                        user_filter=user_info["user_id"],
+                        statuses_to_include=[
+                            "active", "preparing", "queued", "pending"]
+                    )
+
+                    live.stop()
+
+                    if not reservations:
+                        rprint("[yellow]📋 No reservations found[/yellow]")
+                        return
+
+                    # Show detailed info for each reservation
+                    for i, reservation in enumerate(reservations):
+                        if i > 0:
+                            rprint("")  # Add spacing between reservations
+
+                        res_id = reservation.get("reservation_id", "unknown")
+                        connection_info = reservation_mgr.get_connection_info(
+                            res_id, user_info["user_id"]
+                        )
+
+                        if connection_info:
+                            # Use the existing display logic from the original show command
+                            _show_single_reservation(connection_info)
+
+                    return
+                else:
+                    # Show specific reservation
+                    connection_info = reservation_mgr.get_connection_info(
+                        reservation_id, user_info["user_id"]
+                    )
+
+            except RuntimeError as e:
+                live.stop()
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return
+
+        live.stop()
+
+        if connection_info:
+            _show_single_reservation(connection_info)
+        else:
+            rprint(
+                f"[red]❌ Could not get connection info for {reservation_id}[/red]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+def _print_recovery_hints(connection_info: dict) -> None:
+    """Tell the user how to unblock/recover their own reservation based on status."""
+    status = (connection_info.get("status") or "").lower()
+    disk_name = connection_info.get("disk_name") or ""
+    res_id = connection_info.get("reservation_id", "") or ""
+    short_id = res_id[:8] if res_id else "<id>"
+    hints = []
+    if status in ("failed", "expired", "cancelled"):
+        if disk_name:
+            hints.append(
+                f"Your data on disk '{disk_name}' is preserved — re-reserve with: "
+                f"gpu-dev reserve --disk {disk_name}")
+            hints.append(f"If that disk is stuck locked: gpu-dev disk unlock {disk_name}")
+        else:
+            hints.append("Re-reserve a new box with: gpu-dev reserve")
+    elif status == "active":
+        hints.append(
+            f"If status is 'active' but you can't SSH, the pod likely died (e.g. OOM). "
+            f"Free it (and your disk) with: gpu-dev cancel {short_id}  — then re-reserve.")
+        if disk_name:
+            hints.append(f"If the disk stays locked after cancel: gpu-dev disk unlock {disk_name}")
+    if hints:
+        rprint("\n[bold]Recovery:[/bold]")
+        for h in hints:
+            rprint(f"  • {h}")
+
+
+def _show_diagnostics(connection_info: dict) -> None:
+    """Render the extra diagnostics `gpu-dev debug` adds on top of the status panel:
+    failure reason, OOM events, the full status-history timeline, captured pod logs,
+    and recovery hints. All sourced from data the lambdas write to DynamoDB, so it
+    needs no cluster/lambda access."""
+    from rich.text import Text
+
+    status = (connection_info.get("status") or "").lower()
+
+    # Failure reason / latest detailed status — shown for ANY status (the normal
+    # `show` only surfaces failure_reason on 'failed'; for an active-but-dead pod
+    # this is exactly what the user needs).
+    failure_reason = (connection_info.get("failure_reason") or "").strip()
+    detailed = (connection_info.get("current_detailed_status") or "").strip()
+    if failure_reason:
+        rprint(f"\n[bold red]Why it ended:[/bold red] {failure_reason}")
+    elif detailed and status != "active":
+        rprint(f"\n[bold]Latest status:[/bold] {detailed}")
+
+    # OOM events
+    oom_count = int(connection_info.get("oom_count", 0) or 0)
+    if oom_count > 0:
+        last = connection_info.get("last_oom_at") or "unknown"
+        cont = connection_info.get("oom_container") or "?"
+        rprint(f"[red]⚠️  OOM:[/red] {oom_count} event(s) — last {last} (container: {cont})")
+
+    # Status-history timeline (the gold for "what happened to my reservation")
+    history = connection_info.get("status_history") or []
+    if history:
+        table = Table(title="Status timeline (most recent last)", show_header=True,
+                      header_style="bold", box=None, pad_edge=False)
+        table.add_column("Time", style="dim", no_wrap=True)
+        table.add_column("Event")
+        for entry in history[-40:]:
+            if isinstance(entry, dict):
+                table.add_row(str(entry.get("timestamp", "")), str(entry.get("message", "")))
+        console.print("")
+        console.print(table)
+    else:
+        rprint("\n[dim]No status history recorded for this reservation.[/dim]")
+
+    # Captured pod logs (lambda snapshot — last lines around the failure)
+    pod_logs = (connection_info.get("pod_logs") or "").strip()
+    if pod_logs:
+        console.print(Panel(Text(pod_logs[-4000:]), title="Captured pod logs (snapshot)",
+                            border_style="yellow"))
+
+    _print_recovery_hints(connection_info)
+
+
+def _show_lambda_logs(reservation_mgr, reservation_id: str, user_id: str) -> None:
+    """Fetch + render the raw lambda (CloudWatch) logs for a reservation."""
+    from rich.text import Text
+    rprint("\n[bold]Fetching lambda logs from CloudWatch…[/bold] [dim](a few seconds)[/dim]")
+    result = reservation_mgr.get_reservation_logs(reservation_id, user_id)
+    if result is None:
+        rprint("[yellow]Could not reach the log backend (it may not be deployed yet, "
+               "or you lack lambda:InvokeFunctionUrl access).[/yellow]")
+        return
+    if result.get("error"):
+        rprint(f"[yellow]Log query: {result['error']}[/yellow]")
+    lines = result.get("lines") or []
+    if not lines:
+        rprint("[dim]No lambda log lines found for this reservation (outside the "
+               "retention window, or none recorded).[/dim]")
+        return
+    body = "\n".join(f"{ln.get('timestamp','')}  {ln.get('message','')}".rstrip()
+                     for ln in lines)
+    console.print(Panel(Text(body[-16000:]),
+                        title=f"Lambda logs · {len(lines)} line(s)", border_style="cyan"))
+
+
+@main.command()
+@click.argument("reservation_id", required=False)
+@click.option("--logs", "show_logs", is_flag=True,
+              help="Also fetch the raw lambda logs for this reservation from CloudWatch.")
+@click.pass_context
+def debug(ctx: click.Context, reservation_id: Optional[str], show_logs: bool) -> None:
+    """Diagnose your own reservation — why a box died or won't connect.
+
+    Shows the status timeline, failure reason, OOM events, and captured pod logs,
+    plus recovery steps — all without needing cluster or lambda access. Add --logs
+    to also pull the raw reservation/expiry lambda logs from CloudWatch.
+
+    \b
+    Examples:
+        gpu-dev debug                 # pick from your active reservations
+        gpu-dev debug abc12345        # a specific reservation (id prefix ok)
+        gpu-dev debug abc12345 --logs # + raw lambda logs from CloudWatch
+
+    For a recently failed/expired box, find its id with 'gpu-dev list' then
+    'gpu-dev debug <id>'.
+    """
+    try:
+        config = load_config()
+        user_info = authenticate_user(config)
+        reservation_mgr = ReservationManager(config)
+
+        # In-pod fast path: the pod's own reservation id is on the env.
+        if reservation_id is None:
+            reservation_id = os.environ.get("GPU_DEV_RESERVATION_ID") or None
+
+        if reservation_id is None:
+            reservations = _fetch_reservations_cross_region(
+                reservation_mgr, user_info["user_id"],
+                ["active", "preparing", "queued", "pending"], config)
+            if not reservations:
+                rprint("[yellow]📋 No active reservations.[/yellow] To debug a recent "
+                       "failed/expired one, find its id with [bold]gpu-dev list[/bold] "
+                       "then run [bold]gpu-dev debug <id>[/bold].")
+                return
+            if len(reservations) == 1:
+                reservation_id = reservations[0].get("reservation_id")
+            else:
+                selected = select_reservation_interactive(reservations, "debug")
+                if not selected or selected in ("__QUIT__", "__ALL__"):
+                    rprint("[yellow]Cancelled.[/yellow]")
+                    return
+                reservation_id = selected
+
+        connection_info = reservation_mgr.get_connection_info(
+            reservation_id, user_info["user_id"])
+        if not connection_info:
+            rprint(f"[red]❌ No reservation found matching '{reservation_id}'[/red] "
+                   "(try a longer id prefix, or check 'gpu-dev list').")
+            return
+
+        _show_single_reservation(connection_info)
+        _show_diagnostics(connection_info)
+        if show_logs:
+            _show_lambda_logs(reservation_mgr, connection_info["reservation_id"],
+                              user_info["user_id"])
+
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+
+def _maybe_show_sdk_tip() -> None:
+    """For a user's first few reservations, nudge them toward the Python SDK +
+    `gpu-dev repro` for sub-second, scriptable workflows. Counted locally."""
+    try:
+        import json
+        path = os.path.expanduser("~/.config/gpu-dev/reserve-count.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            n = int(json.load(open(path)).get("count", 0))
+        except Exception:
+            n = 0
+        n += 1
+        json.dump({"count": n}, open(path, "w"))
+        if n <= 5:
+            rprint(
+                "\n[bold cyan]✨ NEW:[/bold cyan] use the [bold]gpu_dev[/bold] Python SDK for "
+                "sub-second reservations + repro GitHub issues →\n"
+                "   [underline]https://github.com/pytorch/ci-infra/blob/main/"
+                "gpu-dev/docs/SDK_REPRO.md[/underline]")
+    except Exception:
+        pass
+
+
+def _maybe_autoconnect(ctx: click.Context, rid: Optional[str], no_connect: bool) -> None:
+    """Drop the user straight into the pod once it's active — but only for an
+    interactive (TTY) reserve. Scripts / non-TTY just get the reservation back so
+    pipelines aren't hijacked into an ssh session. --no-connect always opts out."""
+    import sys
+    if no_connect or not rid or not sys.stdout.isatty():
+        return
+    rprint("\n[dim]Connecting… (exit the shell to leave the reservation running; gpu-dev cancel to end it)[/dim]")
+    try:
+        ctx.invoke(connect, reservation_id=rid)
+    except Exception as e:
+        rprint(f"[yellow]Auto-connect failed ({e}). Connect manually: gpu-dev connect {str(rid)[:8]}[/yellow]")
+
+
+def _show_direct_success(res: dict, elapsed: float) -> None:
+    """Print the success block for an instant warm-pool claim,
+    matching the normal reserve output (SSH config + VS Code/Cursor remote)."""
+    from gpu_dev_cli.reservations import (
+        create_ssh_config_for_reservation, _generate_vscode_command,
+        _generate_cursor_command, _make_vscode_link, _make_cursor_link)
+    rid = res.get("reservation_id", "") or ""
+    ssh_command = res.get("ssh_command", "") or ""
+    pod_name = res.get("pod_name", "") or ""
+    fqdn = res.get("fqdn") or ""
+    # Host alias keys off the reservation id — warm-claimed pods have a pod_name
+    # that is NOT gpu-dev-<resid8>, so we must not use pod_name as the ssh alias.
+    host_alias = f"gpu-dev-{rid[:8]}" if rid else pod_name
+
+    rprint(f"\n[green]✅ Instant reservation ready in {elapsed:.1f}s![/green]")
+    rprint(f"[bold]📋 Reservation ID:[/bold] {rid}")
+    if res.get("expires_at"):
+        rprint(f"[dim]⏰ Valid until: {res['expires_at']}[/dim]")
+    if rid:
+        rprint(f"[bold]⚡ Quick Connect:[/bold] gpu-dev connect {rid[:8]}")
+
+    # Build the per-reservation SSH config so `ssh gpu-dev-<resid8>` and connect work cleanly.
+    use_include = False
+    if fqdn and pod_name and rid:
+        try:
+            _cfg, use_include = create_ssh_config_for_reservation(fqdn, pod_name, rid, None)
+        except Exception:
+            pass
+    if use_include and rid:
+        rprint(f"[bold]🖥️  SSH Command:[/bold] ssh {host_alias}")
+        vscode_url = _make_vscode_link(host_alias)
+        cursor_url = _make_cursor_link(host_alias)
+        rprint(f"[bold]💻 VS Code Remote:[/bold] [link={vscode_url}]code --remote ssh-remote+{host_alias} /home/dev[/link]")
+        rprint(f"[bold]🖥️ Cursor Remote:[/bold] [link={cursor_url}]cursor --remote ssh-remote+{host_alias} /home/dev[/link]")
+    else:
+        if ssh_command:
+            rprint(f"[bold]🖥️  SSH Command:[/bold] {ssh_command}")
+        vsc = _generate_vscode_command(ssh_command) if ssh_command else None
+        cur = _generate_cursor_command(ssh_command) if ssh_command else None
+        if vsc:
+            rprint(f"[bold]💻 VS Code Remote:[/bold] {vsc}")
+        if cur:
+            rprint(f"[bold]🖥️ Cursor Remote:[/bold] {cur}")
+
+
+def _format_gpu_display(gpu_count, gpu_type):
+    """Render a friendly '{N}× {type}' string for reservation listings.
+
+    For MIG slice SKUs, surface the slice memory + the underlying physical type
+    (e.g. '2× 10GB H100 (MIG)') instead of the raw 'H100-MIG-1G' identifier.
+    """
+    if not gpu_type or str(gpu_type).lower() in ("unknown", ""):
+        return f"{gpu_count} GPU(s)"
+    gt_lower = str(gpu_type).lower()
+    mig_friendly = {
+        "h100-mig-1g": "10GB H100 (MIG)",
+        "h100-mig-2g": "20GB H100 (MIG)",
+        "h100-mig-3g": "40GB H100 (MIG)",
+        "h100-mig-4g": "40GB H100 (MIG)",
+        "h100-mig-7g": "80GB H100 (MIG)",
+        "b200-mig-1g": "23GB B200 (MIG)",
+        "b200-mig-2g": "45GB B200 (MIG)",
+        "b200-mig-3g": "90GB B200 (MIG)",
+    }
+    if gt_lower in mig_friendly:
+        return f"{gpu_count}× {mig_friendly[gt_lower]}"
+    return f"{gpu_count}x {str(gpu_type).upper()}"
+
+
+def _show_availability(show_spot: bool = False) -> None:
+    """Shared function to show GPU availability.
+
+    Spot SKUs (cpu-spot + the us-east-1 spot cluster) are hidden unless show_spot.
+    """
+    try:
+        with Live(
+            Spinner("dots", text="📡 Checking GPU availability..."), console=console
+        ) as live:
+            config = load_config()
+
+            # Authenticate and fetch availability (both regions in parallel)
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+
+                from concurrent.futures import ThreadPoolExecutor
+                _env_name = config.user_config.get("environment", "prod")
+                _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
+
+                def _fetch_east1_spot():
+                    if not show_spot or _env_name != "prod" or not _east1_spot_types:
+                        return {}
+                    east1_r = Config.ENVIRONMENTS["prod-east1"]["region"]
+                    east1_table = config.session.resource("dynamodb", region_name=east1_r).Table("pytorch-gpu-dev-gpu-availability")
+                    result = {}
+                    for item in east1_table.scan().get("Items", []):
+                        gt = item.get("gpu_type", "")
+                        if gt in _east1_spot_types:
+                            result[gt] = {
+                                "available": int(item.get("available_gpus", 0)),
+                                "total": int(item.get("total_gpus", 0)),
+                                "max_reservable": int(item.get("max_reservable", 0)),
+                                "spot_info": item.get("spot_info", {}),
+                            }
+                    return result
+
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
+                    f_spot = ex.submit(_fetch_east1_spot)
+                    availability_info = f_avail.result()
+                    spot_region_info = f_spot.result()
+            except RuntimeError as e:
+                live.stop()
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return
+
+        if availability_info:
+            # GPU architecture mapping (for display)
+            gpu_architectures = {
+                "b200": "Blackwell (sm100)",
+                "b300": "Blackwell (sm100)",
+                "h200": "Hopper (sm90)",
+                "h100": "Hopper (sm90)",
+                "a100": "Ampere (sm80)",
+                "a10g": "Ampere (sm80)",
+                "l4": "Ada Lovelace (sm89)",
+                "rtxpro6000": "Blackwell (sm120)",
+                "h100-mig-1g": "Hopper (sm90, MIG 10GB)",
+                "h100-mig-2g": "Hopper (sm90, MIG 20GB)",
+                "h100-mig-3g": "Hopper (sm90, MIG 40GB)",
+                "b200-mig-1g": "Blackwell (sm100, MIG 23GB)",
+                "b200-mig-2g": "Blackwell (sm100, MIG 45GB)",
+                "b200-mig-3g": "Blackwell (sm100, MIG 90GB)",
+                "t4": "Turing (sm75)",
+                "cpu-x86": "CPU (x86_64)",
+                "cpu-arm": "CPU (arm64)",
+            }
+
+            # Sort order: newest GPU architectures first, then CPUs at the bottom
+            arch_priority = {
+                "Blackwell (sm100)": 0,
+                "Blackwell (sm100, MIG 90GB)": 0,
+                "Blackwell (sm100, MIG 45GB)": 0,
+                "Blackwell (sm100, MIG 23GB)": 0,
+                "Blackwell (sm120)": 0,
+                "Hopper (sm90)": 1,
+                "Hopper (sm90, MIG 40GB)": 1,
+                "Hopper (sm90, MIG 20GB)": 1,
+                "Hopper (sm90, MIG 10GB)": 1,
+                "Ada Lovelace (sm89)": 2,
+                "Ampere (sm80)": 3,
+                "Turing (sm75)": 4,
+                "CPU (x86_64)": 5,
+                "CPU (arm64)": 6,
+            }
+
+            # Split into categories. Hide spot SKUs (e.g. cpu-spot) unless --spot,
+            # but never hide everything if the env is spot-only.
+            def _is_spot(k):
+                return k == "cpu-spot" or k.endswith("-spot")
+            _non_spot_exists = any(not _is_spot(k) for k in availability_info if "mig" not in k)
+            _hide_spot = (not show_spot) and _non_spot_exists
+            full_types = {
+                k: v for k, v in availability_info.items()
+                if "mig" not in k and not (_hide_spot and _is_spot(k))
+            }
+            mig_types = {k: v for k, v in availability_info.items() if "mig" in k}
+
+            def _sort_by_arch(items):
+                return sorted(items.items(), key=lambda x: (
+                    arch_priority.get(gpu_architectures.get(x[0], "Unknown"), 99), x[0]))
+
+            def _fmt_wait(available, est_wait):
+                if available > 0: return "Available now"
+                if not est_wait: return "Unknown"
+                if est_wait < 60: return f"{int(est_wait)}min"
+                h, m = int(est_wait // 60), int(est_wait % 60)
+                return f"{h}h{f' {m}min' if m else ''}"
+
+            def _build_avail_table(title, items):
+                t = Table(title=title)
+                t.add_column("GPU Type", style="cyan")
+                t.add_column("Avail", style="green")
+                t.add_column("Max\nReservable", style="bright_green")
+                t.add_column("Total", style="blue")
+                t.add_column("Queue\nLength", style="yellow")
+                t.add_column("Architecture", style="dim")
+                t.add_column("Est. Wait Time", style="magenta")
+                for gpu_type, info in _sort_by_arch(items):
+                    avail = info.get("available", 0)
+                    maint = info.get("maintenance", False)
+                    maint_reason = info.get("maintenance_reason", "")
+                    fn = info.get("full_nodes_available", 0)
+                    if maint:
+                        ad = "[red]MAINTENANCE[/red]"
+                        wd = maint_reason or "Under maintenance"
+                    elif avail == 0:
+                        ad = f"[red]{avail}[/red]"
+                        wd = _fmt_wait(avail, info.get("estimated_wait_minutes", 0))
+                    elif fn > 0:
+                        ad = f"[green]{avail}[/green]"
+                        wd = _fmt_wait(avail, info.get("estimated_wait_minutes", 0))
+                    else:
+                        ad = f"[yellow]{avail}[/yellow]"
+                        wd = _fmt_wait(avail, info.get("estimated_wait_minutes", 0))
+                    t.add_row(
+                        gpu_type.upper(), ad,
+                        "-" if maint else str(info.get("max_reservable", 0)),
+                        str(info.get("total", 0)),
+                        "-" if maint else str(info.get("queue_length", 0)),
+                        gpu_architectures.get(gpu_type, "Unknown"), wd)
+                console.print(t)
+
+            # Section 1: Full GPUs & CPUs
+            _build_avail_table("━━━ Full GPUs & CPUs ━━━", full_types)
+
+            # Section 2: MIG Slices
+            if mig_types:
+                rprint("[dim]  Sliced GPUs — isolated fractions of a physical GPU, perfect for smaller jobs.[/dim]")
+                _build_avail_table("━━━ 🔬 MIG Slices ━━━", mig_types)
+
+            # Spot section from prod-east1
+            if spot_region_info:
+                # Spot GPU configs for max reservable (what you CAN get per node)
+                spot_gpus_per_node = {
+                    "b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8,
+                    "t4": 4, "l4": 4,
+                }
+                spot_table = Table(title="⚡ Spot Instances (us-east-1, ~70% cheaper)")
+                spot_table.add_column("GPU Type", style="cyan")
+                spot_table.add_column("Avail\nNow", style="green")
+                spot_table.add_column("In\nUse", style="yellow")
+                spot_table.add_column("Per\nNode", style="bright_green")
+                spot_table.add_column("Status", style="magenta")
+                spot_table.add_column("Spot Discount", style="dim")
+                _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
+                for gt, info in sorted(spot_region_info.items()):
+                    avail = info.get("available", 0)
+                    total = info.get("total", 0)
+                    in_use = max(0, total - avail)  # GPUs on up spot nodes already taken
+                    per_node = spot_gpus_per_node.get(gt, 8)
+                    avail_display = f"[green]{avail}[/green]" if avail > 0 else f"[dim]0[/dim]"
+                    in_use_display = f"[yellow]{in_use}[/yellow]" if in_use > 0 else f"[dim]0[/dim]"
+                    if in_use > 0:
+                        status = "[yellow]Node up (in use)[/yellow]" if avail == 0 else "[green]Node up[/green]"
+                    else:
+                        status = "[green]Node up[/green]" if avail > 0 else "Spins up on reserve (~10 min)"
+                    si = info.get("spot_info", {}) or {}
+                    sp = si.get("spot_price", "") if isinstance(si, dict) else ""
+                    if not sp or (isinstance(si, dict) and "No spot data" in str(si.get("spot_signal", ""))):
+                        avail_signal = "[green]Available[/green]" if avail > 0 else "[dim]No price data[/dim]"
+                    else:
+                        try:
+                            ratio = float(sp) / _on_demand.get(gt, 50)
+                            pct = int((1 - ratio) * 100)
+                            avail_signal = f"[green]{pct}% off on-demand[/green]" if pct > 0 else "[dim]At on-demand price[/dim]"
+                        except (ValueError, TypeError):
+                            avail_signal = "[yellow]Unknown[/yellow]"
+                    spot_table.add_row(f"{gt.upper()} *", avail_display, in_use_display, str(per_node), status, avail_signal)
+                console.print(spot_table)
+                rprint("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
+                rprint("[dim]  Separate cluster (us-east-1) with separate disks. Select via gpu-dev reserve (interactive).[/dim]")
+
+            # Show color legend
+            rprint("\n[bold]Availability legend:[/bold]")
+            rprint("  [green]●[/green]: 1+ full node available - [yellow]●[/yellow]: GPUs available, but no full node - [red]●[/red]: No GPUs available")
+
+            # Show usage tip
+            if _hide_spot:
+                rprint(
+                    "\n[dim]💡 Spot instances hidden — pass '--spot' to show (us-east-1, ~70% cheaper, may be preempted)[/dim]"
+                )
+            rprint(
+                "\n[dim]💡 Use 'gpu-dev reserve' (interactive) to see all options including MIG slices[/dim]"
+            )
+
+        else:
+            rprint("[red]❌ Could not get GPU availability information[/red]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+def _show_availability_watch(interval: int, show_spot: bool = False) -> None:
+    _env_name = load_config().user_config.get("environment", "prod")
+    _spot_types = frozenset(Config.ENVIRONMENTS.get(_env_name, {}).get("spot_types", []))
+
+    def _is_spot(k):
+        return k == "cpu-spot" or k.endswith("-spot")
+
+    """Watch mode for GPU availability with auto-refresh"""
+    import time
+    from datetime import datetime
+    from rich.console import Group
+    from rich.panel import Panel
+
+    try:
+        config = load_config()
+        # Authenticate once at the start
+        try:
+            user_info = authenticate_user(config)
+            reservation_mgr = ReservationManager(config)
+        except RuntimeError as e:
+            rprint(f"[red]❌ {str(e)}[/red]")
+            return
+
+        # Use Live display to avoid flickering
+        with Live(console=console, refresh_per_second=4) as live:
+            while True:
+                try:
+                    # Get current timestamp
+                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    # Get availability data
+                    availability_info = reservation_mgr.get_gpu_availability_by_type()
+
+                    # Hide spot SKUs (e.g. cpu-spot) unless --spot, never hide everything.
+                    if availability_info and not show_spot:
+                        if any(not _is_spot(k) for k in availability_info if "mig" not in k):
+                            availability_info = {
+                                k: v for k, v in availability_info.items() if not _is_spot(k)
+                            }
+
+                    if availability_info:
+                        # GPU architecture mapping (for display)
+                        gpu_architectures = {
+                            "b200": "Blackwell (sm100)",
+                "b300": "Blackwell (sm100)",
+                            "h200": "Hopper (sm90)",
+                            "h100": "Hopper (sm90)",
+                            "a100": "Ampere (sm80)",
+                            "a10g": "Ampere (sm80)",
+                            "l4": "Ada Lovelace (sm89)",
+                            "rtxpro6000": "Blackwell (sm120)",
+                            "h100-mig-1g": "Hopper (sm90, MIG 10GB)",
+                            "h100-mig-2g": "Hopper (sm90, MIG 20GB)",
+                            "h100-mig-3g": "Hopper (sm90, MIG 40GB)",
+                            "b200-mig-1g": "Blackwell (sm100, MIG 23GB)",
+                            "b200-mig-2g": "Blackwell (sm100, MIG 45GB)",
+                            "b200-mig-3g": "Blackwell (sm100, MIG 90GB)",
+                            "t4": "Turing (sm75)",
+                            "cpu-x86": "CPU (x86_64)",
+                            "cpu-arm": "CPU (arm64)",
+                        }
+
+                        # Sort order: newest GPU architectures first, then CPUs at the bottom
+                        arch_priority = {
+                            "Blackwell (sm100)": 0,
+                            "Blackwell (sm100, MIG 90GB)": 0,
+                            "Blackwell (sm100, MIG 45GB)": 0,
+                            "Blackwell (sm100, MIG 23GB)": 0,
+                            "Blackwell (sm120)": 0,
+                            "Hopper (sm90)": 1,
+                            "Hopper (sm90, MIG 40GB)": 1,
+                            "Hopper (sm90, MIG 20GB)": 1,
+                            "Hopper (sm90, MIG 10GB)": 1,
+                            "Ada Lovelace (sm89)": 2,
+                            "Ampere (sm80)": 3,
+                            "Turing (sm75)": 4,
+                            "CPU (x86_64)": 5,
+                            "CPU (arm64)": 6,
+                        }
+
+                        # Sort GPU types by architecture priority, then by name
+                        sorted_gpu_types = sorted(
+                            availability_info.items(),
+                            key=lambda x: (
+                                arch_priority.get(
+                                    gpu_architectures.get(x[0], "Unknown"), 99),
+                                x[0]
+                            )
+                        )
+
+                        table = Table(
+                            title="GPU Availability by Type (numbers are GPUs, not nodes)")
+                        table.add_column("GPU Type", style="cyan")
+                        table.add_column("Avail", style="green")
+                        table.add_column("Max\nReservable", style="blue")
+                        table.add_column("Total", style="blue")
+                        table.add_column("Queue\nLength", style="yellow")
+                        table.add_column("Architecture", style="dim")
+                        table.add_column("Est. Wait Time", style="magenta")
+
+                        last_arch = None
+                        for gpu_type, info in sorted_gpu_types:
+                            arch = gpu_architectures.get(gpu_type, "Unknown")
+
+                            # Add separator before CPU section
+                            if last_arch and not last_arch.startswith("CPU") and arch.startswith("CPU"):
+                                table.add_row("---", "---", "---",
+                                              "---", "---", "---", "---")
+
+                            last_arch = arch
+                            available = info.get("available", 0)
+                            max_reservable = info.get("max_reservable", 0)
+                            total = info.get("total", 0)
+                            full_nodes_available = info.get("full_nodes_available", 0)
+                            queue_length = info.get("queue_length", 0)
+                            est_wait = info.get("estimated_wait_minutes", 0)
+
+                            # Format wait time
+                            if available > 0:
+                                wait_display = "Available now"
+                            elif est_wait == 0:
+                                wait_display = "Unknown"
+                            elif est_wait < 60:
+                                wait_display = f"{int(est_wait)}min"
+                            else:
+                                hours = int(est_wait // 60)
+                                minutes = int(est_wait % 60)
+                                if minutes == 0:
+                                    wait_display = f"{hours}h"
+                                else:
+                                    wait_display = f"{hours}h {minutes}min"
+
+                            # Check maintenance mode
+                            is_maintenance = info.get("maintenance", False)
+                            maintenance_reason = info.get("maintenance_reason", "")
+
+                            if is_maintenance:
+                                available_display = f"[red]MAINTENANCE[/red]"
+                                wait_display = maintenance_reason or "Under maintenance"
+                            elif available == 0:
+                                available_display = f"[red]{available}[/red]"
+                            elif full_nodes_available > 0:
+                                available_display = f"[green]{available}[/green]"
+                            else:
+                                available_display = f"[yellow]{available}[/yellow]"
+
+                            type_label = f"{gpu_type.upper()} *" if gpu_type in _spot_types else gpu_type.upper()
+                            table.add_row(
+                                type_label,
+                                available_display,
+                                str(max_reservable) if not is_maintenance else "-",
+                                str(total),
+                                str(queue_length) if not is_maintenance else "-",
+                                arch,
+                                wait_display,
+                            )
+
+                        # Create display with header, table, and footer
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every {interval}s) • Press Ctrl+C to exit[/dim]"
+                        footer = f"[dim]💡 Use 'gpu-dev reserve --gpu-type <type>' to reserve GPUs of a specific type[/dim]"
+                        display_group = Group(header, "", table, "", footer)
+                        live.update(display_group)
+                    else:
+                        # Show error message
+                        error_msg = f"[red]❌ Could not get GPU availability information[/red]"
+                        retry_msg = f"[dim]🔄 Retrying in {interval} seconds...[/dim]"
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every {interval}s) • Press Ctrl+C to exit[/dim]"
+                        display_group = Group(header, "", error_msg, retry_msg)
+                        live.update(display_group)
+
+                    # Wait for next refresh
+                    time.sleep(interval)
+
+                except KeyboardInterrupt:
+                    live.stop()
+                    rprint("\n[yellow]👋 Exiting watch mode...[/yellow]")
+                    break
+                except Exception as e:
+                    error_msg = f"[red]❌ Error during refresh: {str(e)}[/red]"
+                    retry_msg = f"[dim]🔄 Retrying in {interval} seconds...[/dim]"
+                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    header = f"[dim]🕒 Last updated: {current_time} (refreshing every {interval}s) • Press Ctrl+C to exit[/dim]"
+                    display_group = Group(header, "", error_msg, retry_msg)
+                    live.update(display_group)
+                    time.sleep(interval)
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]👋 Exiting watch mode...[/yellow]")
+    except Exception as e:
+        rprint(f"[red]❌ Error in watch mode: {str(e)}[/red]")
+
+
+@main.command()
+@click.argument("reservation_id", required=False)
+@click.pass_context
+def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
+    """Connect to a reservation via SSH
+
+    Convenience command that wraps SSH with ProxyCommand for easy access.
+    If no reservation ID is provided, shows your active reservations and lets you select one.
+
+    Arguments:
+        RESERVATION_ID: Optional reservation ID (8-character prefix is sufficient)
+
+    \b
+    Examples:
+        gpu-dev connect                         # Interactive mode - select reservation
+        gpu-dev connect abc12345                # Connect to reservation abc12345
+        gpu-dev connect abc1                    # Short form works too
+
+    This command:
+        - Uses HTTP CONNECT tunneling through ssh.devservers.io
+        - Handles ProxyCommand setup automatically
+        - Works with agent forwarding enabled by default
+
+    For VS Code Remote or manual SSH, use 'gpu-dev show' to see full SSH command.
+    """
+    import subprocess
+    from pathlib import Path
+
+    try:
+        # Fast path: if reservation ID given, check local SSH config first (no network)
+        if reservation_id:
+            ssh_config_dir = Path.home() / ".gpu-dev"
+            config_file = ssh_config_dir / f"{reservation_id[:8]}-sshconfig"
+            if config_file.exists():
+                config_text = config_file.read_text()
+                fqdn_line = [l.strip() for l in config_text.splitlines() if l.strip().startswith("HostName")]
+                if fqdn_line:
+                    fqdn = fqdn_line[0].split(None, 1)[1]
+                    pod_name = f"gpu-dev-{reservation_id[:8]}"
+                    rprint(f"[cyan]Connecting to {pod_name}...[/cyan]\n")
+                    import subprocess, sys
+                    sys.exit(subprocess.call([
+                        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                        "-o", "ProxyCommand=gpu-dev-ssh-proxy %h %p",
+                        "-o", "ForwardAgent=yes",
+                        f"dev@{fqdn}",
+                    ]))
+
+        with Live(
+            Spinner("dots", text="📡 Fetching reservation details..."), console=console
+        ) as live:
+            config = load_config()
+
+            # Authenticate
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+            except RuntimeError as e:
+                live.stop()
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return
+
+            # If no reservation ID provided, show interactive selection
+            if reservation_id is None:
+                reservations = _fetch_reservations_cross_region(
+                    reservation_mgr, user_info["user_id"], ["active"], config)
+
+                live.stop()
+
+                if not reservations:
+                    rprint("[yellow]📋 No active reservations found[/yellow]")
+                    return
+
+                if len(reservations) == 1:
+                    # Auto-select if only one active reservation
+                    reservation_id = reservations[0].get("reservation_id")
+                    rprint(
+                        f"[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
+                else:
+                    # Interactive selection
+                    rprint("[cyan]🎯 Select reservation to connect to:[/cyan]")
+                    selected_id = select_reservation_interactive(
+                        reservations, "connect")
+                    if selected_id is None or selected_id == "__QUIT__":
+                        rprint("[yellow]Connection cancelled.[/yellow]")
+                        return
+                    reservation_id = selected_id
+                    rprint(
+                        f"\n[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
+
+                live.start()
+
+            # Try current region first, then cross-region if not found
+            connection_info = reservation_mgr.get_connection_info(
+                reservation_id, user_info["user_id"]
+            )
+
+            # If not found, try the other region
+            if not connection_info:
+                import os as _os
+                current_env = config.user_config.get("environment", "prod")
+                other_envs = {"prod": "prod-east1", "prod-east1": "prod"}
+                other_env_name = other_envs.get(current_env)
+                if other_env_name:
+                    other_env = Config.ENVIRONMENTS.get(other_env_name, {})
+                    if other_env:
+                        _os.environ["AWS_DEFAULT_REGION"] = other_env["region"]
+                        _other_config = Config()
+                        _other_config.aws_region = other_env["region"]
+                        other_mgr = ReservationManager(_other_config)
+                        connection_info = other_mgr.get_connection_info(
+                            reservation_id, user_info["user_id"]
+                        )
+                        if connection_info:
+                            reservation_mgr = other_mgr
+
+        live.stop()
+
+        if not connection_info:
+            rprint(
+                f"[red]❌ Could not get connection info for {reservation_id}[/red]")
+            return
+
+        if connection_info["status"] != "active":
+            rprint(
+                f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
+            return
+
+        # Check if this is a multi-node reservation
+        is_multinode = connection_info.get("is_multinode", False)
+
+        if is_multinode:
+            # Multi-node reservation - show node selection
+            nodes = connection_info.get("nodes", [])
+            if not nodes:
+                rprint("[red]❌ No nodes found for multi-node reservation[/red]")
+                return
+
+            # Check if all nodes are active
+            active_nodes = [n for n in nodes if n.get("status") == "active"]
+            if not active_nodes:
+                rprint("[red]❌ No active nodes in multi-node reservation[/red]")
+                return
+
+            # Show node selection
+            rprint(f"\n[cyan]🎯 Multi-node reservation with {len(nodes)} nodes:[/cyan]\n")
+
+            from rich.table import Table
+            table = Table(show_header=True, header_style="bold cyan", box=None)
+            table.add_column("Node", style="cyan")
+            table.add_column("Pod Name", style="green")
+            table.add_column("Status", style="yellow")
+            table.add_column("Command", style="dim")
+
+            for node in nodes:
+                status_display = "✅ Active" if node.get("status") == "active" else f"⏳ {node.get('status', 'unknown')}"
+                pod_name = node.get("pod_name", "unknown")
+                node_rid = node.get("reservation_id")
+                ssh_cmd_short = f"ssh gpu-dev-{node_rid[:8]}" if node_rid else "N/A"
+
+                table.add_row(
+                    f"Node {node.get('node_index', 0) + 1}",
+                    pod_name,
+                    status_display,
+                    ssh_cmd_short
+                )
+
+            console.print(table)
+
+            # Interactive selection
+            from rich.prompt import Prompt
+            node_choices = [str(i+1) for i in range(len(active_nodes))]
+            node_choice = Prompt.ask(
+                "\n[cyan]Select node to connect to[/cyan]",
+                choices=node_choices + ["q"],
+                default="1"
+            )
+
+            if node_choice == "q":
+                rprint("[yellow]Connection cancelled[/yellow]")
+                return
+
+            selected_node = nodes[int(node_choice) - 1]
+            ssh_command = selected_node.get("ssh_command", "")
+            node_num = selected_node.get('node_index', 0) + 1
+            rprint(f"\n[cyan]Connecting to Node {node_num}...[/cyan]")
+        else:
+            # Single-node reservation
+            ssh_command = connection_info.get("ssh_command", "")
+
+        if not ssh_command:
+            rprint("[red]❌ No SSH command available for this node[/red]")
+            return
+
+        # Auto-download SSH config if missing
+        from pathlib import Path
+        gpu_dev_dir = Path.home() / ".gpu-dev"
+        short_id = reservation_id[:8]
+        config_file = gpu_dev_dir / f"{short_id}-sshconfig"
+
+        if not config_file.exists():
+            # Extract connection details from the connection_info
+            if is_multinode:
+                pod_name = selected_node.get("pod_name")
+                fqdn = selected_node.get("fqdn")
+                node_res_id = selected_node.get("reservation_id")
+                node_name = selected_node.get("name")
+            else:
+                pod_name = connection_info.get("pod_name")
+                fqdn = connection_info.get("fqdn")
+                node_res_id = reservation_id
+                node_name = connection_info.get("name")
+
+            # Only build a per-reservation SSH config when there's an FQDN to
+            # proxy through. Direct-NodePort reservations (e.g. warm-pool claims)
+            # connect straight via ssh_command — no config or warning needed.
+            if fqdn and pod_name and node_res_id:
+                rprint("[yellow]⚠️  SSH config not found, downloading...[/yellow]")
+                from gpu_dev_cli.reservations import create_ssh_config_for_reservation
+                config_path, use_include = create_ssh_config_for_reservation(
+                    fqdn, pod_name, node_res_id, node_name
+                )
+                if config_path:
+                    rprint(f"[green]✅ SSH config created: {config_path}[/green]\n")
+                else:
+                    rprint("[yellow]⚠️  Failed to create SSH config, attempting connection anyway...[/yellow]\n")
+
+        # Add agent forwarding if not already present
+        if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:
+            ssh_command = ssh_command.replace("ssh ", "ssh -A ", 1)
+
+        # Inject AddKeysToAgent so the first connect from this laptop loads the user\'s
+        # IdentityFile into ssh-agent — without this the forwarded agent is empty on
+        # subsequent pod→pod hops. UseKeychain persists the passphrase across reboots on
+        # macOS; IgnoreUnknown lets Linux SSH ignore the macOS-only option cleanly.
+        # The same options live in ~/.gpu-dev/<id>-sshconfig but ssh only honours them
+        # when the command-line target matches a Host block, which this connect command
+        # bypasses by passing the FQDN directly.
+        if "AddKeysToAgent" not in ssh_command:
+            ssh_command = ssh_command.replace(
+                "ssh ",
+                "ssh -o AddKeysToAgent=yes -o IgnoreUnknown=UseKeychain -o UseKeychain=yes ",
+                1,
+            )
+
+        # When running from inside a gpu-dev pod (=GPU_DEV_USER_ID env var set) and the
+        # forwarded SSH agent is reachable but empty, the next hop is going to fail with
+        # 'Permission denied (publickey)'. Warn upfront so the user knows to ssh-add on
+        # their laptop instead of debugging an opaque auth failure on the remote side.
+        if os.environ.get("GPU_DEV_USER_ID") and os.environ.get("SSH_AUTH_SOCK"):
+            try:
+                import subprocess as _sp
+                r = _sp.run(["ssh-add", "-L"], capture_output=True, text=True, timeout=3)
+                if r.returncode != 0 or not r.stdout.strip() or "no identities" in r.stdout.lower():
+                    rprint("[yellow]⚠️  Forwarded SSH agent is empty — second-hop SSH from a pod will fail auth.[/yellow]")
+                    rprint("[yellow]   On your laptop: `ssh-add ~/.ssh/id_ed25519` (or your GitHub key), then reconnect to this pod with `gpu-dev connect`.[/yellow]\n")
+            except Exception:
+                pass
+
+        # Parse and execute the command, capturing exit code for auth failures
+        rprint(f"[dim]Executing: {ssh_command}[/dim]\n")
+        result = subprocess.run(ssh_command, shell=True)
+
+        # SSH exits 255 for ANY connection/auth error — that includes a reservation
+        # that expired/was cancelled (pod gone) or a dropped connection, not just
+        # auth. Re-check the reservation's real state before blaming auth, so the
+        # primary user doesn't get told to ask themselves for access.
+        if result.returncode == 255:
+            primary_user = connection_info.get("user_id", "the-primary-user")
+            current_user = user_info.get("user_id", "your-github-username")
+            status = ""
+            try:
+                fresh = reservation_mgr.get_connection_info(reservation_id, current_user) or {}
+                status = str(fresh.get("status", "")).lower()
+            except Exception:
+                pass
+
+            if status in ("expired", "completed", "cancelled", "canceled", "ended", "failed"):
+                rprint(f"\n[yellow]⏰ Reservation {reservation_id[:8]} has {status} — the pod is gone.[/yellow]")
+                rprint("[dim]   Start a new one: gpu-dev reserve --gpu-type <type> --gpus <n>[/dim]\n")
+            elif current_user == primary_user or status == "active":
+                # Owner (or still-active): this was a closed/dropped connection, not auth.
+                rprint(f"\n[yellow]🔌 Connection to reservation {reservation_id[:8]} closed.[/yellow]")
+                rprint(f"[dim]   If it's still active, reconnect: gpu-dev connect {reservation_id[:8]}   (gpu-dev list to check status)[/dim]\n")
+            else:
+                # Genuinely not your reservation and you're not on it → auth.
+                rprint("\n[red]❌ Authentication failed. You don't have SSH access to this reservation.[/red]\n")
+                rprint(f"[cyan]Ask the primary user ([yellow]{primary_user}[/yellow]) to add you:[/cyan]")
+                rprint(f"[dim]   gpu-dev edit {reservation_id[:8]} --add-user {current_user}[/dim]\n")
+                rprint(f"[cyan]Then download your SSH config:[/cyan]")
+                rprint(f"[dim]   gpu-dev get-ssh-config {reservation_id[:8]}[/dim]\n")
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]Connection cancelled by user[/yellow]")
+    except Exception as e:
+        import traceback
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+        traceback.print_exc()
+
+
+@main.command(name="get-ssh-config")
+@click.argument("reservation_id", required=False)
+@click.pass_context
+def get_ssh_config_cmd(ctx: click.Context, reservation_id: Optional[str]) -> None:
+    """Download SSH config for a reservation (useful for added users)
+
+    Generates SSH config file for a reservation. Particularly useful for secondary
+    users added via --add-user who don't have the SSH config automatically created.
+
+    If no reservation ID is provided, shows your active reservations and lets you select one.
+
+    \b
+    Examples:
+        gpu-dev get-ssh-config                  # Interactive mode - select reservation
+        gpu-dev get-ssh-config abc12345         # Get config for reservation abc12345
+        gpu-dev get-ssh-config abc1             # Short form works too
+
+    This creates ~/.gpu-dev/<id>-sshconfig file for the reservation.
+
+    \b
+    For added users:
+    1. Original user: gpu-dev edit abc123 --add-user friend-username
+    2. Added user: gpu-dev get-ssh-config abc123
+    3. Added user: ssh gpu-dev-abc123 (or gpu-dev connect abc123)
+    """
+    try:
+        with Live(
+            Spinner("dots", text="📡 Fetching reservation details..."), console=console
+        ) as live:
+            config = load_config()
+
+            # Authenticate
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+            except RuntimeError as e:
+                live.stop()
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return
+
+            # If no reservation ID provided, show interactive selection
+            if reservation_id is None:
+                reservations = _fetch_reservations_cross_region(
+                    reservation_mgr, user_info["user_id"], ["active"], config)
+
+                live.stop()
+
+                if not reservations:
+                    rprint("[yellow]📋 No active reservations found[/yellow]")
+                    return
+
+                if len(reservations) == 1:
+                    # Auto-select if only one active reservation
+                    reservation_id = reservations[0].get("reservation_id")
+                    rprint(
+                        f"[cyan]Getting SSH config for reservation {reservation_id[:8]}...[/cyan]\n")
+                else:
+                    # Interactive selection
+                    rprint("[cyan]🎯 Select reservation to get SSH config for:[/cyan]")
+                    selected_id = select_reservation_interactive(
+                        reservations, "get SSH config")
+                    if selected_id is None or selected_id == "__QUIT__":
+                        rprint("[yellow]Cancelled.[/yellow]")
+                        return
+                    reservation_id = selected_id
+                    rprint(
+                        f"\n[cyan]Getting SSH config for reservation {reservation_id[:8]}...[/cyan]\n")
+
+                live.start()
+
+            # Get connection info
+            connection_info = reservation_mgr.get_connection_info(
+                reservation_id, user_info["user_id"]
+            )
+
+        live.stop()
+
+        if not connection_info:
+            rprint(
+                f"[red]❌ Could not get connection info for {reservation_id}[/red]")
+            return
+
+        if connection_info["status"] != "active":
+            rprint(
+                f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
+            return
+
+        # Check if multi-node
+        is_multinode = connection_info.get("is_multinode", False)
+
+        if is_multinode:
+            # Multi-node - create configs for all nodes
+            nodes = connection_info.get("nodes", [])
+            if not nodes:
+                rprint("[red]❌ No nodes found for multi-node reservation[/red]")
+                return
+
+            rprint(f"[cyan]📁 Creating SSH configs for {len(nodes)} nodes...[/cyan]\n")
+
+            for node in nodes:
+                node_res_id = node.get("reservation_id")
+                pod_name = node.get("pod_name")
+                fqdn = node.get("fqdn")
+                node_name = node.get("name")
+                node_idx = node.get("node_index", 0)
+
+                if not fqdn or not pod_name or not node_res_id:
+                    rprint(f"[yellow]⚠️  Skipping Node {node_idx + 1}: Missing connection details[/yellow]")
+                    continue
+
+                config_path, use_include = create_ssh_config_for_reservation(
+                    fqdn, pod_name, node_res_id, node_name
+                )
+
+                if config_path:
+                    node_alias = f"gpu-dev-{node_res_id[:8]}"
+                    if use_include:
+                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh {node_alias}[/cyan]")
+                    else:
+                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh -F {config_path} {node_alias}[/cyan]")
+                else:
+                    rprint(f"[yellow]⚠️  Node {node_idx + 1}: Failed to create SSH config[/yellow]")
+
+            rprint(f"\n[green]✅ SSH configs created for all {len(nodes)} nodes[/green]")
+        else:
+            # Single-node - create one config
+            pod_name = connection_info.get("pod_name")
+            fqdn = connection_info.get("fqdn")
+            res_name = connection_info.get("name")
+
+            if not fqdn:
+                # Try to extract from ssh_command
+                ssh_command = connection_info.get("ssh_command", "")
+                import re
+                match = re.search(r'ssh.*?@([^\s]+)', ssh_command)
+                if match:
+                    fqdn = match.group(1)
+
+            if not fqdn or not pod_name:
+                rprint("[red]❌ Missing connection details (fqdn or pod_name)[/red]")
+                return
+
+            config_path, use_include = create_ssh_config_for_reservation(
+                fqdn, pod_name, reservation_id, res_name
+            )
+
+            if config_path:
+                host_alias = f"gpu-dev-{reservation_id[:8]}"
+                rprint(f"[green]✅ SSH config created:[/green] [cyan]{config_path}[/cyan]\n")
+                if use_include:
+                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh {host_alias}[/cyan]")
+                    rprint(f"[dim]   or:[/dim] [cyan]gpu-dev connect {reservation_id[:8]}[/cyan]")
+                else:
+                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh -F {config_path} {host_alias}[/cyan]")
+                    rprint(f"[dim]   or:[/dim] [cyan]gpu-dev connect {reservation_id[:8]}[/cyan]")
+            else:
+                rprint("[red]❌ Failed to create SSH config[/red]")
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]Cancelled by user[/yellow]")
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+@main.command()
+@click.pass_context
+def help(ctx: click.Context) -> None:
+    """Show help information (equivalent to --help)
+
+    Displays the same help information as using --help flag.
+
+    \b
+    Examples:
+        gpu-dev help                            # Show main help
+        gpu-dev help                            # Same as gpu-dev --help
+    """
+    click.echo(ctx.parent.get_help())
+
+
+@main.command(name="avail")
+@click.option(
+    "--watch",
+    is_flag=True,
+    help="Watch mode - refresh availability every 5 seconds",
+)
+@click.option(
+    "--interval",
+    default=5,
+    help="Refresh interval in seconds for watch mode (default: 5)",
+)
+@click.option(
+    "--spot",
+    is_flag=True,
+    default=False,
+    help="Also show spot instances (us-east-1, ~70% cheaper, may be preempted). Hidden by default.",
+)
+@click.pass_context
+def avail(ctx: click.Context, watch: bool, interval: int, spot: bool) -> None:
+    """Show GPU availability by type and queue estimates
+
+    Displays real-time information about GPU availability for each GPU type.
+    Shows immediate availability and estimated queue times when resources are full.
+
+    Information shown per GPU type:
+        - Available GPUs: GPUs ready for immediate reservation
+        - Queue Length: Number of pending reservations for this GPU type
+        - Estimated Wait: Expected time until resources become available
+
+    \b
+    Examples:
+        gpu-dev avail                           # Show availability for all GPU types
+        gpu-dev avail --watch                   # Watch mode with 5s refresh
+        gpu-dev avail --watch --interval 10     # Watch mode with 10s refresh
+
+    This helps you choose the right GPU type and understand wait times before reserving.
+    """
+    if watch:
+        _show_availability_watch(interval, show_spot=spot)
+    else:
+        _show_availability(show_spot=spot)
+
+
+@main.command()
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Show overall GPU cluster status
+
+    Displays real-time information about GPU cluster capacity and usage.
+    Useful for understanding resource availability before making reservations.
+
+    Information shown:
+        - Total GPUs: Total GPU capacity in the cluster
+        - Available GPUs: GPUs ready for new reservations
+        - Reserved GPUs: GPUs currently allocated to active reservations
+        - Active Reservations: Number of running reservations
+        - Queue Length: Number of pending reservation requests
+
+    \b
+    Examples:
+        gpu-dev status                           # Show current cluster status
+
+    Note: Status is updated in real-time from the Kubernetes cluster.
+    """
+    try:
+        with Live(
+            Spinner("dots", text="📡 Checking cluster status..."), console=console
+        ) as live:
+            config = load_config()
+
+            # Authenticate using AWS credentials
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+                cluster_status = reservation_mgr.get_cluster_status()
+            except RuntimeError as e:
+                live.stop()
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return
+
+        # Stop spinner after getting results
+
+        if cluster_status:
+            table = Table(title="GPU Cluster Status")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green")
+
+            table.add_row("Total GPUs", str(cluster_status["total_gpus"]))
+            table.add_row("Available GPUs", str(
+                cluster_status["available_gpus"]))
+            table.add_row("Reserved GPUs", str(
+                cluster_status["reserved_gpus"]))
+            table.add_row(
+                "Active Reservations", str(
+                    cluster_status["active_reservations"])
+            )
+            table.add_row("Queue Length", str(cluster_status["queue_length"]))
+
+            console.print(table)
+        else:
+            rprint("[red]❌ Could not get cluster status[/red]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+@main.group()
+def config() -> None:
+    """Manage configuration settings
+
+    Configure user-specific settings for the GPU development CLI.
+    Most settings are auto-detected from AWS credentials and environment.
+
+    Commands:
+        show: Display current configuration and AWS identity
+        set:  Set user-specific configuration values
+
+    \b
+    Examples:
+        gpu-dev config show                      # Show current config
+        gpu-dev config set github_user myname   # Set GitHub username
+    """
+    pass
+
+
+@config.command()
+def show() -> None:
+    """Show current configuration
+
+    Displays current configuration including AWS identity, region, and user settings.
+    Also shows which GitHub username is configured for SSH key retrieval.
+
+    \b
+    Examples:
+        gpu-dev config show                      # Display all configuration
+
+    The output shows:
+        - AWS region, queue, and cluster information (auto-detected)
+        - Your AWS identity and account
+        - GitHub username for SSH keys (user-configurable)
+    """
+    try:
+        config = load_config()
+        identity = config.get_user_identity()
+        github_user = config.get_github_username()
+
+        # Get current environment info
+        current_env = config.get("environment") or "Not set"
+        env_source = "Config file" if config.get("region") else "Default/ENV vars"
+
+        config_text = (
+            f"[green]Configuration (Zero-Config)[/green]\n\n"
+            f"[blue]Environment:[/blue] {current_env}\n"
+            f"[blue]Region:[/blue] {config.aws_region} ({env_source})\n"
+            f"[blue]Queue:[/blue] {config.queue_name}\n"
+            f"[blue]Cluster:[/blue] {config.cluster_name}\n"
+            f"[blue]User:[/blue] {identity['arn']}\n"
+            f"[blue]Account:[/blue] {identity['account']}\n\n"
+            f"[green]User Settings ({config.CONFIG_FILE})[/green]\n"
+            f"[blue]GitHub User:[/blue] {github_user or '[red]Not set - run: gpu-dev config set github_user <username>[/red]'}"
+        )
+
+        panel = Panel.fit(config_text, title="⚙️  Configuration")
+        console.print(panel)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+@config.command()
+@click.argument("key")
+@click.argument("value")
+def set(key: str, value: str) -> None:
+    """Set a configuration value
+
+    Configure user-specific settings. Currently only GitHub username is configurable.
+    Your GitHub username is used to fetch SSH public keys for server access.
+
+    Arguments:
+        KEY: Configuration key to set (currently: github_user)
+        VALUE: Value to set for the configuration key
+
+    \b
+    Examples:
+        gpu-dev config set github_user johndoe   # Set GitHub username to 'johndoe'
+        gpu-dev config set github_user jane.doe  # GitHub usernames with dots work too
+
+    Valid keys:
+        github_user: Your GitHub username (used to fetch SSH public keys)
+
+    Note: SSH keys must be public on your GitHub profile (github.com/username.keys)
+    Note: SSH config files are automatically created in ~/.devgpu/ for each reservation
+    """
+    try:
+        config = load_config()
+
+        # Validate known keys
+        valid_keys = ["github_user"]
+        if key not in valid_keys:
+            rprint(
+                f"[red]❌ Unknown config key '{key}'. Valid keys: {', '.join(valid_keys)}[/red]"
+            )
+            return
+
+        config.save_config(key, value)
+        rprint(f"[green]✅ Set {key} = {value}[/green]")
+        rprint(f"[dim]Saved to {config.CONFIG_FILE}[/dim]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+@config.command()
+@click.argument("env_name", type=click.Choice(["test", "prod"]))
+def environment(env_name: str) -> None:
+    """Set the environment
+
+    Sets the AWS region and Terraform workspace for the specified environment.
+
+    Arguments:
+        ENV_NAME: Environment name
+
+    \b
+    Examples:
+        gpu-dev config environment prod        # Production (us-east-2)
+        gpu-dev config environment prod         # Production (spot accessible via interactive picker)
+        gpu-dev config environment test        # Test (us-west-1)
+
+    Environment configurations:
+        test:       us-west-1, Terraform workspace 'default'
+        prod:       us-east-2, Terraform workspace 'prod'
+        prod-east1: us-east-1, Terraform workspace 'prod-east1' (spot-only)'
+    """
+    from .config import Config
+
+    try:
+        # Save using Config's method (creates new instance to save)
+        cfg = Config()
+        env_config = cfg.set_environment(env_name)
+
+        rprint(f"[green]✅ Environment set to {env_name}[/green]")
+        rprint(f"[blue]Region:[/blue] {env_config['region']}")
+        rprint(f"[blue]Workspace:[/blue] {env_config['workspace']}")
+        rprint(f"[blue]Description:[/blue] {env_config['description']}")
+        rprint(f"[dim]Configuration saved to {cfg.CONFIG_FILE}[/dim]")
+
+        # Instructions for shell export
+        rprint(f"\n[dim]Region saved. All gpu-dev commands now target {env_config['region']}.[/dim]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error setting environment: {str(e)}[/red]")
+
+
+@main.command()
+@click.argument("reservation_id", required=False)
+@click.option(
+    "--enable-jupyter",
+    is_flag=True,
+    help="Enable Jupyter Lab access for this reservation",
+)
+@click.option(
+    "--disable-jupyter",
+    is_flag=True,
+    help="Disable Jupyter Lab access for this reservation",
+)
+@click.option(
+    "--add-user",
+    type=str,
+    help="Add GitHub user as secondary user (fetches their public SSH keys)",
+)
+@click.option(
+    "--extend",
+    type=float,
+    help="Extend reservation by specified hours (max extension: 24h)",
+)
+@click.option(
+    "--interactive/--no-interactive",
+    default=None,
+    help="Force interactive mode on/off (auto-detected by default)",
+)
+@click.pass_context
+def edit(
+    ctx: click.Context,
+    reservation_id: Optional[str],
+    enable_jupyter: bool,
+    disable_jupyter: bool,
+    add_user: Optional[str],
+    extend: Optional[float],
+    interactive: Optional[bool],
+) -> None:
+    """Edit an active reservation's settings
+
+    Modify settings for an existing active reservation such as enabling/disabling Jupyter Lab,
+    adding secondary users with SSH access, or extending the reservation duration.
+
+    \b
+    Interactive Mode (NEW):
+        gpu-dev edit                            # Interactive mode - select reservation & action
+
+    Interactive mode will:
+    - Show your active reservations to select from
+    - Let you choose what to edit (Jupyter, users, duration)
+    - Guide you through the specific changes
+
+    \b
+    Command-line Mode:
+        gpu-dev edit abc12345 --enable-jupyter  # Enable Jupyter Lab
+        gpu-dev edit abc12345 --disable-jupyter # Disable Jupyter Lab
+        gpu-dev edit abc12345 --add-user johndoe # Add GitHub user 'johndoe' SSH access
+        gpu-dev edit abc12345 --extend 8        # Extend by 8 hours
+    """
+    try:
+        # Determine if we should use interactive mode
+        use_interactive = interactive
+        if use_interactive is None:
+            # Auto-detect: use interactive if no reservation_id or no action provided
+            no_action = (
+                not enable_jupyter
+                and not disable_jupyter
+                and not add_user
+                and extend is None
+            )
+            use_interactive = (
+                reservation_id is None or no_action
+            ) and check_interactive_support()
+
+        if use_interactive:
+            # Interactive mode
+            rprint("[cyan]🎯 Interactive edit mode[/cyan]")
+            rprint(
+                "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
+
+            # Load reservations and let user select
+            with Live(
+                Spinner("dots", text="📡 Loading your reservations..."), console=console
+            ) as live:
+                config = load_config()
+                try:
+                    user_info = authenticate_user(config)
+                except RuntimeError as e:
+                    live.stop()
+                    rprint(f"[red]❌ {str(e)}[/red]")
+                    return
+
+                reservation_mgr = ReservationManager(config)
+
+                if reservation_id is None:
+                    # Get active reservations (only active can be edited)
+                    reservations = reservation_mgr.list_reservations(
+                        user_filter=user_info["user_id"], statuses_to_include=[
+                            "active"]
+                    )
+
+                    live.stop()
+
+                    if not reservations:
+                        rprint(
+                            "[yellow]📋 No active reservations found to edit[/yellow]"
+                        )
+                        return
+
+                    # Interactive reservation selection
+                    selected_id = select_reservation_interactive(
+                        reservations, "edit")
+                    if selected_id is None:
+                        rprint("[yellow]Edit cancelled.[/yellow]")
+                        return
+
+                    # Handle quit selection
+                    if selected_id == "__QUIT__":
+                        rprint(
+                            "[yellow]Edit cancelled - no changes made.[/yellow]")
+                        return
+
+                    reservation_id = selected_id
+                else:
+                    live.stop()
+
+            # Interactive action selection if no action specified
+            no_action = (
+                not enable_jupyter
+                and not disable_jupyter
+                and not add_user
+                and extend is None
+            )
+            if no_action:
+                action = select_edit_action_interactive()
+                if action is None:
+                    rprint("[yellow]Edit cancelled.[/yellow]")
+                    return
+
+                # Set appropriate flags based on selected action
+                if action == "enable_jupyter":
+                    enable_jupyter = True
+                elif action == "disable_jupyter":
+                    disable_jupyter = True
+                elif action == "add_user":
+                    add_user = ask_github_username_interactive()
+                    if add_user is None:
+                        rprint("[yellow]Edit cancelled.[/yellow]")
+                        return
+                elif action == "extend":
+                    extend = ask_extension_hours_interactive()
+                    if extend is None:
+                        rprint("[yellow]Edit cancelled.[/yellow]")
+                        return
+
+        # Validation
+        if enable_jupyter and disable_jupyter:
+            rprint("[red]❌ Cannot enable and disable Jupyter at the same time[/red]")
+            return
+
+        if (
+            not enable_jupyter
+            and not disable_jupyter
+            and not add_user
+            and extend is None
+        ):
+            rprint(
+                "[red]❌ Please specify --enable-jupyter, --disable-jupyter, --add-user, or --extend[/red]"
+            )
+            return
+
+        if not reservation_id:
+            rprint("[red]❌ No reservation ID provided[/red]")
+            return
+
+        # Authenticate and validate reservation (skip if already done in interactive mode)
+        with Live(
+            Spinner("dots", text="📡 Contacting reservation service..."),
+            console=console,
+        ) as live:
+            if not use_interactive:
+                config = load_config()
+                user_info = authenticate_user(config)
+                if not user_info:
+                    live.stop()
+                    return
+                reservation_mgr = ReservationManager(config)
+
+            # Check if reservation exists and belongs to user
+            connection_info = reservation_mgr.get_connection_info(
+                reservation_id, user_info["user_id"]
+            )
+            if not connection_info:
+                live.stop()
+                rprint(
+                    f"[red]❌ Reservation {reservation_id[:8]} not found or doesn't belong to you[/red]"
+                )
+                return
+
+        # Stop spinner before validation and operations
+        live.stop()
+
+        # Use the full reservation_id from connection_info (not the user-provided prefix)
+        reservation_id = connection_info["reservation_id"]
+
+        if connection_info["status"] != "active":
+            rprint(
+                f"[red]❌ Can only edit active reservations (current status: {connection_info['status']})[/red]"
+            )
+            return
+
+        # Handle extension request
+        if extend is not None:
+            # Validate extension limits
+            if extend <= 0:
+                rprint("[red]❌ Extension hours must be positive[/red]")
+                return
+            if extend > 24:
+                rprint("[red]❌ Maximum extension is 24 hours[/red]")
+                return
+
+            success = reservation_mgr.extend_reservation(
+                reservation_id, user_info["user_id"], extend)
+            if success:
+                rprint(
+                    f"[green]✅ Extended reservation {reservation_id} by {extend} hours[/green]"
+                )
+            else:
+                rprint(
+                    f"[red]❌ Failed to extend reservation {reservation_id}[/red]")
+            return
+
+        # Enable/disable Jupyter
+        if enable_jupyter:
+            success = reservation_mgr.enable_jupyter(
+                reservation_id, user_info["user_id"]
+            )
+            if success:
+                rprint(
+                    f"[green]✅ Jupyter Lab enabled for reservation {reservation_id[:8]}...[/green]"
+                )
+                rprint(
+                    "[blue]💡 Use 'gpu-dev show {reservation_id[:8]}' to see the Jupyter URL[/blue]"
+                )
+            else:
+                rprint("[red]❌ Failed to enable Jupyter Lab[/red]")
+
+        elif disable_jupyter:
+            success = reservation_mgr.disable_jupyter(
+                reservation_id, user_info["user_id"]
+            )
+            if success:
+                rprint(
+                    f"[green]✅ Jupyter Lab disabled for reservation {reservation_id[:8]}...[/green]"
+                )
+            else:
+                rprint("[red]❌ Failed to disable Jupyter Lab[/red]")
+
+        elif add_user:
+            success = reservation_mgr.add_user(
+                reservation_id, user_info["user_id"], add_user
+            )
+            if success:
+                rprint(
+                    f"[green]✅ User {add_user} added to reservation {reservation_id[:8]}...[/green]"
+                )
+                rprint(
+                    f"[blue]💡 {add_user} can now SSH to the server using their GitHub SSH keys[/blue]"
+                )
+                rprint(
+                    f"[blue]💡 Tell {add_user} to run:[/blue] [cyan]gpu-dev get-ssh-config {reservation_id[:8]}[/cyan]"
+                )
+            else:
+                rprint(f"[red]❌ Failed to add user {add_user}[/red]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error editing reservation: {str(e)}[/red]")
+
+
+@config.command(name="ssh-include")
+@click.argument("action", type=click.Choice(["enable", "disable"], case_sensitive=False))
+def ssh_include(action: str):
+    """Enable or disable SSH config Include directive
+
+    This controls whether GPU dev server configs are automatically
+    included in your ~/.ssh/config and ~/.cursor/ssh_config files.
+
+    \b
+    When enabled:
+      • Simple SSH commands: ssh gpu-dev-<reservation-id>
+      • VS Code Remote works: code --remote ssh-remote+gpu-dev-<reservation-id>
+      • Cursor Remote works: Open Remote SSH in Cursor
+
+    \b
+    When disabled:
+      • Need -F flag: ssh -F ~/.gpu-dev/<id>-sshconfig gpu-dev-<reservation-id>
+      • VS Code/Cursor requires manual config setup
+
+    \b
+    Examples:
+      gpu-dev config ssh-include enable   # Enable automatic SSH config
+      gpu-dev config ssh-include disable  # Disable automatic SSH config
+    """
+    from pathlib import Path
+
+    try:
+        gpu_dev_dir = Path.home() / ".gpu-dev"
+        gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
+        permission_file = gpu_dev_dir / ".ssh-config-permission"
+
+        if action.lower() == "enable":
+            # Set permission to yes
+            permission_file.write_text("yes")
+
+            # Add Include directive to both config files if not already present
+            config_files = [
+                (Path.home() / ".ssh", "config"),
+                (Path.home() / ".cursor", "ssh_config"),
+            ]
+
+            include_line = "Include ~/.gpu-dev/*-sshconfig\n"
+            updated_files = []
+            already_set = []
+
+            for config_dir, config_name in config_files:
+                try:
+                    config_dir.mkdir(mode=0o700, exist_ok=True)
+                    config_file = config_dir / config_name
+
+                    if config_file.exists():
+                        content = config_file.read_text()
+                    else:
+                        content = ""
+
+                    if "Include ~/.gpu-dev/" not in content:
+                        # Add Include at the top
+                        new_content = include_line + "\n" + content
+                        config_file.write_text(new_content)
+                        config_file.chmod(0o600)
+                        updated_files.append(str(config_file))
+                    else:
+                        already_set.append(str(config_file))
+                except Exception:
+                    # Continue with other files even if one fails
+                    pass
+
+            if updated_files:
+                rprint("[green]✅ Enabled SSH config Include directive[/green]")
+                for file_path in updated_files:
+                    rprint(f"[cyan]Added 'Include ~/.gpu-dev/*-sshconfig' to {file_path}[/cyan]")
+
+            if already_set:
+                if not updated_files:
+                    rprint("[green]✅ SSH config Include already enabled[/green]")
+                for file_path in already_set:
+                    rprint(f"[dim]Already set in {file_path}[/dim]")
+
+        else:  # disable
+            # Set permission to no
+            permission_file.write_text("no")
+            rprint("[yellow]✅ Disabled automatic SSH config Include[/yellow]")
+            rprint(
+                "[dim]Note: Existing Include directives in config files not removed[/dim]")
+            rprint(
+                "[dim]You can manually remove the 'Include ~/.gpu-dev/*-sshconfig' lines if desired:[/dim]")
+            rprint("[dim]  • ~/.ssh/config[/dim]")
+            rprint("[dim]  • ~/.cursor/ssh_config[/dim]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error updating SSH config setting: {str(e)}[/red]")
+
+
+@main.group()
+def disk():
+    """Manage persistent disks for GPU reservations
+
+    \b
+    Commands:
+        gpu-dev disk list                      # List all your disks
+        gpu-dev disk create <name>             # Create a new named disk
+        gpu-dev disk list-content <name>       # Show contents of a disk
+        gpu-dev disk unlock <name>             # Unlock a stale in-use lock
+    """
+    pass
+
+
+@disk.command("list")
+@click.option("--watch", is_flag=True, help="Continuously refresh disk list every 2 seconds")
+@click.option("--user", default=None, help="Impersonate another user (e.g., user@example.com)")
+def disk_list(watch: bool, user: str):
+    """List all persistent disks"""
+    import time
+    from .disks import list_disks
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    if user:
+        # Impersonation mode - use provided user_id directly
+        user_id = user
+        rprint(f"[yellow]⚠️  Impersonating user: {user_id}[/yellow]\n")
+    else:
+        try:
+            user_info = authenticate_user(config)
+            user_id = user_info["user_id"]
+        except RuntimeError as e:
+            rprint(f"[red]❌ {str(e)}[/red]")
+            return
+
+    def render_disk_table():
+        """Render disk table (for single display or watch mode)"""
+        try:
+            disks = list_disks(user_id, config)
+
+            if not disks:
+                rprint("[yellow]No disks found.[/yellow]")
+                rprint("[dim]Create a disk with: gpu-dev disk create <name>[/dim]")
+                return
+
+            # Create rich table
+            table = Table(title="Your Persistent Disks", show_header=True, header_style="bold cyan")
+            table.add_column("Disk Name", style="cyan")
+            table.add_column("Size", justify="right")
+            table.add_column("Created", style="dim")
+            table.add_column("Last Used", style="dim")
+            table.add_column("Snapshots", justify="right")
+            table.add_column("Status", justify="center")
+
+            for disk in disks:
+                name = disk['name']
+
+                # Show disk usage if available, otherwise just volume size
+                disk_size = disk.get('disk_size')
+                if disk_size:
+                    size = f"{disk_size} / {disk['size_gb']} GB"
+                else:
+                    size = f"{disk['size_gb']} GB"
+
+                created = _format_relative_time(disk['created_at'].isoformat() if disk['created_at'] else "N/A")
+                last_used = _format_relative_time(disk['last_used'].isoformat() if disk['last_used'] else "N/A")
+
+                snapshot_count = str(disk['snapshot_count'])
+
+                if disk.get('is_deleted', False):
+                    delete_date = disk.get('delete_date', 'unknown')
+                    status = f"[red]Deleted[/red]\n[dim]expires {delete_date}[/dim]"
+                elif disk['in_use']:
+                    res_id = disk['reservation_id'] or "unknown"
+                    status = f"[yellow]In Use[/yellow]\n[dim]{res_id[:8]}[/dim]"
+                elif disk.get('is_backing_up', False):
+                    status = "[blue]Backing up[/blue]\n[dim]snapshot pending[/dim]"
+                else:
+                    status = "[green]Available[/green]"
+
+                table.add_row(name, size, created, last_used, snapshot_count, status)
+
+            console.print(table)
+
+        except Exception as e:
+            rprint(f"[red]❌ Error listing disks: {str(e)}[/red]")
+
+    if watch:
+        # Watch mode: continuously refresh with Live display (no flickering)
+        from datetime import datetime
+        from rich.console import Group
+
+        try:
+            with Live(console=console, refresh_per_second=4) as live:
+                while True:
+                    try:
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        disks = list_disks(user_id, config)
+
+                        if not disks:
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            no_disks = "[yellow]No disks found.[/yellow]\n[dim]Create a disk with: gpu-dev disk create <name>[/dim]"
+                            display_group = Group(header, "", no_disks)
+                            live.update(display_group)
+                        else:
+                            # Create rich table
+                            table = Table(title="Your Persistent Disks", show_header=True, header_style="bold cyan")
+                            table.add_column("Disk Name", style="cyan")
+                            table.add_column("Size", justify="right")
+                            table.add_column("Created", style="dim")
+                            table.add_column("Last Used", style="dim")
+                            table.add_column("Snapshots", justify="right")
+                            table.add_column("Status", justify="center")
+
+                            for disk in disks:
+                                name = disk['name']
+
+                                # Show disk usage if available, otherwise just volume size
+                                disk_size = disk.get('disk_size')
+                                if disk_size:
+                                    size = f"{disk_size} / {disk['size_gb']} GB"
+                                else:
+                                    size = f"{disk['size_gb']} GB"
+
+                                created = _format_relative_time(disk['created_at'].isoformat() if disk['created_at'] else "N/A")
+                                last_used = _format_relative_time(disk['last_used'].isoformat() if disk['last_used'] else "N/A")
+
+                                snapshot_count = str(disk['snapshot_count'])
+
+                                if disk.get('is_deleted', False):
+                                    delete_date = disk.get('delete_date', 'unknown')
+                                    status = f"[red]Deleted[/red]\n[dim]expires {delete_date}[/dim]"
+                                elif disk['in_use']:
+                                    res_id = disk['reservation_id'] or "unknown"
+                                    status = f"[yellow]In Use[/yellow]\n[dim]{res_id[:8]}[/dim]"
+                                elif disk.get('is_backing_up', False):
+                                    status = "[blue]Backing up[/blue]\n[dim]snapshot pending[/dim]"
+                                else:
+                                    status = "[green]Available[/green]"
+
+                                table.add_row(name, size, created, last_used, snapshot_count, status)
+
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            display_group = Group(header, "", table)
+                            live.update(display_group)
+
+                        time.sleep(2)
+
+                    except KeyboardInterrupt:
+                        live.stop()
+                        rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+                        break
+                    except Exception as e:
+                        error_msg = f"[red]❌ Error: {str(e)}[/red]"
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                        display_group = Group(header, "", error_msg)
+                        live.update(display_group)
+                        time.sleep(2)
+        except KeyboardInterrupt:
+            rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+    else:
+        # Single display
+        render_disk_table()
+
+
+@disk.command("create")
+@click.argument("disk_name")
+def disk_create(disk_name: str):
+    """Create a new named persistent disk"""
+    from .disks import create_disk, poll_disk_operation
+    from .auth import authenticate_user
+    import time
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    try:
+        operation_id = create_disk(disk_name, user_id, config)
+        if not operation_id:
+            return
+
+        from .disks import poll_disk_operation
+        rprint(f"[cyan]Creating disk '{disk_name}'...[/cyan]")
+        success, message = poll_disk_operation("create", disk_name, user_id, config, timeout_seconds=120)
+
+        if success:
+            rprint(f"[green]{message}[/green]")
+            rprint(f"[cyan]Use this disk with: gpu-dev reserve --disk {disk_name}[/cyan]")
+        else:
+            rprint(f"[yellow]{message}[/yellow]")
+            rprint(f"[cyan]Check status with: gpu-dev disk list[/cyan]")
+
+    except Exception as e:
+        rprint(f"[red]Error creating disk: {str(e)}[/red]")
+
+
+@disk.command("list-content")
+@click.argument("disk_name")
+@click.option("--user", default=None, help="Impersonate another user (e.g., user@example.com)")
+def disk_list_content(disk_name: str, user: str):
+    """Show contents of a disk's latest snapshot"""
+    from .disks import list_disk_content
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    if user:
+        user_id = user
+        rprint(f"[yellow]⚠️  Impersonating user: {user_id}[/yellow]\n")
+    else:
+        try:
+            user_info = authenticate_user(config)
+            user_id = user_info["user_id"]
+        except RuntimeError as e:
+            rprint(f"[red]❌ {str(e)}[/red]")
+            return
+
+    try:
+        contents = list_disk_content(disk_name, user_id, config)
+
+        if contents is None:
+            return
+
+        # Display contents in a panel
+        panel = Panel(
+            contents,
+            title=f"Contents of disk '{disk_name}' (latest snapshot)",
+            border_style="cyan",
+            expand=False
+        )
+        console.print(panel)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error listing disk contents: {str(e)}[/red]")
+
+
+@disk.command("delete")
+@click.argument("disk_name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+def disk_delete(disk_name: str, yes: bool):
+    """Delete a disk and all its snapshots"""
+    from .disks import delete_disk, list_disks
+    from .auth import authenticate_user
+    import time
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    # Get disk info first to show snapshot count
+    try:
+        disks = list_disks(user_id, config)
+        disk = next((d for d in disks if d['name'] == disk_name), None)
+        if disk:
+            snapshot_count = disk.get('snapshot_count', 0)
+            rprint(f"[yellow]This will mark disk '{disk_name}' for deletion ({snapshot_count} snapshot(s)).[/yellow]")
+            rprint(f"[yellow]Snapshots will be permanently deleted in 30 days.[/yellow]")
+    except Exception:
+        pass
+
+    # Confirm deletion
+    if not yes:
+        confirmation = input(f"Are you sure you want to delete disk '{disk_name}'? (yes/no): ")
+        if confirmation.lower() not in ['yes', 'y']:
+            rprint("[yellow]Deletion cancelled.[/yellow]")
+            return
+
+    try:
+        # Send delete request to SQS
+        operation_id = delete_disk(disk_name, user_id, config)
+        if not operation_id:
+            return
+
+        # Poll for completion with spinner
+        with Live(console=console, refresh_per_second=4) as live:
+            start_time = time.time()
+            timeout_seconds = 180  # 3 minutes - Lambda may take time to process
+
+            while time.time() - start_time < timeout_seconds:
+                elapsed = int(time.time() - start_time)
+                live.update(f"[cyan]⏳ Deleting disk '{disk_name}'... ({elapsed}s)[/cyan]")
+
+                # Check if disk is marked as deleted
+                disks = list_disks(user_id, config)
+                disk = next((d for d in disks if d['name'] == disk_name), None)
+
+                if disk is None:
+                    live.update(f"[green]✓ Disk '{disk_name}' deleted[/green]")
+                    return
+                elif disk.get('is_deleted', False):
+                    delete_date = disk.get('delete_date', 'in 30 days')
+                    live.update(f"[green]✓ Disk '{disk_name}' marked for deletion[/green]")
+                    rprint(f"\n[cyan]📅 Snapshots will be permanently deleted on {delete_date}[/cyan]")
+                    return
+
+                time.sleep(2)
+
+            # Timeout
+            rprint(f"[yellow]⚠ Timed out waiting for deletion to complete. It may still be processing.[/yellow]")
+            rprint(f"[cyan]💡 Check status with: gpu-dev disk list[/cyan]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error deleting disk: {str(e)}[/red]")
+        return
+
+
+@disk.command("clone")
+@click.argument("source_disk")
+@click.argument("target_disk")
+def disk_clone(source_disk: str, target_disk: str):
+    """Clone a disk by referencing its latest snapshot under a new name
+
+    Creates a new disk that references the source disk's latest snapshot.
+    On first reservation the volume is created from that snapshot.
+    Useful for parallel development/benchmarking with identical environments.
+    """
+    from .disks import clone_disk, poll_disk_operation
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]{str(e)}[/red]")
+        return
+
+    try:
+        operation_id = clone_disk(source_disk, target_disk, user_id, config)
+        if not operation_id:
+            return
+
+        rprint(f"[cyan]Cloning disk '{source_disk}' -> '{target_disk}'...[/cyan]")
+        success, message = poll_disk_operation("create", target_disk, user_id, config, timeout_seconds=120)
+
+        if success:
+            rprint(f"[green]Disk '{target_disk}' cloned successfully[/green]")
+            rprint(f"[cyan]Use this disk with: gpu-dev reserve --disk {target_disk}[/cyan]")
+        else:
+            rprint(f"[yellow]{message}[/yellow]")
+            rprint(f"[cyan]Check status with: gpu-dev disk list[/cyan]")
+
+    except Exception as e:
+        rprint(f"[red]Error cloning disk: {str(e)}[/red]")
+
+
+@disk.command("rename")
+@click.argument("old_name")
+@click.argument("new_name")
+def disk_rename(old_name: str, new_name: str):
+    """Rename a disk"""
+    from .disks import rename_disk
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    try:
+        success = rename_disk(old_name, new_name, user_id, config)
+        if not success:
+            return
+    except Exception as e:
+        rprint(f"[red]❌ Error renaming disk: {str(e)}[/red]")
+        return
+
+
+@disk.command("unlock")
+@click.argument("name")
+@click.option("--user", default=None, help="Impersonate another user (e.g., user@example.com)")
+def disk_unlock(name: str, user: str):
+    """Unlock a stale in-use lock on a disk
+
+    Use this when a disk shows as [IN USE] but you have no active reservations.
+    """
+    from .disks import unlock_disk
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    if user:
+        user_id = user
+        rprint(f"[yellow]⚠️  Impersonating user: {user_id}[/yellow]\n")
+    else:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+
+    if unlock_disk(name, user_id, config):
+        rprint(f"[green]✓ Unlock request sent for disk '{name}'[/green]")
+        rprint(f"[dim]The lock will be cleared shortly if no active reservation is using this disk.[/dim]")
+
+
+if __name__ == "__main__":
+    main()

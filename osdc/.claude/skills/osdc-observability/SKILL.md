@@ -87,7 +87,7 @@ DCGM exporter uses a curated 23-metric subset via a ConfigMap at `modules/monito
 - Image: `nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless`
 - Args: `-f /etc/dcgm-exporter/custom-metrics.csv --collect-interval=60000` (60s — matches the global 60s scrape interval)
 - Resources: `requests=100m cpu / 256Mi memory`, `limits=200m cpu / 512Mi memory`
-- `GOMEMLIMIT=450MiB` (~88% of the 512Mi cgroup limit) — keeps Go GC inside the cgroup ceiling.
+- `GOMEMLIMIT=410MiB` (~80% of the 512Mi cgroup limit) — keeps Go GC inside the cgroup ceiling.
 - Runs only on `nvidia.com/gpu.present=true` nodes; tolerates `nvidia.com/gpu`, `instance-type`, `node-fleet` taints.
 
 ### Configuration (clusters.yaml)
@@ -284,7 +284,7 @@ The Mimir URL comes from `clusters.yaml` (`monitoring.grafana_cloud_read_url`). 
   - **Logging DaemonSet** (`alloy-logging`): `requests=1Gi/limits=2Gi`, `GOGC=200`, `GOMEMLIMIT=1800MiB` (~85% of 2Gi cgroup) for high-throughput CI nodes.
   - **Events Deployment** (`alloy-events`): `GOGC=200`, `GOMEMLIMIT=3500MiB` (~85% of 4Gi cgroup).
   Default upstream is 1Gi — bump only if `kubectl describe pod` shows OOMKilled. When raising the cgroup limit, also bump `GOMEMLIMIT` to ~85% of the new ceiling.
-- **DCGM exporter OOM**: pod is sized `requests=256Mi/limits=512Mi` with `GOMEMLIMIT=450MiB` and 60s collection interval (`--collect-interval=60000`). Aggressive limits were chosen because the per-GPU metric set was trimmed to 23 metrics; if DCGM is OOMKilled after re-introducing metrics, bump `resources.limits.memory` AND `GOMEMLIMIT` together (keep `GOMEMLIMIT` at ~88% of the new cgroup ceiling).
+- **DCGM exporter OOM**: pod is sized `requests=256Mi/limits=512Mi` with `GOMEMLIMIT=410MiB` and 60s collection interval (`--collect-interval=60000`). Aggressive limits were chosen because the per-GPU metric set was trimmed to 23 metrics; if DCGM is OOMKilled after re-introducing metrics, bump `resources.limits.memory` AND `GOMEMLIMIT` together (keep `GOMEMLIMIT` at ~80% of the new cgroup ceiling).
 - **Alloy did not pick up secret rotation**: monitoring `deploy.sh` runs `kubectl rollout restart deployment/alloy` after every successful Helm upgrade and waits on `rollout status`. Secret values are referenced via `valueFrom.secretKeyRef`, so Kubernetes will NOT restart pods when the secret value changes — only the explicit rollout does. If you rotate credentials without redeploying, force a rollout manually.
 - **Missing pod logs**: container stdout/stderr is intentionally NOT shipped. Look at GitHub Actions workflow logs (for runner jobs), `kubectl logs` (while the pod is still alive), or pod events via the `alloy-events` Deployment in Loki (`{cluster="X", kind="Pod"}`)
 - **Sampling-related "missing" logs**: not applicable — namespace-based sampling stages were removed with the pod-log pipeline

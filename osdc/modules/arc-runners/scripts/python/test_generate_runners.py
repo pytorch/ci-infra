@@ -200,6 +200,7 @@ def make_def_file(
     node_fleet=None,
     scheduler_name=None,
     fresh_multiplier=None,
+    imex_channels=None,
 ):
     """Write a runner def YAML and return the path.
 
@@ -232,6 +233,8 @@ def make_def_file(
         runner["scheduler_name"] = scheduler_name
     if fresh_multiplier is not None:
         runner["fresh_multiplier"] = fresh_multiplier
+    if imex_channels is not None:
+        runner["imex_channels"] = imex_channels
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -2915,6 +2918,49 @@ class TestPypiCacheConditional:
             assert name in content
         assert "# BEGIN_PYPI_CACHE" not in content
         assert "# END_PYPI_CACHE" not in content
+
+
+class TestImexChannels:
+    """Optional NVIDIA_IMEX_CHANNELS env var on the workflow job container."""
+
+    def _cluster_config(self):
+        return {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+    def test_imex_channels_set_injects_env(self, tmp_path, real_template):
+        """imex_channels: 0 renders NVIDIA_IMEX_CHANNELS="0" on the job container.
+
+        0 is deliberate: it is falsy, so this also proves the gate uses
+        ``is not None`` rather than truthiness (a truthiness check would drop 0).
+        """
+        def_file = make_def_file(
+            tmp_path, "imex-runner", "p6-b200.48xlarge", 22, 225, gpu=1, disk_size=600, imex_channels=0
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, real_template, self._cluster_config(), output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "imex-runner.yaml").read_text()))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        env_vars = {e["name"]: e["value"] for e in cm_data["spec"]["containers"][0]["env"]}
+        assert env_vars["NVIDIA_IMEX_CHANNELS"] == "0"
+
+    def test_imex_channels_unset_omits_env(self, tmp_path, real_template):
+        """Without imex_channels, NVIDIA_IMEX_CHANNELS is absent from the job container."""
+        def_file = make_def_file(tmp_path, "plain-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, real_template, self._cluster_config(), output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "plain-runner.yaml").read_text()))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        env_names = [e["name"] for e in cm_data["spec"]["containers"][0]["env"]]
+        assert "NVIDIA_IMEX_CHANNELS" not in env_names
 
 
 def _fresh_multiplier_env_value(output_dir, runner_name):

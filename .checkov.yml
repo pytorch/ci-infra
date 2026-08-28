@@ -5,6 +5,8 @@ skip-path:
   - arc
   - crcr
   - osdc
+  - multi-tenant
+  - gpu-dev
   - '.github/workflows/arc*'
 
 # Skip INFO and other unresolvable checks

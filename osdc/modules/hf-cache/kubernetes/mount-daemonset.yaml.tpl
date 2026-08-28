@@ -9,7 +9,7 @@
 #
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
 # __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__ __RCLONE_MEMORY_LIMIT__ __GOMEMLIMIT__
-# __DS_NAME__ __GPU_OP__ __MULTI_GPU_COUNTS__ __BUFFER_SIZE__
+# __DS_NAME__ __GPU_OP__ __MULTI_GPU_COUNTS__ __BUFFER_SIZE__ __TCP_RMEM_MAX__
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -75,6 +75,21 @@ spec:
               set -eu
               exec /proc/1/root/usr/bin/nsenter -t 1 -m -- /bin/sh -c '
                 mkdir -p /mnt/hf_cache /mnt/hf-cache-vfs
+                # A crashed rclone leaves a dead FUSE at /mnt/hf_cache that fails to stat,
+                # wedging every pod on the node in CreateContainerError. rclone self-heals
+                # on in-place restart (it Bidirectional-mounts the parent /mnt, always a
+                # live dir), but a pod recreation only runs this init — so clear the dead
+                # endpoint here. fusermount3 is the FUSE3 binary on AL2023 hosts (fusermount
+                # is not installed); umount -l is the last-resort peel. Both leave the bind
+                # under /mnt intact.
+                while ! stat /mnt/hf_cache >/dev/null 2>&1; do
+                  fusermount3 -uz /mnt/hf_cache 2>/dev/null || umount -l /mnt/hf_cache 2>/dev/null || break
+                done
+                # rclone Bidirectional-mounts the parent /mnt, so /mnt must be a shared
+                # mountpoint: bind it first, then keep /mnt/hf_cache a shared submount so
+                # the FUSE still propagates to job pods.
+                grep -q " /mnt " /proc/mounts || mount --bind /mnt /mnt
+                mount --make-rshared /mnt
                 grep -q " /mnt/hf_cache " /proc/mounts || mount --bind /mnt/hf_cache /mnt/hf_cache
                 mount --make-rshared /mnt/hf_cache
               '
@@ -99,9 +114,22 @@ spec:
               set -eu
               MOUNT=/mnt/hf_cache
               CACHE=/mnt/hf-cache-vfs
-              # Clear a stale FUSE left by a crash (no preStop) so rclone can remount.
-              # fusermount only — `umount` would drop the host bind mount.
-              fusermount -uz "$MOUNT" 2>/dev/null || true
+
+              # Cap the per-socket TCP receive buffer. Under cgroup v2 socket memory is
+              # charged to the container, and it -- not the Go heap or page cache -- is what
+              # OOM-kills this mount: a kill on the 640Mi tier was measured at sock=501Mi,
+              # anon=132Mi, file=0Mi, with 277 concurrent S3 connections autotuning to ~1.6Mi
+              # each. rclone has no flag to cap VFS read concurrency, so bound the per-socket
+              # ceiling instead. Namespaced to this pod's netns (the DaemonSet is not
+              # hostNetwork), so it cannot affect the node or other pods. Non-fatal: a failed
+              # write must not take the mount down.
+              printf '4096\t87380\t%s' "__TCP_RMEM_MAX__" > /proc/sys/net/ipv4/tcp_rmem 2>/dev/null \
+                || echo "WARNING: could not cap tcp_rmem; socket memory is unbounded"
+              echo "tcp_rmem: $(cat /proc/sys/net/ipv4/tcp_rmem 2>/dev/null)"
+              # Clear a stale FUSE left by a crash so rclone can remount. fusermount3 is
+              # the FUSE3 binary in the rclone image (fusermount is not installed); it
+              # clears just the FUSE, leaving the bind mount (a plain umount would drop it).
+              fusermount3 -uz "$MOUNT" 2>/dev/null || true
               mkdir -p "$MOUNT" "$CACHE"
 
               # "<N>%" scales the cap to N% of the cache disk; absolute (200G) as-is.
@@ -165,7 +193,7 @@ spec:
                 command:
                   - /bin/sh
                   - -c
-                  - "fusermount -uz /mnt/hf_cache || true"
+                  - "fusermount3 -uz /mnt/hf_cache || true"
           # A hung mount blocks this until timeout → pod restart.
           livenessProbe:
             exec:
@@ -188,11 +216,13 @@ spec:
               cpu: "1"
               memory: __RCLONE_MEMORY_LIMIT__
           volumeMounts:
-            - name: hf-cache
-              mountPath: /mnt/hf_cache
+            # Mount the parent /mnt, not /mnt/hf_cache: containerd stats the volume source
+            # at container-create, so a dead FUSE there would block every restart (the init
+            # container doesn't re-run on an in-place restart). rclone's fusermount3 -uz
+            # above then clears it. The vfs cache lives under /mnt too — no separate volume.
+            - name: hf-cache-parent
+              mountPath: /mnt
               mountPropagation: Bidirectional
-            - name: hf-cache-vfs
-              mountPath: /mnt/hf-cache-vfs
             - name: mount-signal
               mountPath: /run/hf-cache-signal
 
@@ -236,14 +266,11 @@ spec:
               readOnly: true
 
       volumes:
-        - name: hf-cache
+        # Parent of /mnt/hf_cache and /mnt/hf-cache-vfs — see rclone volumeMounts.
+        - name: hf-cache-parent
           hostPath:
-            path: /mnt/hf_cache
-            type: DirectoryOrCreate
-        - name: hf-cache-vfs
-          hostPath:
-            path: /mnt/hf-cache-vfs
-            type: DirectoryOrCreate
+            path: /mnt
+            type: Directory
         # taint_remover.py — deploy.sh renders this ConfigMap into the namespace.
         - name: taint-remover-lib
           configMap:

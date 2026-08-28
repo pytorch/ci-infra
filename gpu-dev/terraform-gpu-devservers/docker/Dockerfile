@@ -1,0 +1,289 @@
+# Custom PyTorch GPU Development Server Image
+# Based on pytorch/pytorch:2.12.0-cuda13.2-cudnn9-devel
+FROM pytorch/pytorch:2.12.0-cuda13.2-cudnn9-devel
+
+# Set environment variables for non-interactive installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Update apt and install base packages in a single layer so the package metadata
+# is always fresh relative to the install. Splitting update from install causes
+# Ubuntu to 404 on stale cached versions whenever security updates retire old .debs.
+RUN for attempt in 1 2 3; do \
+        echo "Package update attempt $attempt..." && \
+        apt-get update -qq && break || \
+        ([ $attempt -lt 3 ] && echo "Update failed, waiting 30s..." && sleep 30) \
+    done && \
+    apt-get install -y --no-install-recommends \
+        openssh-server \
+        sudo \
+        curl \
+        wget \
+        vim \
+        nano \
+        neovim \
+        git \
+        coreutils \
+        util-linux \
+        procps \
+        zsh \
+        bash-completion \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        iproute2 \
+        tmux \
+        unzip \
+        ccache \
+        htop \
+        tree \
+        rsync \
+        zstd \
+        pigz \
+        mold \
+        bubblewrap
+# Install Node.js 20 from NodeSource (required for Claude CLI)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs
+
+# Install additional CUDA toolkits alongside base CUDA 13.2
+# Base image already has NVIDIA repo configured, no need for cuda-keyring
+# NOTE: cuda-toolkit-13-3 is intentionally NOT here. CUDA 13.3 ships a unified
+# `cccl-13-3` package that `Breaks` `cuda-cccl-12-8`/`-12-9`, so 13.3 cannot coexist
+# with the 12.8/12.9 toolkits in one image. To add 13.3 we'd have to drop 12.8/12.9
+# (or hand-curate 13.3 sub-packages that exclude cccl). Kept 12.8-13.2 for now.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cuda-toolkit-12-8 \
+        cuda-toolkit-12-9 \
+        cuda-toolkit-13-0 \
+        cuda-toolkit-13-1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# CUDA 13.2 is the default (PyTorch 2.12 compiled against it)
+# All versions available at /usr/local/cuda-{12.8,12.9,13.0,13.1,13.2}/
+# Switch with: export CUDA_HOME=/usr/local/cuda-12.8
+ENV CUDA_HOME=/usr/local/cuda-13.2
+ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:${LD_LIBRARY_PATH}
+
+# Install EFA stack (prebuilt libfabric + OpenMPI + aws-ofi-nccl with GPU/RDMA support)
+# Uses AWS EFA installer which bundles tested, compatible versions of all components
+# -g: GPU support (enables CUDA HMEM / DMA-BUF for GPUDirect RDMA)
+# --skip-kmod: skip kernel modules (host handles these)
+# --skip-limit-conf: not needed in containers
+# --no-verify: no EFA device at build time
+ENV EFA_VERSION=1.47.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libhwloc-dev \
+        pciutils \
+        kmod \
+        udev \
+    && cd /tmp \
+    && curl -sL https://efa-installer.amazonaws.com/aws-efa-installer-${EFA_VERSION}.tar.gz | tar xz \
+    && cd aws-efa-installer \
+    && ./efa_installer.sh -y -g --skip-kmod --skip-limit-conf --no-verify --mpi=openmpi4 \
+    && cd / && rm -rf /tmp/aws-efa-installer* \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Clone and build NCCL tests with MPI support for multi-node benchmarking
+RUN apt-get update && apt-get install -y --no-install-recommends libnccl-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN cd /opt && \
+    git clone https://github.com/NVIDIA/nccl-tests.git && \
+    cd nccl-tests && \
+    make MPI=1 MPI_HOME=/opt/amazon/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr -j$(nproc)
+
+# Set environment variables for EFA and NCCL
+ENV PATH=/opt/amazon/openmpi/bin:/opt/amazon/efa/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/amazon/ofi-nccl/lib:/opt/amazon/openmpi/lib:/opt/amazon/efa/lib:${LD_LIBRARY_PATH}
+ENV FI_PROVIDER=efa
+ENV FI_EFA_USE_DEVICE_RDMA=1
+ENV NCCL_NET_GDR_LEVEL=SYS
+ENV NCCL_DEBUG=INFO
+ENV NCCL_ALGO=ring,tree
+ENV NCCL_SOCKET_IFNAME=enp71s0
+ENV NCCL_IB_HCA=^mlx
+ENV NCCL_CROSS_NIC=0
+ENV NCCL_IB_PCI_RELAXED_ORDERING=1
+ENV NCCL_ASYNC_ERROR_HANDLING=1
+ENV SUPPORTS_EFA=true
+
+# Install Python packages (Jupyter and common ML packages)
+# gpu-dev itself is bundled so users can run `gpu-dev submit` from inside their pod
+# (combined with IRSA on the pod's service account, no manual aws sso login needed).
+RUN pip install --no-cache-dir --break-system-packages \
+        jupyterlab \
+        ipywidgets \
+        matplotlib \
+        seaborn \
+        pandas \
+        numpy \
+        scikit-learn \
+        plotly \
+        tensorboard \
+        gpu-dev \
+        aws-bedrock-token-generator
+
+# Create dev user with UID 1081 to avoid conflicts with common base image users (e.g., ubuntu=1000)
+RUN useradd -u 1081 -m -s /usr/bin/zsh dev && \
+    usermod -aG sudo dev && \
+    echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev && \
+    echo 'Defaults lecture=never' >> /etc/sudoers.d/dev && \
+    echo 'Defaults !lecture' >> /etc/sudoers.d/dev && \
+    mkdir -p /home/dev/.ssh && \
+    printf "Host *\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n    LogLevel ERROR\n" > /home/dev/.ssh/config && \
+    chmod 700 /home/dev/.ssh && \
+    chmod 600 /home/dev/.ssh/config && \
+    chown -R 1081:1081 /home/dev/.ssh
+
+# Configure SSH daemon
+RUN mkdir -p /run/sshd /var/run/sshd && \
+    ssh-keygen -A
+
+# Create SSH config
+COPY ssh_config /etc/ssh/sshd_config
+
+# Install Claude Code SYSTEM-WIDE via the official native installer (as root).
+# Lives in /opt/claude with a /usr/local/bin/claude symlink, survives every reservation
+# regardless of persistent-disk state, and can't be shadowed by stale npm installs on
+# user disks. Image rebuilds are the only update path — controlled, reproducible.
+# Bump CLAUDE_CODE_BUILD to bust the layer cache and re-fetch the latest Claude Code
+# (the installer always grabs latest; without a bump Docker reuses the cached layer).
+USER root
+ARG CLAUDE_CODE_BUILD=2026-06-09
+RUN echo "Claude Code build marker: $CLAUDE_CODE_BUILD" && \
+    curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash || echo "Claude native install failed (non-fatal at build time)"
+RUN if [ -e /opt/claude/.local/bin/claude ]; then \
+        ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude; \
+        chmod -R a+rX /opt/claude; \
+        echo "Installed Claude Code (native): $(/usr/local/bin/claude --version 2>/dev/null || echo unknown)"; \
+    fi
+
+# Set up npm global directory for dev user (kept for ad-hoc dev-installed CLIs).
+USER dev
+WORKDIR /home/dev
+RUN mkdir -p ~/.npm-global && \
+    npm config set prefix ~/.npm-global
+
+# OpenAI Codex CLI on OpenAI gpt-5.x via AWS Bedrock. Installed system-wide (parallels
+# Claude above), then /usr/local/bin/codex is replaced with a thin wrapper that auths via
+# the pod IRSA — it mints a short-lived Bedrock bearer token (AWS_BEARER_TOKEN_BEDROCK), no
+# per-user key. The wrapper uses codex's NATIVE `amazon-bedrock` model provider (the Bedrock
+# Mantle path serves the OpenAI Responses API for supported OpenAI models — per the official
+# Codex/Bedrock docs), so NO custom endpoint/wire_api config is needed. Model via CODEX_MODEL
+# (default openai.gpt-5.4), effort via CODEX_EFFORT (default high). The wrapper forces
+# AWS_REGION=us-east-1.
+#
+# Why gpt-5.4 default (2026-06-16): gpt-5.5 is mid-rollout on Bedrock us-east-1 — it works
+# intermittently but ~30% of calls still 404 "Engine not found" (us-east-2 fails outright).
+# gpt-5.4 is rock-solid in us-east-1. To switch to 5.5 once AWS's rollout stabilizes, change
+# the default above to openai.gpt-5.5 (one line) — region is already us-east-1. Users can opt
+# in early with CODEX_MODEL=openai.gpt-5.5. The wrapper rewrites ~/.codex/config.toml each
+# launch. IAM already in place (pod IRSA: bedrock-mantle:* — native Mantle path does NOT need
+# bedrock:CallWithBearerToken).
+USER root
+# Always install the latest codex (the native amazon-bedrock provider is stable across
+# releases, so no need to pin — each image rebuild tracks latest). Validated on 0.140.0.
+RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install failed (non-fatal at build time)"
+# Bedrock wrapper, base64-embedded to avoid heredoc/quoting fragility. It execs the real
+# launcher at /usr/local/lib/node_modules/@openai/codex/bin/codex.js. CRITICAL: `npm install`
+# leaves /usr/local/bin/codex as a SYMLINK to that codex.js, so we must `rm -f` it first —
+# writing through the symlink would clobber codex.js itself, making the wrapper exec itself
+# (infinite recursion -> codex hangs on launch).
+RUN rm -f /usr/local/bin/codex && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IG9uIE9wZW5BSSBncHQtNS54IHZpYSBBV1MgQmVkcm9jayB1c2luZyBjb2RleCdzIE5BVElWRSBgYW1hem9uLWJlZHJvY2tgCiMgcHJvdmlkZXIuIFJlZ2lvbiB1cy1lYXN0LTEgKGdwdC01LnggTWFudGxlIHJlZ2lvbikuIEF1dGg6IGEgc2hvcnQtbGl2ZWQgQmVkcm9jawojIGJlYXJlciB0b2tlbiBtaW50ZWQgZnJvbSB0aGUgcG9kIElSU0EgKG5vIHBlci11c2VyIGtleSkuIE1vZGVsIHZpYSBDT0RFWF9NT0RFTAojIChkZWZhdWx0IG9wZW5haS5ncHQtNS40KSwgZWZmb3J0IHZpYSBDT0RFWF9FRkZPUlQgKGhpZ2gpLgojCiMgbW9kZWxfY29udGV4dF93aW5kb3cgaXMgc2V0IGV4cGxpY2l0bHkgYmVjYXVzZSBjb2RleCdzIGNhdGFsb2cgZG9lc24ndCBrbm93IHRoZQojIEJlZHJvY2stcHJlZml4ZWQgaWQgIm9wZW5haS5ncHQtNS54IiBhbmQgb3RoZXJ3aXNlIHdhcm5zICJNb2RlbCBtZXRhZGF0YSBub3QgZm91bmQsCiMgZGVmYXVsdGluZyB0byBmYWxsYmFjayBtZXRhZGF0YSIuIDI3MjAwMCBpcyBncHQtNS41J3MgYnVuZGxlZCBjb250ZXh0IHdpbmRvdy4KIwojIGdwdC01LjUgbm90ZSAoMjAyNi0wNi0xNik6IHByb3Zpc2lvbmVkIGluIHVzLWVhc3QtMSBidXQgbWlkLXJvbGxvdXQg4oCUIH4zMCUgb2YgY2FsbHMKIyBzdGlsbCA0MDQgIkVuZ2luZSBub3QgZm91bmQiLiBEZWZhdWx0IHN0YXlzIGdwdC01LjQgKHNvbGlkKTsgc3dpdGNoIHRoZSBkZWZhdWx0IHRvCiMgb3BlbmFpLmdwdC01LjUgb25jZSBBV1Mgc3RhYmlsaXplcywgb3Igb3B0IGluIG5vdyB3aXRoIENPREVYX01PREVMPW9wZW5haS5ncHQtNS41LgpzZXQgK2UKTU9ERUw9IiR7Q09ERVhfTU9ERUw6LW9wZW5haS5ncHQtNS40fSIKRUZGT1JUPSIke0NPREVYX0VGRk9SVDotaGlnaH0iCmV4cG9ydCBBV1NfUkVHSU9OPXVzLWVhc3QtMSBBV1NfREVGQVVMVF9SRUdJT049dXMtZWFzdC0xCm1rZGlyIC1wICIkSE9NRS8uY29kZXgiCmNhdCA+ICIkSE9NRS8uY29kZXgvY29uZmlnLnRvbWwiIDw8Q0ZHCm1vZGVsX3Byb3ZpZGVyID0gImFtYXpvbi1iZWRyb2NrIgptb2RlbCA9ICIkTU9ERUwiCm1vZGVsX3JlYXNvbmluZ19lZmZvcnQgPSAiJEVGRk9SVCIKbW9kZWxfY29udGV4dF93aW5kb3cgPSAyNzIwMDAKd2ViX3NlYXJjaCA9ICJkaXNhYmxlZCIKQ0ZHClRPSz0iJCgvdXNyL2Jpbi9weXRob24zIC1jICdmcm9tIGF3c19iZWRyb2NrX3Rva2VuX2dlbmVyYXRvciBpbXBvcnQgcHJvdmlkZV90b2tlbjsgcHJpbnQocHJvdmlkZV90b2tlbihyZWdpb249InVzLWVhc3QtMSIpKScgMj4vZGV2L251bGwpIgpbIC1uICIkVE9LIiBdICYmIGV4cG9ydCBBV1NfQkVBUkVSX1RPS0VOX0JFRFJPQ0s9IiRUT0siCmV4ZWMgL3Vzci9sb2NhbC9saWIvbm9kZV9tb2R1bGVzL0BvcGVuYWkvY29kZXgvYmluL2NvZGV4LmpzICIkQCIK' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
+
+USER dev
+
+# Install oh-my-zsh for dev user
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+
+# Install useful zsh plugins
+RUN git clone https://github.com/zsh-users/zsh-autosuggestions ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions && \
+    git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting
+
+# Create Jupyter config directory (token will be set at runtime)
+RUN mkdir -p ~/.jupyter
+
+# Create setup directory with all configs and user home items for copying to persistent disk after mount
+USER root
+RUN mkdir -p /devserver-setup && \
+    cp -r /home/dev/.npm-global /devserver-setup/npm-global && \
+    cp -r /home/dev/.oh-my-zsh /devserver-setup/oh-my-zsh && \
+    cp -r /home/dev/.jupyter /devserver-setup/jupyter && \
+    cp /home/dev/.npmrc /devserver-setup/.npmrc
+
+COPY --chown=root:root shell_env /devserver-setup/.shell_env
+COPY --chown=root:root zshrc /devserver-setup/.zshrc
+COPY --chown=root:root zshrc_ext /devserver-setup/.zshrc_ext
+COPY --chown=root:root bashrc /devserver-setup/.bashrc
+COPY --chown=root:root bashrc_ext /devserver-setup/.bashrc_ext
+COPY --chown=root:root bash_profile /devserver-setup/.bash_profile
+COPY --chown=root:root profile /devserver-setup/.profile
+COPY --chown=root:root zprofile /devserver-setup/.zprofile
+
+# Don't copy to /home/dev since persistent disk will overwrite it
+USER dev
+
+# Switch back to root for final configuration
+USER root
+
+# Create custom MOTD  
+COPY motd_script /usr/local/bin/motd_script
+COPY motd_script /etc/update-motd.d/00-custom
+RUN chmod +x /usr/local/bin/motd_script && \
+    chmod +x /etc/update-motd.d/00-custom && \
+    rm -f /etc/motd /etc/legal /usr/share/base-files/motd 2>/dev/null || true && \
+    mkdir -p /etc/motd.d /etc/update-motd.d /var/lib/sudo/lectured && \
+    touch /etc/motd.d/00-header && \
+    chmod 644 /etc/motd.d/00-header && \
+    touch /var/lib/sudo/lectured/dev && \
+    echo "dev" > /var/lib/sudo/lectured/dev
+
+# Add dotfiles persistence scripts
+COPY setup-dotfiles-persistence /usr/local/bin/setup-dotfiles-persistence
+COPY backup-dotfiles /usr/local/bin/backup-dotfiles
+COPY restore-dotfiles /usr/local/bin/restore-dotfiles
+COPY list-dotfile-versions /usr/local/bin/list-dotfile-versions
+COPY restore-dotfiles-version /usr/local/bin/restore-dotfiles-version
+COPY dotfiles-shutdown-handler /usr/local/bin/dotfiles-shutdown-handler
+RUN chmod +x /usr/local/bin/setup-dotfiles-persistence && \
+    chmod +x /usr/local/bin/backup-dotfiles && \
+    chmod +x /usr/local/bin/restore-dotfiles && \
+    chmod +x /usr/local/bin/list-dotfile-versions && \
+    chmod +x /usr/local/bin/restore-dotfiles-version && \
+    chmod +x /usr/local/bin/dotfiles-shutdown-handler
+
+# Install nproc wrapper to report container CPU allocation instead of node CPUs
+COPY nproc_wrapper /usr/local/bin/nproc_wrapper
+RUN mv /usr/bin/nproc /usr/bin/nproc.real && \
+    cp /usr/local/bin/nproc_wrapper /usr/bin/nproc && \
+    chmod +x /usr/bin/nproc /usr/local/bin/nproc_wrapper
+
+# Disable PAM MOTD and Ubuntu Pro ads
+RUN sed -i 's/session    optional     pam_motd.so/#&/g' /etc/pam.d/sshd 2>/dev/null || true && \
+    sed -i 's/session    optional     pam_motd.so  motd=/#&/g' /etc/pam.d/sshd 2>/dev/null || true && \
+    rm -rf /etc/update-motd.d/00-header /etc/update-motd.d/10-help-text /etc/update-motd.d/80-esm /etc/update-motd.d/95-hwe-eol 2>/dev/null || true && \
+    chmod -x /usr/sbin/update-motd 2>/dev/null || true
+
+# Clean up
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Force rebuild for Ubuntu node compatibility
+RUN echo "Built for Ubuntu nodes: $(date)" > /build-info.txt
+
+# Set proper permissions
+RUN chown -R dev:dev /home/dev && \
+    chmod 700 /home/dev/.ssh 2>/dev/null || true
+
+# Expose ports
+EXPOSE 22 8888
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD pgrep sshd || exit 1
+
+# Default command will be overridden by Kubernetes pod spec
+CMD ["/usr/sbin/sshd", "-D", "-e"]

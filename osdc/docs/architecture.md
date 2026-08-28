@@ -45,7 +45,7 @@ Current modules:
 | `buildkit` | Container build service — dual-arch BuildKit Deployments with HAProxy LB on dedicated nodes |
 | `pypi-cache` | Per-CUDA-slug nginx + pypiserver fanout backed by shared EFS wheelhouse, fed by an external wheel-build pipeline via S3 |
 | `cache-enforcer` | DaemonSet that installs iptables rules on runner nodes to block direct outbound access to external registries/PyPI, forcing traffic through internal caches |
-| `zombie-cleanup` | CronJob that reaps stuck/zombie ARC runner pods (configurable max age for pending/running) |
+| `zombie-cleanup` | CronJob that reaps stuck/zombie ARC runner pods (configurable max age for pending/running; runners actively running a job are protected until a longer busy hard-cap) |
 | `harbor-cache-recovery` | CronJob that detects ImagePullBackOff from Harbor proxy cache corruption and purges stale cache entries |
 | `logging` | Log collection pipeline — Grafana Alloy DaemonSet (pod logs + journal) + Events Deployment → Grafana Cloud Loki |
 | `monitoring` | Metrics pipeline — kube-prometheus-stack CRDs/exporters + Grafana Alloy → Grafana Cloud Mimir (see `docs/observability.md` for the three-Alloy architecture) |

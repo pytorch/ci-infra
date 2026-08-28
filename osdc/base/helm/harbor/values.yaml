@@ -27,6 +27,44 @@ x-base-affinity: &base-affinity
               values:
                 - base-infrastructure
 
+# Hard node selector for components with topologySpreadConstraints below.
+# x-base-affinity above is only a soft preference, so without this the
+# topology-spread skew calculation treats every node in the cluster as a
+# valid (zero-count) domain, not just the 4 base-infrastructure nodes.
+# That makes maxSkew: 1 mathematically unsatisfiable as soon as a
+# component's replica count exceeds the base node count — any node
+# already holding one same-generation pod would need a 2nd, giving
+# skew = 2 against an empty domain elsewhere, which always exceeds
+# maxSkew: 1 regardless of matchLabelKeys. core/portal happened to pass
+# because their replica count equals the node count exactly (4 == 4);
+# nginx at 6 replicas over 4 nodes deadlocked permanently. Restricting
+# the node set here matches the same pattern already used in
+# modules/bin-pack-scheduler/kubernetes/base/deployment.yaml.
+x-base-node-selector: &base-node-selector
+  role: base-infrastructure
+
+# Hard-spread each component's replicas one-per-node. Without this, a
+# rolling base node replacement (nodes become Ready one at a time) can pile
+# every replica of core/registry/etc. onto whichever node comes up first,
+# starving other pods on that node of CPU — including harbor-database,
+# whose EBS volume pins it to one specific AZ/node. Component name is
+# templated in per-component below since each has a distinct label.
+#
+# matchLabelKeys: [pod-template-hash] scopes the skew calculation to the
+# current ReplicaSet generation only. Without it, a Deployment rollout
+# deadlocks whenever replicas > node count: the constraint counts old- and
+# new-generation pods together (both share the same component label), so
+# leftover old pods on a node block new pods from ever satisfying maxSkew,
+# and whenUnsatisfiable: DoNotSchedule refuses to place them — the rollout
+# can't finish because new pods never go Ready, and old pods can't be
+# removed until new ones do.
+x-spread-template: &spread-template
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: DoNotSchedule
+  matchLabelKeys:
+    - pod-template-hash
+
 # ============================================================================
 # Expose configuration (NodePort for containerd access)
 # ============================================================================
@@ -83,7 +121,16 @@ cache:
 core:
   tolerations: *base-tolerations
   affinity: *base-affinity
+  nodeSelector: *base-node-selector
+  topologySpreadConstraints:
+    - <<: *spread-template
+      labelSelector:
+        matchLabels: {app: harbor, component: core}
 
+# registry and jobservice are NOT given topologySpreadConstraints: both use
+# an RWO PVC (see updateStrategy note below), so their replicas are already
+# constrained to land together on whatever node holds that volume — a hard
+# per-node spread would conflict with that and leave pods Pending.
 registry:
   tolerations: *base-tolerations
   affinity: *base-affinity
@@ -102,6 +149,11 @@ updateStrategy:
 portal:
   tolerations: *base-tolerations
   affinity: *base-affinity
+  nodeSelector: *base-node-selector
+  topologySpreadConstraints:
+    - <<: *spread-template
+      labelSelector:
+        matchLabels: {app: harbor, component: portal}
 
 nginx:
   replicas: 3
@@ -114,6 +166,11 @@ nginx:
       memory: 1Gi
   tolerations: *base-tolerations
   affinity: *base-affinity
+  nodeSelector: *base-node-selector
+  topologySpreadConstraints:
+    - <<: *spread-template
+      labelSelector:
+        matchLabels: {app: harbor, component: nginx}
 
 database:
   internal:
