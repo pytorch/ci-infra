@@ -198,12 +198,12 @@ ENI_MAX_PODS: dict[str, int] = {
     "p6-b200.48xlarge": 198,
     # pypi-cache instance types
     "r7i.2xlarge": 56,  # 4 ENIs x 15 IPs - 4
-    "r7i.12xlarge": 234,  # 8 ENIs x (30 - 1) IPs + 2
-    "r5d.12xlarge": 234,  # 8 ENIs x (30 - 1) IPs + 2
+    "r7i.12xlarge": 234,
+    "r5d.12xlarge": 234,
     # BuildKit instance types
     "m8gd.24xlarge": 737,
     "m6id.24xlarge": 737,
-    "m6id.12xlarge": 234,  # 8 ENIs x (30 - 1) IPs + 2
+    "m6id.12xlarge": 234,
     "c7gd.16xlarge": 737,
     "m7gd.16xlarge": 737,
     "m8gd.16xlarge": 737,
