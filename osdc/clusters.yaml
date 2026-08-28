@@ -205,10 +205,8 @@ clusters:
         amd64_min: 1
         # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
-        amd64_fallback: 4
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
-        arm64_fallback: 4
     modules:
       - karpenter
       - arc
@@ -293,10 +291,8 @@ clusters:
         amd64_min: 1
         # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
-        amd64_fallback: 4
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
-        arm64_fallback: 4
     pypi_cache:
       replicas: 1
     agent_sandbox:
@@ -396,10 +392,8 @@ clusters:
         amd64_min: 1
         # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
-        amd64_fallback: 4
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
-        arm64_fallback: 4
     pypi_cache:
       replicas: 1
     agent_sandbox:
