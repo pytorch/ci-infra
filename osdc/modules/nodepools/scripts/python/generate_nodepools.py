@@ -644,8 +644,26 @@ def _resolve_instance_weights(items, cluster):
     return [inst for inst in resolved if inst["weight"] != 0]
 
 
+def _validate_weight_value(val, fleet_name, def_file, section, i, label):
+    """Validate a single resolved weight value: int, sentinel 0, or Karpenter's 1-100 range."""
+    if not isinstance(val, int) or isinstance(val, bool):
+        raise ValueError(
+            f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: {label} must be an int, got {type(val).__name__}"
+        )
+    if not (val == 0 or 1 <= val <= 100):
+        raise ValueError(
+            f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: "
+            f"{label} must be 0 (disabled) or 1-100 (Karpenter's valid weight range), got {val}"
+        )
+
+
 def _validate_weight(weight, fleet_name, def_file, section, i):
-    """Validate a fleet instance's ``weight`` value: an int, or a mapping with a 'default' key."""
+    """Validate a fleet instance's ``weight`` value: an int, or a mapping with a 'default' key.
+
+    Per-cluster keys are not checked against the real cluster list (that would
+    couple this generator to clusters.yaml) — a misspelled cluster key silently
+    falls back to 'default' instead of erroring.
+    """
     if isinstance(weight, dict):
         if "default" not in weight:
             raise ValueError(
@@ -653,16 +671,14 @@ def _validate_weight(weight, fleet_name, def_file, section, i):
                 f"weight mapping missing required 'default' key"
             )
         for key, val in weight.items():
-            if not isinstance(val, int) or isinstance(val, bool):
-                raise ValueError(
-                    f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: "
-                    f"weight['{key}'] must be an int, got {type(val).__name__}"
-                )
+            _validate_weight_value(val, fleet_name, def_file, section, i, f"weight['{key}']")
     elif not isinstance(weight, int) or isinstance(weight, bool):
         raise ValueError(
             f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: "
             f"weight must be an int or a mapping with a 'default' key, got {type(weight).__name__}"
         )
+    else:
+        _validate_weight_value(weight, fleet_name, def_file, section, i, "weight")
 
 
 def _validate_fleet(fleet_data, def_file):
@@ -699,6 +715,9 @@ def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, regi
 
     instances = _resolve_instance_weights(fleet_data.get("instances", []), cluster)
     release_instances = _resolve_instance_weights(fleet_data.get("release", []), cluster)
+
+    if fleet_data.get("instances") and not instances:
+        log_info(f"  Fleet '{fleet_name}': all instances weight 0 for cluster '{cluster}' — skipped entirely")
 
     log_info(f"  Fleet '{fleet_name}': {len(instances)} instance(s)")
 

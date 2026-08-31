@@ -1090,6 +1090,23 @@ class TestProcessFleetPerClusterWeight:
         weights = self._weights_by_type(output_dir)
         assert weights["g6.48xlarge"] == 100
 
+    def test_all_zero_fleet_logs_and_generates_nothing(self, tmp_path, capsys):
+        output_dir = tmp_path / "generated"
+        output_dir.mkdir()
+        fleet = {
+            "name": "g6",
+            "arch": "amd64",
+            "gpu": True,
+            "instances": [
+                {"type": "g6.8xlarge", "weight": {"default": 0}, "node_disk_size": 600},
+                {"type": "g6.16xlarge", "weight": {"default": 0}, "node_disk_size": 600},
+            ],
+        }
+        generated = _process_fleet(fleet, Path("g6.yaml"), tmp_path, output_dir, "nodepools", cluster="lf-prod-aws-ue1")
+        assert generated == 0
+        assert list(output_dir.glob("*.yaml")) == []
+        assert "all instances weight 0 for cluster 'lf-prod-aws-ue1' — skipped entirely" in capsys.readouterr().out
+
 
 class TestMainPerClusterWeight:
     """Integration tests for main() reading NODEPOOLS_CLUSTER."""
@@ -1162,6 +1179,21 @@ class TestValidateWeightShape:
     def test_non_int_non_dict_weight_raises(self):
         with pytest.raises(ValueError, match="must be an int or a mapping"):
             _validate_fleet(self._fleet("100"), Path("g6.yaml"))
+
+    def test_scalar_weight_above_100_raises(self):
+        with pytest.raises(ValueError, match="0 \\(disabled\\) or 1-100"):
+            _validate_fleet(self._fleet(150), Path("g6.yaml"))
+
+    def test_scalar_weight_negative_raises(self):
+        with pytest.raises(ValueError, match="0 \\(disabled\\) or 1-100"):
+            _validate_fleet(self._fleet(-5), Path("g6.yaml"))
+
+    def test_map_value_above_100_raises(self):
+        with pytest.raises(ValueError, match="0 \\(disabled\\) or 1-100"):
+            _validate_fleet(self._fleet({"default": 100, "lf-prod-aws-ue1": 150}), Path("g6.yaml"))
+
+    def test_map_value_zero_sentinel_is_valid(self):
+        _validate_fleet(self._fleet({"default": 100, "lf-prod-aws-ue1": 0}), Path("g6.yaml"))  # does not raise
 
 
 # ============================================================================
