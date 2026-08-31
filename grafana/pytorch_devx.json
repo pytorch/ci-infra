@@ -955,6 +955,359 @@
           "version": "13.1.0-25668120414"
         }
       }
+    },
+    "panel-10": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "WITH\nlatest_prs AS (\n    SELECT\n        number AS pr_number,\n        -- Deduplicate the complete PR snapshot before filtering its current state.\n        -- pull_request is a ReplacingMergeTree with no version column; this matches FINAL.\n        argMax(tuple(state, labels, closed_at, user.login), updated_at) AS latest\n    FROM default.pull_request\n    WHERE\n        -- Trailing slash so pytorch/pytorch doesn't match pytorch/pytorch-integration-testing\n        dynamoKey LIKE '$repository/%'\n    GROUP BY number\n),\nmerged_prs AS (\n    SELECT\n        pr_number,\n        parseDateTimeBestEffortOrNull(latest.3) AS merge_time\n    FROM latest_prs\n    WHERE\n        latest.1 = 'closed'\n        AND arrayExists(x -> x.'name' = 'Merged', latest.2)\n        AND latest.3 != ''\n        -- pytorchupdatebot PRs sit open for weeks and skew the tail\n        AND latest.4 != 'pytorchupdatebot'\n        AND $__timeFilter(merge_time)\n        AND merge_time < toStartOfDay(now())\n),\nmerge_attempts AS (\n    SELECT\n        toUInt32(extractGroups(issue_url, 'issues/([0-9]+)')[1]) AS pr_number,\n        created_at,\n        -- One workflow sometimes posts the explainer twice (3.8% of PRs), so count\n        -- distinct runs. Present on 100% of these comments over 12mo; fallback if not.\n        extractGroups(body, 'actions/runs/([0-9]+)')[1] AS run_id\n    FROM default.issue_comment\n    WHERE\n        dynamoKey LIKE '$repository/%'\n        AND user.login = 'pytorchmergebot'\n        AND body LIKE '%Merge started%'\n        AND created_at <= $__toTime\n),\nattempts_per_pr AS (\n    SELECT\n        mp.pr_number AS pr_number,\n        toStartOfDay(mp.merge_time) AS merge_day,\n        uniqExact(if(ma.run_id = '', toString(ma.created_at), ma.run_id)) AS attempt_count\n    FROM merged_prs mp\n    CROSS JOIN merge_attempts ma\n    WHERE\n        ma.pr_number = mp.pr_number\n        AND ma.created_at <= mp.merge_time\n    GROUP BY mp.pr_number, merge_day\n),\ndaily AS (\n    SELECT\n        merge_day,\n        -- Winsorized at 5: merge-polling bots produced 45-84 attempt PRs, and uncapped\n        -- one bot's retirement fakes a -14% Mar->Aug drop. 5 is where the artifact vanishes.\n        avg(least(attempt_count, 5)) AS merge_attempts_avg,\n        sum(least(attempt_count, 5)) AS total_attempts,\n        count() AS prs\n    FROM attempts_per_pr\n    GROUP BY merge_day\n)\nSELECT\n    merge_day AS time,\n    merge_attempts_avg,\n    -- PR-weighted, not a mean of daily means, so thin weekend days don't dominate\n    sum(total_attempts) OVER w / sum(prs) OVER w AS trend_7d_avg\nFROM daily\nWINDOW w AS (\n    ORDER BY toUnixTimestamp(merge_day) ASC\n    RANGE BETWEEN 6 * 86400 PRECEDING AND CURRENT ROW\n)\nORDER BY merge_day ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Mean pytorchmergebot merge attempts per landed PR — distinct workflow runs, winsorized at 5. 1.0 = landed first try; y-axis floor is 1.0, so the shaded area is retries. Blue = 7d PR-weighted avg. HUD's 'Merge retry rate (avg)', bucketed by merge day rather than PR-creation day (HUD's cohort is right-censored, ~10% low on the trailing week). Counts CI-driven retries only; ghstack members attribute to the stack's top PR. Amber 1.80 / red 2.0. Today excluded; empty for executorch.",
+        "id": 10,
+        "links": [],
+        "title": "Avg Merge Attempts per Landed PR [repository]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds",
+                  "seriesBy": "last"
+                },
+                "unit": "short",
+                "decimals": 2,
+                "min": 1,
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 27,
+                  "gradientMode": "scheme",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "dashed"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 1.8
+                    },
+                    {
+                      "color": "red",
+                      "value": 2
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    },
+    "panel-11": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "WITH\nlatest_prs AS (\n    SELECT\n        number AS pr_number,\n        -- Deduplicate the complete PR snapshot before filtering its current state.\n        -- pull_request is a ReplacingMergeTree with no version column; this matches FINAL.\n        argMax(tuple(state, labels, closed_at, user.login), updated_at) AS latest\n    FROM default.pull_request\n    WHERE\n        -- Trailing slash so pytorch/pytorch doesn't match pytorch/pytorch-integration-testing\n        dynamoKey LIKE '$repository/%'\n    GROUP BY number\n),\nmerged_prs AS (\n    SELECT\n        pr_number,\n        parseDateTimeBestEffortOrNull(latest.3) AS merge_time\n    FROM latest_prs\n    WHERE\n        latest.1 = 'closed'\n        AND arrayExists(x -> x.'name' = 'Merged', latest.2)\n        AND latest.3 != ''\n        -- pytorchupdatebot PRs sit open for weeks and skew the tail\n        AND latest.4 != 'pytorchupdatebot'\n        AND $__timeFilter(merge_time)\n        AND merge_time < toStartOfDay(now())\n),\nmerge_attempts AS (\n    SELECT\n        toUInt32(extractGroups(issue_url, 'issues/([0-9]+)')[1]) AS pr_number,\n        created_at,\n        -- One workflow sometimes posts the explainer twice (3.8% of PRs), so count\n        -- distinct runs. Present on 100% of these comments over 12mo; fallback if not.\n        extractGroups(body, 'actions/runs/([0-9]+)')[1] AS run_id\n    FROM default.issue_comment\n    WHERE\n        dynamoKey LIKE '$repository/%'\n        AND user.login = 'pytorchmergebot'\n        AND body LIKE '%Merge started%'\n        AND created_at <= $__toTime\n),\nattempts_per_pr AS (\n    SELECT\n        mp.pr_number AS pr_number,\n        toStartOfDay(mp.merge_time) AS merge_day,\n        uniqExact(if(ma.run_id = '', toString(ma.created_at), ma.run_id)) AS attempt_count\n    FROM merged_prs mp\n    CROSS JOIN merge_attempts ma\n    WHERE\n        ma.pr_number = mp.pr_number\n        AND ma.created_at <= mp.merge_time\n    GROUP BY mp.pr_number, merge_day\n),\ndaily AS (\n    SELECT\n        merge_day,\n        -- Prevalence, not severity: each PR counts once however often it was retried,\n        -- so bot polling can't move it. Hence no winsorization, unlike panel-10.\n        100.0 * countIf(attempt_count >= 2) / count() AS pct_needing_retry,\n        countIf(attempt_count >= 2) AS prs_retried,\n        count() AS prs\n    FROM attempts_per_pr\n    GROUP BY merge_day\n)\nSELECT\n    merge_day AS time,\n    pct_needing_retry,\n    -- PR-weighted, not a mean of daily means, so thin weekend days don't dominate\n    100.0 * sum(prs_retried) OVER w / sum(prs) OVER w AS trend_7d_avg\nFROM daily\nWINDOW w AS (\n    ORDER BY toUnixTimestamp(merge_day) ASC\n    RANGE BETWEEN 6 * 86400 PRECEDING AND CURRENT ROW\n)\nORDER BY merge_day ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Share of landed PRs taking more than one pytorchmergebot merge attempt. Prevalence companion to 'Avg Merge Attempts per Landed PR': that panel measures severity and is tail-sensitive, this one weights every PR equally, so no polling bot can move it. The two capture different behavior: Mar–May→Jun–Aug the mean was flat (1.72→1.70) while this rose 42.5%→45.3%. Blue = 7d PR-weighted avg. Same cohort as panel-10. Amber 50% (half of landed PRs) / red 60%. Today excluded; empty for executorch.",
+        "id": 11,
+        "links": [],
+        "title": "% of Landed PRs Needing a Merge Retry [repository]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds",
+                  "seriesBy": "last"
+                },
+                "unit": "percent",
+                "min": 0,
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 27,
+                  "gradientMode": "scheme",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "dashed"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 50
+                    },
+                    {
+                      "color": "red",
+                      "value": 60
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
     }
   },
   "layout": {
@@ -1037,6 +1390,32 @@
             "width": 8,
             "x": 16,
             "y": 10
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-10"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 0,
+            "y": 20
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-11"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 8,
+            "y": 20
           }
         }
       ]
