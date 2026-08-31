@@ -431,6 +431,8 @@ apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
   name: {name}
+  labels:
+    osdc.io/module: buildkit
 spec:
   weight: {weight}
 
@@ -483,6 +485,8 @@ apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
   name: buildkit-{arch}
+  labels:
+    osdc.io/module: buildkit
 spec:
   # TODO(CVE-2026-31431): al2023@latest tracks the newest AL2023 AMI; once node
   # rotation picks up a kernel 6.12.85+ AMI, remove
@@ -549,7 +553,6 @@ spec:
   tags:
     Name: "CLUSTER_NAME_PLACEHOLDER-buildkit-{arch}"
     ManagedBy: "karpenter"
-    NodePool: "buildkit-{arch}"
     Architecture: "{arch}\""""
 
     def _arch_blocks(arch, plan, replicas):
