@@ -13,8 +13,12 @@ from generate_nodepools import (
     _fleet_nodepool_name,
     _fleet_size_collisions,
     _get_node_disk_size,
+    _process_fleet,
     _read_user_data_script,
+    _resolve_instance_weights,
+    _resolve_weight,
     _user_data_script_mime_part,
+    _validate_fleet,
     generate_nodepool_yaml,
     main,
 )
@@ -56,15 +60,21 @@ def _load_real_def(filename: str) -> dict:
         return data["nodepool"]
     if "fleet" in data:
         fleet = data["fleet"]
-        return _build_fleet_nodepool_def(fleet, fleet["instances"][0])
+        inst = _resolve_instance_weights(fleet["instances"], "")[0]
+        return _build_fleet_nodepool_def(fleet, inst)
     if "fleets" in data:
         fleet = data["fleets"][0]
-        return _build_fleet_nodepool_def(fleet, fleet["instances"][0])
+        inst = _resolve_instance_weights(fleet["instances"], "")[0]
+        return _build_fleet_nodepool_def(fleet, inst)
     raise ValueError(f"Unknown format in {filename}")
 
 
 def _load_all_real_defs() -> list[dict]:
-    """Load all real def files, expanding fleets into individual nodepool_defs."""
+    """Load all real def files, expanding fleets into individual nodepool_defs.
+
+    Weight maps are resolved with cluster="" (the "default" entry), matching
+    generate_nodepools.py's fallback when NODEPOOLS_CLUSTER is unset.
+    """
     result = []
     for f in sorted(REAL_DEFS_DIR.glob("*.yaml")):
         with open(f) as fh:
@@ -75,9 +85,9 @@ def _load_all_real_defs() -> list[dict]:
             result.append(data["nodepool"])
         elif "fleet" in data:
             fleet = data["fleet"]
-            for inst in fleet.get("instances", []):
+            for inst in _resolve_instance_weights(fleet.get("instances", []), ""):
                 result.append(_build_fleet_nodepool_def(fleet, inst))
-            for inst in fleet.get("release", []):
+            for inst in _resolve_instance_weights(fleet.get("release", []), ""):
                 result.append(
                     _build_fleet_nodepool_def(
                         fleet,
@@ -88,7 +98,7 @@ def _load_all_real_defs() -> list[dict]:
                 )
         elif "fleets" in data:
             for fleet in data["fleets"]:
-                for inst in fleet.get("instances", []):
+                for inst in _resolve_instance_weights(fleet.get("instances", []), ""):
                     result.append(_build_fleet_nodepool_def(fleet, inst))
     return result
 
@@ -915,6 +925,275 @@ class TestBuildFleetNodepoolDef:
         }
         result = _build_fleet_nodepool_def(fleet, inst)
         assert result["ami_selector_tags"] == {"osdc.io/ami": "ai-sandbox-gvisor"}
+
+
+# ============================================================================
+# _resolve_weight / _resolve_instance_weights — per-cluster weight maps
+# ============================================================================
+
+
+def _g6_instances() -> list[dict]:
+    """Mirrors the real defs/g6.yaml shape after the LF per-cluster reorder."""
+    return [
+        {
+            "type": "g6.48xlarge",
+            "weight": {"default": 100, "lf-prod-aws-ue1": 0, "lf-prod-aws-ue2": 0},
+            "node_disk_size": 600,
+            "has_nvme": True,
+        },
+        {
+            "type": "g6.12xlarge",
+            "weight": {"default": 90, "lf-prod-aws-ue1": 70, "lf-prod-aws-ue2": 70},
+            "node_disk_size": 600,
+            "has_nvme": True,
+        },
+        {
+            "type": "g6.24xlarge",
+            "weight": {"default": 80, "lf-prod-aws-ue1": 90, "lf-prod-aws-ue2": 90},
+            "node_disk_size": 600,
+            "has_nvme": True,
+        },
+        {
+            "type": "g6.8xlarge",
+            "weight": {"default": 70, "lf-prod-aws-ue1": 100, "lf-prod-aws-ue2": 100},
+            "node_disk_size": 600,
+            "has_nvme": True,
+        },
+        {
+            "type": "g6.16xlarge",
+            "weight": {"default": 60, "lf-prod-aws-ue1": 80, "lf-prod-aws-ue2": 80},
+            "node_disk_size": 600,
+            "has_nvme": True,
+        },
+    ]
+
+
+class TestResolveWeight:
+    """Tests for _resolve_weight — resolving a scalar-or-map weight for a cluster."""
+
+    def test_scalar_passthrough(self):
+        assert _resolve_weight(100, "lf-prod-aws-ue1") == 100
+        assert _resolve_weight(100, "") == 100
+        assert _resolve_weight(100, None) == 100
+
+    def test_map_falls_back_to_default_for_unlisted_cluster(self):
+        weight = {"default": 100, "lf-prod-aws-ue1": 0}
+        assert _resolve_weight(weight, "meta-prod-aws-ue1") == 100
+
+    def test_map_falls_back_to_default_when_cluster_unset(self):
+        weight = {"default": 100, "lf-prod-aws-ue1": 0}
+        assert _resolve_weight(weight, "") == 100
+        assert _resolve_weight(weight, None) == 100
+
+    def test_map_override_applies_for_matching_cluster(self):
+        weight = {"default": 100, "lf-prod-aws-ue1": 0}
+        assert _resolve_weight(weight, "lf-prod-aws-ue1") == 0
+
+
+class TestResolveInstanceWeights:
+    """Tests for _resolve_instance_weights — resolve + drop weight-0 instances."""
+
+    G6_INSTANCES = _g6_instances()
+
+    def test_meta_cluster_matches_authored_order(self):
+        result = _resolve_instance_weights(self.G6_INSTANCES, "meta-prod-aws-ue1")
+        assert [(i["type"], i["weight"]) for i in result] == [
+            ("g6.48xlarge", 100),
+            ("g6.12xlarge", 90),
+            ("g6.24xlarge", 80),
+            ("g6.8xlarge", 70),
+            ("g6.16xlarge", 60),
+        ]
+
+    def test_unset_cluster_matches_authored_order(self):
+        result = _resolve_instance_weights(self.G6_INSTANCES, "")
+        assert [i["weight"] for i in result] == [100, 90, 80, 70, 60]
+
+    def test_lf_cluster_drops_48xlarge_and_reorders_cost_ascending(self):
+        result = _resolve_instance_weights(self.G6_INSTANCES, "lf-prod-aws-ue1")
+        assert [(i["type"], i["weight"]) for i in result] == [
+            ("g6.12xlarge", 70),
+            ("g6.24xlarge", 90),
+            ("g6.8xlarge", 100),
+            ("g6.16xlarge", 80),
+        ]
+        assert "g6.48xlarge" not in {i["type"] for i in result}
+
+    def test_lf_ue2_gets_the_same_ladder_as_ue1(self):
+        ue1 = _resolve_instance_weights(self.G6_INSTANCES, "lf-prod-aws-ue1")
+        ue2 = _resolve_instance_weights(self.G6_INSTANCES, "lf-prod-aws-ue2")
+        assert [(i["type"], i["weight"]) for i in ue1] == [(i["type"], i["weight"]) for i in ue2]
+
+    def test_scalar_weights_are_unaffected(self):
+        """Non-GPU fleets keep plain int weights — the map is g6-specific."""
+        instances = [{"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800}]
+        result = _resolve_instance_weights(instances, "lf-prod-aws-ue1")
+        assert result == instances
+
+    def test_empty_list_unaffected(self):
+        assert _resolve_instance_weights([], "lf-prod-aws-ue1") == []
+
+
+class TestProcessFleetPerClusterWeight:
+    """End-to-end: _process_fleet resolves weights and skips weight-0 instances."""
+
+    def _weights_by_type(self, output_dir):
+        weights = {}
+        for path in output_dir.glob("*.yaml"):
+            docs = parse_all_yaml(path.read_text())
+            np = docs[0]
+            instance_type = np["spec"]["template"]["metadata"]["labels"]["instance-type"]
+            weights[instance_type] = np["spec"]["weight"]
+        return weights
+
+    def _g6_fleet(self):
+        return {
+            "name": "g6",
+            "arch": "amd64",
+            "gpu": True,
+            "instances": [dict(i) for i in TestResolveInstanceWeights.G6_INSTANCES],
+        }
+
+    def test_meta_cluster_generates_all_five_sizes(self, tmp_path):
+        output_dir = tmp_path / "generated"
+        output_dir.mkdir()
+        _process_fleet(
+            self._g6_fleet(), Path("g6.yaml"), tmp_path, output_dir, "nodepools", cluster="meta-prod-aws-ue1"
+        )
+        weights = self._weights_by_type(output_dir)
+        assert weights == {
+            "g6.48xlarge": 100,
+            "g6.12xlarge": 90,
+            "g6.24xlarge": 80,
+            "g6.8xlarge": 70,
+            "g6.16xlarge": 60,
+        }
+
+    def test_lf_cluster_omits_48xlarge_and_reorders(self, tmp_path):
+        output_dir = tmp_path / "generated"
+        output_dir.mkdir()
+        _process_fleet(self._g6_fleet(), Path("g6.yaml"), tmp_path, output_dir, "nodepools", cluster="lf-prod-aws-ue1")
+        weights = self._weights_by_type(output_dir)
+        assert weights == {
+            "g6.12xlarge": 70,
+            "g6.24xlarge": 90,
+            "g6.8xlarge": 100,
+            "g6.16xlarge": 80,
+        }
+        assert not (output_dir / "g6-48xlarge.yaml").exists()
+
+    def test_unset_cluster_matches_meta_output(self, tmp_path):
+        """Backward compatibility: no NODEPOOLS_CLUSTER == today's scalar-weight behavior."""
+        output_dir = tmp_path / "generated"
+        output_dir.mkdir()
+        _process_fleet(self._g6_fleet(), Path("g6.yaml"), tmp_path, output_dir, "nodepools", cluster="")
+        weights = self._weights_by_type(output_dir)
+        assert weights["g6.48xlarge"] == 100
+
+    def test_all_zero_fleet_logs_and_generates_nothing(self, tmp_path, capsys):
+        output_dir = tmp_path / "generated"
+        output_dir.mkdir()
+        fleet = {
+            "name": "g6",
+            "arch": "amd64",
+            "gpu": True,
+            "instances": [
+                {"type": "g6.8xlarge", "weight": {"default": 0}, "node_disk_size": 600},
+                {"type": "g6.16xlarge", "weight": {"default": 0}, "node_disk_size": 600},
+            ],
+        }
+        generated = _process_fleet(fleet, Path("g6.yaml"), tmp_path, output_dir, "nodepools", cluster="lf-prod-aws-ue1")
+        assert generated == 0
+        assert list(output_dir.glob("*.yaml")) == []
+        assert "all instances weight 0 for cluster 'lf-prod-aws-ue1' — skipped entirely" in capsys.readouterr().out
+
+
+class TestMainPerClusterWeight:
+    """Integration tests for main() reading NODEPOOLS_CLUSTER."""
+
+    def _create_fleet_def(self, tmp_path) -> Path:
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet = {
+            "fleet": {
+                "name": "g6",
+                "arch": "amd64",
+                "gpu": True,
+                "instances": [dict(i) for i in TestResolveInstanceWeights.G6_INSTANCES],
+            }
+        }
+        (defs_dir / "g6.yaml").write_text(yaml.dump(fleet))
+        return defs_dir
+
+    def test_unset_cluster_keeps_authored_order(self, tmp_path):
+        defs_dir = self._create_fleet_def(tmp_path)
+        output_dir = tmp_path / "generated"
+        env = {"NODEPOOLS_DEFS_DIR": str(defs_dir), "NODEPOOLS_OUTPUT_DIR": str(output_dir)}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("NODEPOOLS_CLUSTER", None)
+            result = main()
+        assert result == 0
+        docs = parse_all_yaml((output_dir / "g6-48xlarge.yaml").read_text())
+        assert docs[0]["spec"]["weight"] == 100
+
+    def test_lf_cluster_via_env(self, tmp_path):
+        defs_dir = self._create_fleet_def(tmp_path)
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_CLUSTER": "lf-prod-aws-ue1",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+        assert result == 0
+        docs = parse_all_yaml((output_dir / "g6-8xlarge.yaml").read_text())
+        assert docs[0]["spec"]["weight"] == 100
+        assert not (output_dir / "g6-48xlarge.yaml").exists()
+
+
+class TestValidateWeightShape:
+    """Tests for _validate_fleet's weight-shape checking."""
+
+    def _fleet(self, weight):
+        return {
+            "name": "g6",
+            "arch": "amd64",
+            "instances": [{"type": "g6.8xlarge", "weight": weight, "node_disk_size": 600}],
+        }
+
+    def test_scalar_int_is_valid(self):
+        _validate_fleet(self._fleet(100), Path("g6.yaml"))  # does not raise
+
+    def test_map_with_default_is_valid(self):
+        _validate_fleet(self._fleet({"default": 100, "lf-prod-aws-ue1": 0}), Path("g6.yaml"))  # does not raise
+
+    def test_map_missing_default_raises(self):
+        with pytest.raises(ValueError, match="missing required 'default' key"):
+            _validate_fleet(self._fleet({"lf-prod-aws-ue1": 0}), Path("g6.yaml"))
+
+    def test_map_with_non_int_value_raises(self):
+        with pytest.raises(ValueError, match="must be an int"):
+            _validate_fleet(self._fleet({"default": "100"}), Path("g6.yaml"))
+
+    def test_non_int_non_dict_weight_raises(self):
+        with pytest.raises(ValueError, match="must be an int or a mapping"):
+            _validate_fleet(self._fleet("100"), Path("g6.yaml"))
+
+    def test_scalar_weight_above_100_raises(self):
+        with pytest.raises(ValueError, match="0 \\(disabled\\) or 1-100"):
+            _validate_fleet(self._fleet(150), Path("g6.yaml"))
+
+    def test_scalar_weight_negative_raises(self):
+        with pytest.raises(ValueError, match="0 \\(disabled\\) or 1-100"):
+            _validate_fleet(self._fleet(-5), Path("g6.yaml"))
+
+    def test_map_value_above_100_raises(self):
+        with pytest.raises(ValueError, match="0 \\(disabled\\) or 1-100"):
+            _validate_fleet(self._fleet({"default": 100, "lf-prod-aws-ue1": 150}), Path("g6.yaml"))
+
+    def test_map_value_zero_sentinel_is_valid(self):
+        _validate_fleet(self._fleet({"default": 100, "lf-prod-aws-ue1": 0}), Path("g6.yaml"))  # does not raise
 
 
 # ============================================================================
