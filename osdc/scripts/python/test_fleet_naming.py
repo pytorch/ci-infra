@@ -32,9 +32,6 @@ class TestDeriveFleetName:
     def test_family_gpu_p5(self):
         assert derive_fleet_name("p5.48xlarge") == "p5"
 
-    def test_family_gpu_p6_b200(self):
-        assert derive_fleet_name("p6-b200.48xlarge") == "p6-b200"
-
     def test_family_unknown_returns_prefix(self):
         assert derive_fleet_name("z99.xlarge") == "z99"
 
@@ -100,7 +97,6 @@ class TestValidateNodeFleetValid:
         [
             "g5-48xlarge",
             "g4dn-metal",
-            "p6-b200",
             "a",
             "a1",
             "g5",

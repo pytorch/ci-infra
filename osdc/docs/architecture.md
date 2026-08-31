@@ -37,10 +37,8 @@ Current modules:
 | `karpenter` | Karpenter controller — IAM roles, SQS interruption queue, EventBridge rules, Helm install. Required by all compute modules; clusters list it first in their `modules:` block. |
 | `arc` | GitHub Actions Runner Controller — installs the ARC Helm chart |
 | `nodepools` | Karpenter NodePools generated from `defs/` — multi-flavor compute provisioning (CPU/GPU, runner vs build, metal variants) |
-| `nodepools-b200` | B200 GPU NodePools — delegates to upstream nodepools deploy with B200-specific definitions |
 | `nodepools-h100` | H100 GPU NodePools — delegates to upstream nodepools deploy with H100-specific definitions |
 | `arc-runners` | ARC runner scale sets generated from `defs/` + templates — GitHub Actions self-hosted runners (requires `arc` + `nodepools`) |
-| `arc-runners-b200` | B200 ARC runner scale sets — delegates to upstream arc-runners deploy with B200-specific definitions |
 | `arc-runners-h100` | H100 ARC runner scale sets — delegates to upstream arc-runners deploy with H100-specific definitions |
 | `buildkit` | Container build service — dual-arch BuildKit Deployments with HAProxy LB on dedicated nodes |
 | `pypi-cache` | Per-CUDA-slug nginx + pypiserver fanout backed by shared EFS wheelhouse, fed by an external wheel-build pipeline via S3 |

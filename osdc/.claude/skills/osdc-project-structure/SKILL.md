@@ -59,10 +59,8 @@ osdc/
 │   ├── keda/               # KEDA operator (provides ScaledObject/TriggerAuthentication CRDs used by buildkit autoscaling)
 │   ├── arc/                # ARC controller (GitHub Actions)
 │   ├── nodepools/          # Karpenter NodePools (pure compute provisioning)
-│   ├── nodepools-b200/     # B200 (Blackwell) GPU nodepools
 │   ├── nodepools-h100/     # H100 (Hopper) GPU nodepools
 │   ├── arc-runners/        # ARC runner scale sets (requires arc + nodepools)
-│   ├── arc-runners-b200/   # B200 GPU runner scale sets
 │   ├── arc-runners-h100/   # H100 GPU runner scale sets
 │   ├── buildkit/           # BuildKit build service (arm64 + amd64, HAProxy LB)
 │   ├── cache-enforcer/     # DaemonSet blocking direct registry/PyPI access (forces Harbor + pypi-cache)

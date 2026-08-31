@@ -27,7 +27,7 @@
 # that have already loaded, then drops the page cache to evict any
 # DirtyFrag-poisoned pages of read-only files.
 #
-# Runs on EVERY node (base infra + Karpenter ARC + BuildKit + GPU + H100/B200).
+# Runs on EVERY node (base infra + Karpenter ARC + BuildKit + GPU + H100).
 # Same shape as algif-mitigation.yaml.
 #
 # REMOVE this DaemonSet once all nodes are running a patched AL2023 AMI
@@ -155,7 +155,7 @@ spec:
 
       priorityClassName: system-node-critical
 
-      # Run on ALL nodes (base infra + Karpenter-managed: ARC, BuildKit, GPU, H100, B200)
+      # Run on ALL nodes (base infra + Karpenter-managed: ARC, BuildKit, GPU, H100)
       tolerations:
         - operator: Exists
 

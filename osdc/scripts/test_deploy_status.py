@@ -129,9 +129,9 @@ class TestParseConfigmaps:
         assert history[("module", "test")] == []
 
     def test_module_name_with_hyphens(self):
-        items = [_finish_cm("module", "arc-runners-b200", commit="abc", status="completed")]
+        items = [_finish_cm("module", "arc-runners-h100", commit="abc", status="completed")]
         _, finish, _ = deploy_status.parse_configmaps(items)
-        assert ("module", "arc-runners-b200") in finish
+        assert ("module", "arc-runners-h100") in finish
 
     def test_all_types_together(self):
         items = [

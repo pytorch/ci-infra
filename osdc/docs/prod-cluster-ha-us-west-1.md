@@ -33,8 +33,7 @@ this design wouldn't work on staging (which is repo-scoped at
    Set "Repository access" to include `pytorch/pytorch` (and any other
    repos that target `mt-…` labels).
 2. **H100 capacity reservations in us-west-1.** Collect the IDs from the
-   AWS console; B200 is omitted because there's no B200 capacity in
-   us-west-1.
+   AWS console.
 3. **us-west-1 service-quota raises** for the vCPU families this cluster
    uses (c7i, m7i, r7i, m7g, m8g, g4dn, p5). File early — GPU families
    can have long lead times. `g5`, `g6`, `c7a`, `r7a`, and `p4d` are
@@ -79,7 +78,7 @@ meta-prod-aws-uw1:
     - karpenter
     - arc
     - nodepools
-    - nodepools-h100        # H100 only — no B200 capacity in us-west-1
+    - nodepools-h100
     - arc-runners
     - arc-runners-h100
     - buildkit
@@ -155,7 +154,6 @@ follows automatically.
 
 ## Not in scope
 
-- B200 in us-west-1 (no capacity reservation available).
 - A10G / L4 / A100 / AMD-CPU runners in us-west-1 (AWS does not offer
   these instance families in the region — see above).
 - Cross-region Harbor / PyPI sharing — failure-domain

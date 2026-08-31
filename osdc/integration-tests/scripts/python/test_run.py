@@ -60,8 +60,8 @@ def clusters_yaml(tmp_path):
                     "nodepools",
                     "arc",
                     "arc-runners",
-                    "nodepools-b200",
-                    "arc-runners-b200",
+                    "nodepools-h100",
+                    "arc-runners-h100",
                 ],
             },
         },
@@ -165,8 +165,8 @@ ALL_MODULES = [
     "pypi-cache",
     "nodepools",
     "buildkit",
-    "arc-runners-b200",
-    "nodepools-b200",
+    "arc-runners-h100",
+    "nodepools-h100",
     "cache-enforcer",
 ]
 
@@ -224,9 +224,6 @@ class TestNormalizeModules:
     def test_h100_variant_not_stripped(self):
         assert normalize_modules(["arc-runners-h100"]) == {"arc-runners-h100"}
 
-    def test_b200_variant_not_stripped(self):
-        assert normalize_modules(["arc-runners-b200"]) == {"arc-runners-b200"}
-
     def test_plain_module_unchanged(self):
         assert normalize_modules(["arc-runners"]) == {"arc-runners"}
 
@@ -252,11 +249,11 @@ class TestHasModule:
         assert has_module(cfg_staging, "karpenter") is True
 
     def test_absent(self, cfg_staging):
-        assert has_module(cfg_staging, "nodepools-b200") is False
+        assert has_module(cfg_staging, "nodepools-h100") is False
 
-    def test_b200_present(self, cfg_production):
-        assert has_module(cfg_production, "nodepools-b200") is True
-        assert has_module(cfg_production, "arc-runners-b200") is True
+    def test_h100_present(self, cfg_production):
+        assert has_module(cfg_production, "nodepools-h100") is True
+        assert has_module(cfg_production, "arc-runners-h100") is True
 
     def test_opt_variant_satisfies_base_arc_runners(self):
         cfg = {"cluster": {"modules": ["arc-runners-opt"]}, "defaults": {}}
@@ -272,10 +269,6 @@ class TestHasModule:
 
     def test_h100_variant_not_aliased_to_base(self):
         cfg = {"cluster": {"modules": ["arc-runners-h100"]}, "defaults": {}}
-        assert has_module(cfg, "arc-runners") is False
-
-    def test_b200_variant_not_aliased_to_base(self):
-        cfg = {"cluster": {"modules": ["arc-runners-b200"]}, "defaults": {}}
         assert has_module(cfg, "arc-runners") is False
 
 
@@ -360,8 +353,8 @@ class TestGenerateWorkflow:
                 "pypi-cache",
                 "nodepools",
                 "cache-enforcer",
-                "arc-runners-b200",
-                "nodepools-b200",
+                "arc-runners-h100",
+                "nodepools-h100",
             ],
         )
         assert "buildkit-job" not in result
@@ -714,19 +707,6 @@ class TestGenerateWorkflowNoopFallback:
             "meta-prod-aws-ue2",
             "meta-prod-aws-ue2",
             cluster_modules=["arc-runners-h100", "cache-enforcer"],
-        )
-        assert "no-op:" in result
-        assert "arc-job" not in result
-
-    def test_noop_when_only_arc_runners_b200_without_base_arc_runners(self, workflow_template):
-        # arc-runners-b200 does not alias to the base arc-runners module, so a cluster
-        # running only the B200 runner fleet still degrades to a no-op integration test.
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=["arc-runners-b200", "cache-enforcer"],
         )
         assert "no-op:" in result
         assert "arc-job" not in result

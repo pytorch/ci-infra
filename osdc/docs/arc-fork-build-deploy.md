@@ -221,10 +221,9 @@ runner:
 
 This flows through the template as `maxRunners:` in the generated Helm values (the chart's standard scaling field — `gha_max_runners` at `runner.yaml.tpl:73` is an unrelated Prometheus metric). The capacity monitor reads `config.MaxRunners` (set from the listener config) and uses it as the ceiling for `X-ScaleSetMaxCapacity`. Without `max_runners`, the value is empty/unlimited.
 
-H100 (`modules/arc-runners-h100/defs/`) and B200 (`modules/arc-runners-b200/defs/`) runners all set `max_runners`, computed as `(reserved GPUs / GPUs per runner)`:
+H100 (`modules/arc-runners-h100/defs/`) runners all set `max_runners`, computed as `(reserved GPUs / GPUs per runner)`:
 
 - H100 has 1 reserved 8-GPU node (8 total GPUs). Per-split values: `8 / 4 / 2 / 1` for 1× / 2× / 4× / 8× splits.
-- B200 has 2 reserved 8-GPU nodes (16 total GPUs). Per-split values: `16 / 8 / 4 / 2` for 1× / 2× / 4× / 8× splits.
 
 CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.
 

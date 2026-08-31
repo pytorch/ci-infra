@@ -6,7 +6,7 @@ Each `arc-runners` deploy pins the runner image
 (`ghcr.io/actions/actions-runner:<tag>@sha256:<...>`) **per OSDC commit**.
 The lookup key is the SHA of the most recent commit touching anything in
 the OSDC project (the whole `osdc/` directory) — `modules/arc-runners/`,
-the `arc-runners-h100`/`arc-runners-b200` shim modules, `clusters.yaml`,
+the `arc-runners-h100` shim module, `clusters.yaml`,
 `deploy.sh`, and everything else under `osdc/`. The first time a given
 SHA deploys, the resolver calls GitHub `/releases/latest`, resolves the
 digest with `crane`, and writes the entry to the `arc-runner-version-lock`
@@ -31,7 +31,7 @@ safe (digest-pinned, recorded in the ConfigMap), but it is no longer
 bit-for-bit identical to the original deploy.
 
 Because the key is "any commit under `osdc/`", shim module changes
-(`arc-runners-h100`, `arc-runners-b200`), `clusters.yaml` edits, and
+(`arc-runners-h100`), `clusters.yaml` edits, and
 unrelated module commits all bump the SHA and produce a new lock entry.
 Reproducibility is per-OSDC-commit, not per-`arc-runners`-commit.
 
@@ -69,8 +69,7 @@ its older entry before prepending the new one.
 
 ## Concurrent deploys
 
-The three `arc-runners*` modules (`arc-runners`, `arc-runners-h100`,
-`arc-runners-b200`) deploy concurrently and all read/write the same
+The two `arc-runners*` modules (`arc-runners`, `arc-runners-h100`) deploy concurrently and all read/write the same
 ConfigMap. Writes use Kubernetes optimistic concurrency: the resolver
 reads `metadata.resourceVersion`, includes it in the `replace` call, and
 the API server rejects the write with 409 if another deploy beat it.
@@ -147,9 +146,9 @@ the operator response when they are not).
 - `modules/arc-runners/scripts/python/resolve_runner_version.py` — the
   resolver implementation.
 - `modules/arc-runners/deploy.sh` — invokes the resolver and exports
-  `RUNNER_IMAGE` for the generator. The `arc-runners-h100` and
-  `arc-runners-b200` variants `exec` into this `deploy.sh` and inherit
-  the resolved image unchanged.
+  `RUNNER_IMAGE` for the generator. The `arc-runners-h100`
+  variant `exec`s into this `deploy.sh` and inherits the resolved
+  image unchanged.
 - `arc-runner-version-lock` ConfigMap in the `osdc-system` namespace —
   the lock file itself.
 - `modules/arc-runners/tests/smoke/test_runner_version_lock.py` — smoke

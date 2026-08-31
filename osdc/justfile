@@ -2172,10 +2172,10 @@ smoke cluster:
     echo ""
 
     # Pre-generate ARC runner YAMLs for every enabled arc-runners* module
-    # (canonical + per-GPU-arch variants like arc-runners-b200 / arc-runners-h100).
+    # (canonical + per-GPU-arch variants like arc-runners-h100).
     # Each variant has its own defs/ and generated/ but shares the canonical
     # generator (parameterized via ARC_RUNNERS_* env vars — same pattern as
-    # each variant's own deploy.sh, e.g. modules/arc-runners-b200/deploy.sh).
+    # each variant's own deploy.sh, e.g. modules/arc-runners-h100/deploy.sh).
     # Generation must happen ONCE before any pytest worker starts —
     # previously the test fixture shelled out, which raced under pytest-xdist.
     # OSDC_RESOLVER_READONLY: smoke must not mutate the lock ConfigMap or hit GitHub.
