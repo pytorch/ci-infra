@@ -690,7 +690,7 @@ class TestMain:
 
 
 class TestMultipleInstanceTypes:
-    """A NodePool spanning several instance sizes, with one fixed pod size."""
+    """One weighted NodePool per instance size, all sharing a single pod spec."""
 
     AMD64 = "m6id.24xlarge:2,m6id.12xlarge:1"
 
@@ -796,6 +796,23 @@ class TestMultipleInstanceTypes:
         for name in ("buildkit-amd64", "buildkit-amd64-m6id-12xlarge"):
             assert pools[name]["spec"]["limits"] == {"cpu": "34560", "memory": "138240Gi"}
 
+    def test_every_generated_object_carries_the_module_label(self):
+        """deploy.sh prunes stale pools by this label; without it an orphan survives."""
+        output = generate_nodepools_yaml("m7gd.16xlarge:4", "m6id.24xlarge:2,m6id.12xlarge:1", 12, 12)
+        docs = [d for d in yaml.safe_load_all(output) if d]
+        assert docs, "generator produced nothing"
+        for d in docs:
+            assert d["metadata"].get("labels", {}).get("osdc.io/module") == "buildkit", (
+                f"{d['kind']} {d['metadata']['name']} is unprunable without osdc.io/module"
+            )
+
+    def test_nodeclass_has_no_nodepool_tag(self):
+        """One EC2NodeClass is shared by every pool of the arch, so it cannot name one."""
+        output = generate_nodepools_yaml("m7gd.16xlarge:4", "m6id.24xlarge:2,m6id.12xlarge:1", 12, 12)
+        for d in yaml.safe_load_all(output):
+            if d and d["kind"] == "EC2NodeClass":
+                assert "NodePool" not in d["spec"]["tags"]
+
     def test_nodeclass_has_no_instance_type_tag(self):
         """A static tag cannot describe a pool set spanning sizes; the built-in label already does."""
         output = generate_nodepools_yaml("m7gd.16xlarge", self.AMD64, 12, 2, arm64_pods_per_node=4)
@@ -809,6 +826,7 @@ class TestStagingSmallPool:
 
     AMD64 = "m6id.4xlarge:2,m6id.2xlarge:1"
     ARM64 = "m7gd.4xlarge:2,m7gd.2xlarge:1"
+    AMD64_MAX = 12  # buildkit.autoscaling.amd64_max for the staging clusters
 
     def test_declared_packing_holds(self):
         for plan in (
@@ -827,17 +845,19 @@ class TestStagingSmallPool:
         assert math.ceil(8 / per_node) == 4, "8 amd64 pods should need 4 nodes"
 
     def test_nodepool_limits_cover_the_smallest_type(self):
-        """At max replicas an all-2xlarge fleet must stay inside the limits."""
-        output = generate_nodepools_yaml(self.ARM64, self.AMD64, 8, 2)
+        """At max replicas the 2xlarge pool must hold the whole fleet on its own."""
+        output = generate_nodepools_yaml(self.ARM64, self.AMD64, self.AMD64_MAX, 2)
         res = plan_pod_resources([("m6id.4xlarge", 2), ("m6id.2xlarge", 1)])
         for d in yaml.safe_load_all(output):
-            if not d or d["kind"] != "NodePool" or d["metadata"]["name"] != "buildkit-amd64":
+            if not d or d["kind"] != "NodePool":
+                continue
+            if d["metadata"]["name"] != "buildkit-amd64-m6id-2xlarge":
                 continue
             limit = int(d["spec"]["limits"]["cpu"])
-            nodes = math.ceil(8 / pods_that_fit("m6id.2xlarge", res["cpu"], res["memory_gi"]))
+            nodes = math.ceil(self.AMD64_MAX / pods_that_fit("m6id.2xlarge", res["cpu"], res["memory_gi"]))
             assert nodes * INSTANCE_SPECS["m6id.2xlarge"]["vcpu"] <= limit
             return
-        raise AssertionError("buildkit-amd64 NodePool not found")
+        raise AssertionError("buildkit-amd64-m6id-2xlarge NodePool not found")
 
     def test_every_buildkit_type_has_an_eni_entry(self):
         """ENI_MAX_PODS.get() falls back to vCPU, so a missing entry mis-sizes silently."""

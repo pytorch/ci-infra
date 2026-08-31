@@ -132,7 +132,7 @@ def eni_max_pods(enis: int, ips_per_eni: int) -> int:
 # EKS max pods per instance type (from ENI limits).
 # Source: awslabs/amazon-eks-ami eni-max-pods.txt
 # The kubelet memory reservation formula uses max_pods, NOT vCPU count.
-# 737 is the AMI's prefix-delegation ceiling, not a product of eni_max_pods().
+# 737 is eni_max_pods(15, 50) — the topology every 16xlarge-and-larger shares.
 # ---------------------------------------------------------------------------
 ENI_MAX_PODS: dict[str, int] = {
     # Runner node instance types
@@ -213,14 +213,14 @@ ENI_MAX_PODS: dict[str, int] = {
     "r7i.12xlarge": eni_max_pods(8, 30),
     "r5d.12xlarge": eni_max_pods(8, 30),
     # BuildKit instance types
-    "m8gd.24xlarge": 737,
-    "m6id.24xlarge": 737,
+    "m8gd.24xlarge": eni_max_pods(15, 50),
+    "m6id.24xlarge": eni_max_pods(15, 50),
     "m6id.12xlarge": eni_max_pods(8, 30),
     "m6id.4xlarge": eni_max_pods(8, 30),
     "m6id.2xlarge": eni_max_pods(4, 15),
     "m7gd.4xlarge": eni_max_pods(8, 30),
     "m7gd.2xlarge": eni_max_pods(4, 15),
-    "c7gd.16xlarge": 737,
-    "m7gd.16xlarge": 737,
-    "m8gd.16xlarge": 737,
+    "c7gd.16xlarge": eni_max_pods(15, 50),
+    "m7gd.16xlarge": eni_max_pods(15, 50),
+    "m8gd.16xlarge": eni_max_pods(15, 50),
 }

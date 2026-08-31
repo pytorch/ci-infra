@@ -201,8 +201,11 @@ clusters:
         m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        # Not 0: the session metric can never leave 0 with no backends behind it.
-        amd64_min: 1
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
         # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
@@ -287,8 +290,11 @@ clusters:
         m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        # Not 0: the session metric can never leave 0 with no backends behind it.
-        amd64_min: 1
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
         # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
@@ -388,8 +394,11 @@ clusters:
         m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        # Not 0: the session metric can never leave 0 with no backends behind it.
-        amd64_min: 1
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
         # Headroom over the test's 8-backend target, not a capacity estimate.
         amd64_max: 12
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
