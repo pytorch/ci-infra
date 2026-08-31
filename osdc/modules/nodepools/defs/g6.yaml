@@ -7,24 +7,45 @@ fleet:
   gpu: true
   exclude_regions:
     - us-west-1
+  # LF clusters (lf-prod-aws-ue1/ue2) get a different weight ladder than the
+  # authored (Meta) default: g6.48xlarge never launches there (0 successes in
+  # 211 CreateFleet attempts across both clusters — COPS-461), and the
+  # survivors are reordered by cost per delivered runner-hour rather than
+  # left in largest-first order. See docs/current_runner_load_distribution.md
+  # for the runner mix (94% 1-GPU / 6% 4-GPU) that the LF order is tuned for.
   instances:
     - type: g6.48xlarge
-      weight: 100
+      weight:
+        default: 100
+        lf-prod-aws-ue1: 0    # disabled — cannot be provisioned on LF
+        lf-prod-aws-ue2: 0
       node_disk_size: 600
       has_nvme: true
     - type: g6.12xlarge
-      weight: 90
+      weight:
+        default: 90
+        lf-prod-aws-ue1: 70   # 4-GPU cost optimum ($4.60/runner-hr) — 6% of volume
+        lf-prod-aws-ue2: 70
       node_disk_size: 600
       has_nvme: true
     - type: g6.24xlarge
-      weight: 80
+      weight:
+        default: 80
+        lf-prod-aws-ue1: 90   # 1-GPU fallthrough — 3 runners/node, $2.23/runner-hr
+        lf-prod-aws-ue2: 90
       node_disk_size: 600
       has_nvme: true
     - type: g6.8xlarge
-      weight: 70
+      weight:
+        default: 70
+        lf-prod-aws-ue1: 100  # 1-GPU cost optimum ($2.01/runner-hr) — 94% of volume
+        lf-prod-aws-ue2: 100
       node_disk_size: 600
       has_nvme: true
     - type: g6.16xlarge
-      weight: 60
+      weight:
+        default: 60
+        lf-prod-aws-ue1: 80   # 1-GPU last resort ($3.40); cannot host a 4-GPU pod
+        lf-prod-aws-ue2: 80
       node_disk_size: 600
       has_nvme: true
