@@ -1000,7 +1000,7 @@
             "transformations": []
           }
         },
-        "description": "Mean pytorchmergebot merge attempts per landed PR — distinct workflow runs, winsorized at 5. 1.0 = landed first try; y-axis floor is 1.0, so the shaded area is retries. Blue = 7d PR-weighted avg. HUD's 'Merge retry rate (avg)', bucketed by merge day rather than PR-creation day (HUD's cohort is right-censored, ~10% low on the trailing week). Counts CI-driven retries only; ghstack members attribute to the stack's top PR. Amber 1.56 / red 1.78. Today excluded; empty for executorch.",
+        "description": "Mean pytorchmergebot merge attempts per landed PR — distinct workflow runs, winsorized at 5. 1.0 = landed first try; y-axis floor is 1.0, so the shaded area is retries. Blue = 7d PR-weighted avg. HUD's 'Merge retry rate (avg)', bucketed by merge day rather than PR-creation day (HUD's cohort is right-censored and reads low on the trailing week). Counts CI-driven retries only; ghstack members attribute to the stack's top PR. Amber 1.56 / red 1.78. Today excluded; empty for executorch.",
         "id": 10,
         "links": [],
         "title": "Avg Merge Attempts per Landed PR [repository]",
@@ -1177,7 +1177,7 @@
             "transformations": []
           }
         },
-        "description": "Share of landed PRs taking more than one pytorchmergebot merge attempt. Prevalence companion to 'Avg Merge Attempts per Landed PR': that panel measures severity and is tail-sensitive, this one weights every PR equally, so no polling bot can move it. The two capture different behavior: Mar–May→Jun–Aug the mean was flat (1.72→1.70) while this rose 42.5%→45.3%. Blue = 7d PR-weighted avg. Same cohort as panel-10. Amber 35% / red 50%. Today excluded; empty for executorch.",
+        "description": "Share of landed PRs taking more than one pytorchmergebot merge attempt. Prevalence companion to 'Avg Merge Attempts per Landed PR': that panel measures severity and is tail-sensitive, this one weights every PR equally, so merge-polling automation cannot move it. The two diverge when retries get more common without getting more severe. Blue = 7d PR-weighted avg. Same cohort as panel-10. Amber 35% / red 50%. Today excluded; empty for executorch.",
         "id": 11,
         "links": [],
         "title": "% of Landed PRs Needing a Merge Retry [repository]",
