@@ -588,6 +588,68 @@ clusters:
       - monitoring
       - logging
 
+  meta-prod-aws-uw2:
+    # Fourth Meta prod region — a CPU + BuildKit mirror of meta-prod-aws-ue1
+    # (us-east-1) in us-west-2. No GPU fleets: there is no H100/B200 capacity
+    # reservation in us-west-2 yet, so nodepools-h100/-b200 and their runner
+    # modules are intentionally omitted. Adding them later is a clusters.yaml
+    # change plus the reservation IDs (see meta-prod-aws-ue2 for the shape).
+    #
+    # Registers its scale sets in the runner group "meta-prod-aws-uw2" while
+    # advertising the same mt-* labels as the other prod clusters, so GitHub
+    # routes jobs to whichever cluster has capacity. See
+    # docs/prod-cluster-ha-us-west-1.md for the active/active design.
+    cluster_name: meta-prod-aws-uw2
+    region: us-west-2
+    # New cluster — no legacy arc-cbr bucket to preserve, so it uses the modern
+    # ciforge-tfstate-<cluster-id> convention (like the meta-staging-* clusters).
+    state_bucket: ciforge-tfstate-meta-prod-aws-uw2
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - osdc_gha_prod
+    base:
+      vpc_cidr: "10.28.0.0/16"  # next free /16 after meta-staging-aws-ue2's 10.24.0.0/16
+    # Off-region: the CI images live in us-east-1 ECR, whose layer bucket is not
+    # covered by this cluster's us-west-2 S3 prefix list. On from day one so the
+    # Harbor cache warms with the cluster instead of after a NAT bill.
+    harbor:
+      ecr_pullthrough: true
+    node_compactor:
+      min_node_age_seconds: 300
+    buildkit:
+      # Instance types inherit defaults.buildkit — amd64 m6id.24xlarge:2
+      # preferred with m6id.12xlarge:1 as the capacity fallback, arm64
+      # m7gd.16xlarge:4. Same families as ue1/ue2, so no override.
+      autoscaling:
+        enabled: true
+        amd64_min: 2   # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
+        amd64_max: 360  # cloned from ue1/ue2; revisit once uw2 has its own 90d peak
+        arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
+        arm64_max: 30  # cloned from ue1/ue2; revisit once uw2 has its own 90d peak
+        amd64_fallback: 32  # if KEDA can't read metrics, hold the proven fixed pool
+        arm64_fallback: 8
+    arc-runners:
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: meta-prod-aws-uw2
+      runner_name_prefix: "mt-"
+      runner_group: "meta-prod-aws-uw2"
+      capacity_aware_fresh_multiplier: 0.8
+      scheduler_name: bin-pack-scheduler
+    modules:
+      - karpenter
+      - arc
+      - hf-cache              # before nodepools: mount must be up before the node-init gate taint
+      - nodepools
+      - bin-pack-scheduler
+      - arc-runners
+      - keda
+      - buildkit
+      - zombie-cleanup
+      - harbor-cache-recovery
+      - monitoring
+      - logging
+
   lf-prod-aws-ue1:
     region: us-east-1
     cluster_name: lf-prod-aws-ue1
