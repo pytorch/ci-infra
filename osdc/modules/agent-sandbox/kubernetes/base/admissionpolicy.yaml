@@ -27,12 +27,15 @@
 # SCOPE. The Job pass applies to Jobs created BY THE DISPATCHER'S SERVICE ACCOUNT, which
 # is the threat this exists for: a bug (or a JWT parser compromise) in the one process
 # that holds create-Job RBAC. Scoping it that way is also what lets the namespace hold an
-# ordinary maintenance Job — the JWKS refresher CronJob in oidc.yaml is the first — without
-# each one having to satisfy a contract written for untrusted agent workloads.
+# ordinary maintenance Job — none exists today — without each one having to satisfy a
+# contract written for untrusted agent workloads.
 #
 # WHAT IT STILL DOES NOT COVER, so nobody reads more into it than it does:
-#   - It does not stop a task pod REACHING the API server; that is NetworkPolicy's job,
-#     and networkpolicy.yaml documents why the IPv6-only CNI makes that best-effort.
+#   - It does not stop a task pod REACHING the API server, and NetworkPolicy does not
+#     either: sandbox-task-egress deliberately allows TCP 443 to any address, because
+#     GitHub's ranges move, and the API server answers on 443 like everything else. What
+#     keeps the task pod harmless there is that it carries no token (the automount rule
+#     above) and sandbox-agent holds no RBAC — not a network boundary.
 #   - A mutating webhook that also stripped the `app: sandbox-task` label would evade the
 #     Pod pass. No mutating webhook is configured in this repo today.
 #   - A Job created by some OTHER identity with create-Job RBAC (a cluster admin) is not
@@ -101,7 +104,18 @@ spec:
     # that is honoured by the scheduler, not by the kubelet. A pod that names its own
     # scheduler, or pins nodeName outright, is placed without anyone consulting it — and
     # a task pod on a base node sits beside the dispatcher's projected token.
-    - expression: "!has(variables.pod.nodeName)"
+    #
+    # EXEMPT ON POD UPDATE, and this is load-bearing rather than a softening. The scheduler
+    # sets spec.nodeName through the pods/binding subresource, which this policy does not
+    # match; from then on every pod this binding sees carries a nodeName. Without the
+    # exemption the rule denies every UPDATE to the pod's main resource — including the
+    # Job controller's removal of its batch.kubernetes.io/job-tracking finalizer, which is
+    # what lets status.succeeded reach 1. The dispatcher waits on exactly that field, so
+    # the visible symptom is not a security event: every task runs, prints its result, and
+    # then hangs until the dispatcher's own deadline. Nothing is lost by exempting it —
+    # spec.nodeName is immutable through the main resource, so the only writer is the
+    # binding subresource, which the rule never covered.
+    - expression: "!has(variables.pod.nodeName) || (!variables.isJob && request.operation == 'UPDATE')"
       reason: Forbidden
       message: "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector"
     - expression: "!has(variables.pod.schedulerName) || variables.pod.schedulerName == 'default-scheduler'"
@@ -194,10 +208,18 @@ spec:
 
     # --- Cost and blast radius -------------------------------------------------------
     #
-    # The ResourceQuota is the namespace-wide ceiling; these are the per-task bounds it
-    # assumes. A pod with no limits is admitted by the quota only until the quota's own
-    # limits.* entries reject it, which surfaces as an unschedulable pod rather than a
-    # clear rejection — this says which rule was broken.
+    # These rules check that limits are DECLARED, and that requests equal them. They put
+    # no ceiling on the VALUES, so one admitted task can still size itself to the whole
+    # namespace quota (25 CPU / 50Gi memory / 245Gi ephemeral in quota.yaml) and starve
+    # every other task — a denial of service against ourselves, not an escape, which is
+    # why it is a follow-up rather than a rule here: a ceiling means a fourth copy of the
+    # TASK_CPU/TASK_MEMORY/TASK_EPHEMERAL_STORAGE values, and comparing quantities needs
+    # CEL's quantity() library, which the smoke suite can exercise on a cluster but this
+    # change has no way to evaluate at review time.
+    #
+    # The quota already rejects a pod that declares no limits, since it tracks limits.*
+    # — so this rule is not what stops that pod, it is what names the reason. The quota's
+    # message is about a namespace-wide budget; this one is about the task contract.
     #
     # `in` rather than has(): resources.limits is a map, and the CEL has() macro takes a
     # field selection, which 'ephemeral-storage' cannot be spelled as.
@@ -230,6 +252,12 @@ spec:
     # One /run is one task pod. Without these, a single admitted Job could fan out to
     # `parallelism` pods and retry each of them, consuming the whole namespace quota from
     # one request that satisfied every rule above.
+    #
+    # The 3600 below is a second copy of the dispatcher's TASK_DEADLINE_S, which is env
+    # configurable and defaults to 900. Raise that env past 3600 and this rule rejects
+    # every Job — loudly, at dispatch, but with the unit suite green, so
+    # test_admissionpolicy.py reads the ceiling back out of this expression and compares
+    # it against both the dispatcher default and whatever dispatcher.yaml deploys.
     - expression: "!variables.isJob || (has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds <= 3600)"
       reason: Forbidden
       message: "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it"

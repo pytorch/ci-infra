@@ -30,10 +30,29 @@ import dispatcher
 import pytest
 import yaml
 
-POLICY_PATH = Path(__file__).resolve().parent.parent / "kubernetes" / "base" / "admissionpolicy.yaml"
+MODULE = Path(__file__).resolve().parent.parent
+POLICY_PATH = MODULE / "kubernetes" / "base" / "admissionpolicy.yaml"
+DEPLOY_SH = MODULE / "deploy.sh"
+DISPATCHER_MANIFEST = MODULE / "kubernetes" / "base" / "dispatcher.yaml"
 
+
+def _deployed_image_repository() -> str:
+    """The repository deploy.sh actually pushes the task image to.
+
+    Read rather than restated. The repository reaches a task pod from `IMAGE=` in
+    deploy.sh and the policy names it again in a CEL literal; a third hand-written copy
+    here would make the image rule the one rule checked against the test's own opinion.
+    Change `IMAGE=` alone and the policy rejects every Job — in production, with this
+    suite green.
+    """
+    match = re.search(r'^IMAGE="([^"]+)"', DEPLOY_SH.read_text(), re.M)
+    assert match, f"no IMAGE= assignment found in {DEPLOY_SH} — the image rule has nothing to check against"
+    return match.group(1)
+
+
+IMAGE_REPOSITORY = _deployed_image_repository()
 # The tag deploy.sh substitutes is a content hash; only the repository is pinned.
-GOOD_IMAGE = "harbor:30002/osdc/ci-agent-sandbox:0123456789ab"
+GOOD_IMAGE = f"{IMAGE_REPOSITORY}:0123456789ab"
 
 
 @pytest.fixture(scope="module")
@@ -80,6 +99,19 @@ def _all_containers(job):
     return _pod(job)["containers"] + _pod(job).get("initContainers", [])
 
 
+def _nodename_rule(pod: dict, *, is_job: bool, operation: str) -> bool:
+    """The one rule whose meaning depends on the REQUEST and not only on the object.
+
+    Every other mirror is a function of a Job, which is why none of them could see the
+    bug this signature exists for: the Pod binding matches UPDATE, and by the time a task
+    pod is updated the scheduler has already set spec.nodeName through pods/binding. A
+    rule of `!has(nodeName)` therefore denied every write to a running task pod — among
+    them the Job controller's finalizer removal, without which status.succeeded never
+    reaches 1 and the dispatcher waits out its whole deadline on a task that finished.
+    """
+    return "nodeName" not in pod or (not is_job and operation == "UPDATE")
+
+
 # Each entry mirrors one `validations:` item, keyed by the exact `message:` string in the
 # YAML, and paired with a Job the rule must reject. Keeping the message as the key is what
 # makes drift loud: reword a message in the policy and this test names the rule that lost
@@ -102,7 +134,7 @@ MIRRORS = {
         lambda: a_job(hostPID=True),
     ),
     "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": (
-        lambda j: "nodeName" not in _pod(j),
+        lambda j: _nodename_rule(_pod(j), is_job=True, operation="CREATE"),
         lambda: a_job(nodeName="ip-10-0-0-1"),
     ),
     "task pods must use the default scheduler — an alternate scheduler need not honour the RuntimeClass node selector": (
@@ -126,7 +158,7 @@ MIRRORS = {
         lambda: a_job(initContainers=[{"name": "sidecar", "image": GOOD_IMAGE, "restartPolicy": "Always"}]),
     ),
     "task containers must run the task image from harbor:30002/osdc/ci-agent-sandbox": (
-        lambda j: all(c["image"].startswith("harbor:30002/osdc/ci-agent-sandbox:") for c in _all_containers(j)),
+        lambda j: all(c["image"].startswith(f"{IMAGE_REPOSITORY}:") for c in _all_containers(j)),
         lambda: a_job(
             containers=[{**a_job()["spec"]["template"]["spec"]["containers"][0], "image": "docker.io/alpine"}]
         ),
@@ -258,6 +290,26 @@ def test_each_rule_rejects_its_own_violation(message):
     assert not predicate(violating()), f"mirror does not actually enforce: {message}"
 
 
+@pytest.mark.parametrize(
+    ("pod", "is_job", "operation", "admitted"),
+    [
+        ({}, True, "CREATE", True),
+        ({"nodeName": "ip-10-0-0-1"}, True, "CREATE", False),
+        ({}, False, "CREATE", True),
+        ({"nodeName": "ip-10-0-0-1"}, False, "CREATE", False),
+        # The quadrant the Job-shaped mirrors structurally cannot reach, and the one that
+        # broke: the scheduler has bound the pod, so nodeName is set on every subsequent
+        # UPDATE the Pod binding sees.
+        ({"nodeName": "ip-10-0-0-1"}, False, "UPDATE", True),
+    ],
+)
+def test_the_nodename_rule_admits_a_bound_pod_on_update(pod, is_job, operation, admitted):
+    """Exempting UPDATE costs nothing: spec.nodeName is immutable through the pods main
+    resource, so the only writer is the pods/binding subresource this policy never
+    matched. Pinning it at CREATE is the whole of what the rule ever enforced."""
+    assert _nodename_rule(pod, is_job=is_job, operation=operation) is admitted
+
+
 def test_bindings_deny_rather_than_warn(policy, bindings):
     """A policy with no binding, or one set to Warn, enforces nothing while looking applied."""
     assert bindings, "the policy has no binding at all — it would be inert"
@@ -319,6 +371,15 @@ def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
     assert "request.kind.kind != 'Job'" in expression, (
         "the condition must exempt non-Job requests, or it disables the Pod pass"
     )
+    # Substrings cannot see the edit that matters here. Turn the `||` into `&&` and both
+    # assertions above still hold, while the Pod pass — which no Pod request can satisfy
+    # once it must ALSO come from the dispatcher's service account — is switched off with
+    # this suite green. The digest below is what makes that edit fail; the two assertions
+    # stay because they name what the condition is for when it does.
+    assert {c["name"]: _digest(c["expression"]) for c in conditions} == MATCH_CONDITION_DIGESTS, (
+        "the match condition that gates the whole policy changed — re-read this test's "
+        "reasoning against the new text before re-pinning"
+    )
 
 
 # Every rule's expression, pinned by digest of its whitespace-normalised text.
@@ -333,7 +394,7 @@ EXPRESSION_DIGESTS = {
     "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)": "93161384aabc",
     "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC": "2779cb7d8a6b",
     "task pods must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox": "224303faac17",
-    "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": "cf1eae68cdb1",
+    "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": "767387bc5943",
     "task pods must use the default scheduler — an alternate scheduler need not honour the RuntimeClass node selector": "d76e4a690cdc",
     "task pods must not share host namespaces (hostNetwork/hostPID/hostIPC)": "1cafda1b80d7",
     "task pods must declare no volumes — see the module README before adding one": "0ad2da654e90",
@@ -358,8 +419,32 @@ EXPRESSION_DIGESTS = {
 }
 
 
+# The expressions every pod-level rule is READ THROUGH, and the one that decides whether
+# a request is evaluated at all. EXPRESSION_DIGESTS covers `validations` only, so before
+# this a rewrite of `variables.pod` — the ternary that keeps the Job pass and the Pod pass
+# looking at the same fields — silently changed the meaning of the twenty rules that read
+# it, with nothing in this file able to see the edit.
+MATCH_CONDITION_DIGESTS = {
+    "job-writes-come-from-the-dispatcher": "7946d5ff4d30",
+}
+VARIABLE_DIGESTS = {
+    "pod": "14b9d426b721",
+    "isJob": "e99f115a3c1c",
+    "allContainers": "b41ce25c2638",
+}
+
+
 def _digest(expression: str) -> str:
     return hashlib.sha256(re.sub(r"\s+", " ", expression).strip().encode()).hexdigest()[:12]
+
+
+def test_no_variable_changed_without_being_rechecked(policy):
+    """Every rule reads its pod spec through `variables.pod`; nothing else pins it."""
+    live = {v["name"]: _digest(v["expression"]) for v in policy["spec"]["variables"]}
+    assert live == VARIABLE_DIGESTS, {
+        "changed or unpinned": sorted(k for k in live if VARIABLE_DIGESTS.get(k) != live[k]),
+        "stale (no longer in the policy)": sorted(set(VARIABLE_DIGESTS) - set(live)),
+    }
 
 
 def test_no_expression_changed_without_its_mirror_being_rechecked(policy):
@@ -382,8 +467,64 @@ def test_no_expression_changed_without_its_mirror_being_rechecked(policy):
 
 
 def test_an_unsubstituted_task_image_is_rejected(monkeypatch):
-    """The production failure the image rule exists for: deploy.sh not substituting the
-    tag, so AGENT_IMAGE is empty and every task pod would run whatever that resolves to."""
-    monkeypatch.setattr(dispatcher, "AGENT_IMAGE", "")
-    predicate, _ = MIRRORS["task containers must run the task image from harbor:30002/osdc/ci-agent-sandbox"]
-    assert not predicate(a_job())
+    """A last line rather than the first: the dispatcher already refuses at /run when
+    AGENT_IMAGE is empty, and a deploy.sh that failed to substitute leaves the literal
+    `__AGENT_IMAGE__` in dispatcher.yaml rather than an empty string. Both are rejected
+    here, which is what the rule is for — neither is reachable past the checks in front
+    of it today, and this is what keeps that true if one of them goes."""
+    predicate, _ = next(
+        mirror for message, mirror in MIRRORS.items() if message.startswith("task containers must run the task image")
+    )
+    for value in ("", "__AGENT_IMAGE__"):
+        monkeypatch.setattr(dispatcher, "AGENT_IMAGE", value)
+        assert not predicate(a_job()), f"an image of {value!r} must not be admitted"
+
+
+def test_the_policy_pins_the_repository_deploy_sh_actually_pushes_to(policy):
+    """The third copy of the repository, and the one nothing else compares."""
+    rule = next(
+        v for v in policy["spec"]["validations"] if v["message"].startswith("task containers must run the task image")
+    )
+    assert f"'{IMAGE_REPOSITORY}:'" in rule["expression"], (
+        f"the image rule pins {rule['expression']}, but deploy.sh pushes to {IMAGE_REPOSITORY} — "
+        "every Job would be rejected"
+    )
+    assert rule["message"].endswith(IMAGE_REPOSITORY), "the rejection message names a repository nobody deploys"
+
+
+def test_the_deadline_ceiling_admits_the_deadline_the_dispatcher_deploys(policy):
+    """The 3600 in the policy is a second copy of TASK_DEADLINE_S, which is env
+    configurable. Raise the env past the ceiling and every Job is rejected at dispatch —
+    loudly, but with nothing in this suite noticing beforehand."""
+    rule = next(v for v in policy["spec"]["validations"] if "activeDeadlineSeconds" in v["expression"])
+    ceiling = int(re.search(r"activeDeadlineSeconds <= (\d+)", rule["expression"]).group(1))
+    assert dispatcher.TASK_DEADLINE_S <= ceiling, (
+        f"the dispatcher's default deadline ({dispatcher.TASK_DEADLINE_S}s) exceeds the policy ceiling ({ceiling}s)"
+    )
+    deployed = _deployed_env("TASK_DEADLINE_S")
+    assert deployed is None or int(deployed) <= ceiling, (
+        f"dispatcher.yaml deploys TASK_DEADLINE_S={deployed}, above the policy ceiling of {ceiling}s"
+    )
+
+
+def _deployed_env(name: str) -> str | None:
+    """The literal value dispatcher.yaml sets for an env var, or None if it sets none.
+
+    A value this test cannot read is not the same as no value, and returning None for
+    both would quietly turn the comparison below into a no-op — so an `envFrom` block, or
+    a `valueFrom` on this variable, fails here instead.
+    """
+    deployment = next(
+        d
+        for d in yaml.safe_load_all(DISPATCHER_MANIFEST.read_text())
+        if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "sandbox-dispatcher"
+    )
+    for container in deployment["spec"]["template"]["spec"]["containers"]:
+        assert not container.get("envFrom"), (
+            f"{container['name']} pulls env from an envFrom source, which could set {name} out of this test's sight"
+        )
+        for entry in container.get("env", []):
+            if entry["name"] == name:
+                assert "value" in entry, f"{name} is set from {entry.get('valueFrom')}, which this test cannot read"
+                return entry["value"]
+    return None
