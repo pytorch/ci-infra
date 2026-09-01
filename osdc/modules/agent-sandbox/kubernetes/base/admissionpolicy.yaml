@@ -40,6 +40,19 @@
 #     Pod pass. No mutating webhook is configured in this repo today.
 #   - A Job created by some OTHER identity with create-Job RBAC (a cluster admin) is not
 #     checked by the Job pass. Its pods still are, if they carry the task label.
+#   - An EPHEMERAL container attached to a running task pod is the same shape of gap as
+#     the one above, and needs less: matchConstraints names `pods`, which does not cover
+#     the `pods/ephemeralcontainers` subresource, and allContainers below sums containers
+#     and initContainers only — so a `kubectl debug` container would carry whatever image
+#     and securityContext it liked. Nothing in this module can do it, because neither the
+#     dispatcher's Role nor sandbox-agent grants that subresource; anyone else holding it
+#     in this cluster was not enumerated here. Closing it is three changes, not one: a
+#     `pods/ephemeralcontainers` rule in matchConstraints, the SAME rule added to the Pod
+#     binding below, and a validation rejecting `ephemeralContainers` outright. Rejection
+#     rather than folding them into allContainers, because an ephemeral container cannot
+#     carry resource requirements at all, so every rule here that demands limits would
+#     deny it — an allowlist for debug containers would be a separate design, not a
+#     wider `allContainers`.
 #   - It pins the image repository, not a digest — see the image rule for why.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -230,6 +243,27 @@ spec:
           'ephemeral-storage' in c.resources.limits)
       reason: Forbidden
       message: "task containers must set cpu, memory and ephemeral-storage limits"
+    # Present is not the same as "only these", and the difference is a device. The rule
+    # above admits a fourth key, and an extended resource is exactly that: Kubernetes
+    # already requires `nvidia.com/gpu`'s request to equal its limit, so such a key also
+    # satisfies the Guaranteed-QoS rule below by construction, and attaches hardware
+    # through the resources map rather than through resourceClaims — which is the door
+    # the resourceClaims rule above exists to close. Nothing lands today only because the
+    # ai-sandbox fleet advertises no device plugin, and that is a fleet shape rather than
+    # a rule.
+    #
+    # Written as an ALLOWLIST rather than a device denylist, so it also excludes keys that
+    # are not devices at all (hugepages-2Mi and the rest) — anything outside the three the
+    # dispatcher sizes a task with is a resource nobody here has approved.
+    #
+    # `all` over a MAP binds its iteration variable to the KEYS, so this tests key names
+    # and not quantities.
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.resources) || !has(c.resources.limits) ||
+          c.resources.limits.all(k, k in ['cpu', 'memory', 'ephemeral-storage']))
+      reason: Forbidden
+      message: "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them"
     # Guaranteed QoS: requests == limits is what keeps fleet capacity a division rather
     # than a guess, and stops a task pod being the first thing evicted under pressure.
     #
@@ -246,6 +280,22 @@ spec:
           has(c.resources.requests) && c.resources.requests == c.resources.limits)
       reason: Forbidden
       message: "task containers must request exactly what they limit (Guaranteed QoS)"
+    # The deadline in the Job block below TRIGGERS termination; it does not bound when the
+    # node comes back. Deletion honours terminationGracePeriodSeconds, so a container that
+    # ignores SIGTERM goes on holding its node afterwards, and with the field unbounded
+    # that wait is unbounded too. This caps the configured value, which is the only part
+    # of it we set. It is deliberately NOT a hard bound on time past the deadline: the
+    # controller terminates asynchronously, and the kubelet may extend the grace once for
+    # a preStop hook. Read it as removing the unbounded case, not as a guarantee.
+    #
+    # `!has(...) ||` rather than the `has(...) &&` shape the isolation rules use, because
+    # here absence is correct: the Job template legitimately carries no value, and the
+    # API server defaults the field to 30 on the pod the controller then creates.
+    - expression: >-
+        !has(variables.pod.terminationGracePeriodSeconds) ||
+        variables.pod.terminationGracePeriodSeconds <= 60
+      reason: Forbidden
+      message: "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it"
 
     # --- Job-level bounds, skipped on the Pod pass (a Pod has no such fields) ---------
     #

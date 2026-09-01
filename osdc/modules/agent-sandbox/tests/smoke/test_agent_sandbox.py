@@ -172,6 +172,39 @@ class TestTaskAdmissionPolicy:
             ("a mounted token", {"automountServiceAccountToken": True}),
             ("a volume", {"volumes": [{"name": "scratch", "emptyDir": {}}]}),
             ("a pinned nodeName", {"nodeName": "ip-10-0-0-1.ec2.internal"}),
+            # The two rules whose CEL is not a shape already proven by the cases above: a
+            # map-keyed `all`, and a bound on a field the API server defaults. Both are
+            # unevaluated until something here denies with them.
+            (
+                "a device request",
+                {
+                    "containers": [
+                        {
+                            "name": "task",
+                            "image": "harbor:30002/osdc/ci-agent-sandbox:admission-probe",
+                            "securityContext": {"allowPrivilegeEscalation": False, "runAsNonRoot": True},
+                            # Equal on both sides on purpose: Kubernetes requires that of
+                            # an extended resource, so this satisfies the limits-present
+                            # and Guaranteed-QoS rules and only the allowlist can say no.
+                            "resources": {
+                                "requests": {
+                                    "cpu": "1",
+                                    "memory": "1Gi",
+                                    "ephemeral-storage": "1Gi",
+                                    "nvidia.com/gpu": "1",
+                                },
+                                "limits": {
+                                    "cpu": "1",
+                                    "memory": "1Gi",
+                                    "ephemeral-storage": "1Gi",
+                                    "nvidia.com/gpu": "1",
+                                },
+                            },
+                        }
+                    ]
+                },
+            ),
+            ("a long termination grace period", {"terminationGracePeriodSeconds": 3600}),
         ],
     )
     def test_the_policy_denies_what_it_says_it_denies(self, case: str, overrides: dict) -> None:

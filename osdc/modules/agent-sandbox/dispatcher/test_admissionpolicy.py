@@ -215,6 +215,25 @@ MIRRORS = {
         ),
         lambda: _with_container(resources={"requests": {"cpu": "2"}}),
     ),
+    "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": (
+        lambda j: all(
+            set(c.get("resources", {}).get("limits", {})) <= {"cpu", "memory", "ephemeral-storage"}
+            for c in _all_containers(j)
+        ),
+        # requests mirrors limits on purpose: Kubernetes requires that of an extended
+        # resource, so this counterexample satisfies both the rule above and Guaranteed
+        # QoS, and only this rule can reject it. That is the whole finding.
+        lambda: _with_container(
+            resources={
+                "requests": {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "50Gi", "nvidia.com/gpu": "1"},
+                "limits": {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "50Gi", "nvidia.com/gpu": "1"},
+            }
+        ),
+    ),
+    "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it": (
+        lambda j: _pod(j).get("terminationGracePeriodSeconds", 30) <= 60,
+        lambda: a_job(terminationGracePeriodSeconds=3600),
+    ),
     "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": (
         lambda j: 0 < j["spec"].get("activeDeadlineSeconds", 0) <= 3600,
         lambda: _without_job_field("activeDeadlineSeconds"),
@@ -265,6 +284,24 @@ def _without_job_field(name: str) -> dict:
     job = a_job()
     del job["spec"][name]
     return job
+
+
+def test_validation_messages_are_distinct(policy):
+    """Both coverage tables are keyed by message, so a repeat is a rule that loses both.
+
+    MIRRORS and EXPRESSION_DIGESTS are dicts keyed by the `message:` string, and the two
+    tests below them compare KEY SETS. Give two validations the same message and each
+    table keeps one entry for the pair, both set comparisons still pass, and one of the
+    two rules is left with no Python mirror and no pinned expression — which is the
+    coverage those tests exist to guarantee. What fails, if anything does, depends on
+    which of the two came last in the file. This is the assertion that does not.
+    """
+    messages = [v["message"] for v in policy["spec"]["validations"]]
+    duplicates = sorted({m for m in messages if messages.count(m) > 1})
+    assert not duplicates, (
+        "two validations share a message, so MIRRORS and EXPRESSION_DIGESTS each hold one "
+        f"entry for the pair and neither key-set comparison can see it: {duplicates}"
+    )
 
 
 def test_every_validation_has_a_mirror(policy):
@@ -382,7 +419,12 @@ def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
     )
 
 
-# Every rule's expression, pinned by digest of its whitespace-normalised text.
+# Every rule's expression, pinned by digest of its WHITESPACE-NORMALISED text — _digest()
+# collapses every run of whitespace before hashing, so that a rule rewrapped across lines
+# is not reported as a change. The cost is the one blind spot this table has: whitespace
+# INSIDE a quoted CEL string literal is a semantic change that leaves the digest alone,
+# and nothing else in this file would see it either. No expression here contains a literal
+# with a space in it today; if one ever does, that rule needs its own assertion.
 #
 # The MIRRORS table above is keyed by MESSAGE, which cannot see an expression edited in
 # place with its message untouched — and that is the drift most likely to actually happen,
@@ -410,7 +452,9 @@ EXPRESSION_DIGESTS = {
     "task containers must not unmask /proc": "9befcf62623e",
     "task containers must not publish a hostPort": "aadf2d231816",
     "task containers must set cpu, memory and ephemeral-storage limits": "c6288f00cdd5",
+    "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": "890db686ccb0",
     "task containers must request exactly what they limit (Guaranteed QoS)": "e3569a0a6e49",
+    "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it": "4490bf5bfaf0",
     "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": "3bf5faca144b",
     "task Jobs must run one pod at a time (parallelism: 1)": "240258b6ce47",
     "task Jobs must run exactly one pod (completions: 1)": "dd57deb1df82",
