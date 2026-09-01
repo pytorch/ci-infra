@@ -57,6 +57,10 @@ FAKE_CONFIG = {
             "nodepools-h100": {
                 "capacity_reservation_ids": ["cr-aaa111", "cr-bbb222"],
             },
+            "buildkit": {
+                "amd64_instance_types": {"m6id.24xlarge": 2, "m6id.12xlarge": 1},
+                "arm64_instance_types": {},
+            },
             "nodepools-b200": {
                 "capacity_reservation_ids": [],
             },
@@ -430,6 +434,39 @@ class TestMain:
         code = run_main("staging", "base.single_nat_gateway")
         assert code == 0
         assert capsys.readouterr().out.strip() == "true"
+
+    def test_dict_value_key_colon_value(self, capsys):
+        """Dict values print as key:value pairs for generate_buildkit's parser."""
+        code = run_main("production", "buildkit.amd64_instance_types")
+        assert code == 0
+        out = capsys.readouterr().out.strip()
+        assert out == "m6id.24xlarge:2,m6id.12xlarge:1"
+        # Must not look like a Python dict repr
+        assert "{" not in out
+        assert "'" not in out
+
+    def test_dict_value_preserves_yaml_order(self, capsys):
+        """Order is load-bearing: the first entry is the primary NodePool and sizes the pod."""
+        reversed_cfg = {
+            **FAKE_CONFIG,
+            "clusters": {
+                **FAKE_CONFIG["clusters"],
+                "production": {
+                    **FAKE_CONFIG["clusters"]["production"],
+                    "buildkit": {"amd64_instance_types": {"m6id.12xlarge": 1, "m6id.24xlarge": 2}},
+                },
+            },
+        }
+        with patch.object(cluster_config, "load_config", lambda *a, **k: reversed_cfg):
+            code = run_main("production", "buildkit.amd64_instance_types")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == "m6id.12xlarge:1,m6id.24xlarge:2"
+
+    def test_empty_dict_value(self, capsys):
+        """Empty dict prints as empty string, like an empty list."""
+        code = run_main("production", "buildkit.arm64_instance_types")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == ""
 
 
 # ============================================================================
