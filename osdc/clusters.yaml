@@ -190,12 +190,26 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
-        amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
-        arm64_max: 8
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
+        # Headroom over the test's 8-backend target, not a capacity estimate.
+        amd64_max: 12
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
+        arm64_max: 12
     modules:
       - karpenter
       - arc
@@ -265,12 +279,26 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
-        amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
-        arm64_max: 8
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
+        # Headroom over the test's 8-backend target, not a capacity estimate.
+        amd64_max: 12
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
+        arm64_max: 12
     pypi_cache:
       replicas: 1
     agent_sandbox:
@@ -355,12 +383,26 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
-        amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
-        arm64_max: 8
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
+        # Headroom over the test's 8-backend target, not a capacity estimate.
+        amd64_max: 12
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
+        arm64_max: 12
     pypi_cache:
       replicas: 1
     agent_sandbox:
