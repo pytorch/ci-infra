@@ -48,8 +48,19 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
     secrets: inherit
 
-  plan_lf_ue1:
+  plan_uw2:
     needs: plan_ue1
+    if: |
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_osdc-plan.yml
+    with:
+      cluster: meta-prod-aws-uw2
+      pr_number: ${{ github.event.pull_request.number }}
+    secrets: inherit
+
+  plan_lf_ue1:
+    needs: plan_uw2
     if: |
       !cancelled() &&
       github.event.pull_request.head.repo.full_name == github.repository
