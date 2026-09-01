@@ -291,22 +291,35 @@ arc:
   controller_memory_limit: "4Gi"
 ```
 
-**BuildKit:** Defaults provide only `replicas_per_arch: 12`. All other knobs are per-cluster overrides:
+**BuildKit:** Defaults provide `replicas_per_arch`, both instance-type maps, and `autoscaling.enabled`. Every cluster inherits the instance-type maps; the remaining knobs are per-cluster overrides:
 ```yaml
 defaults:
   buildkit:
     replicas_per_arch: 12     # Used when a cluster omits per-arch replica counts
+    amd64_instance_types:     # instance type -> pods per node, in preference order
+      m6id.24xlarge: 2
+      m6id.12xlarge: 1
+    arm64_instance_types:
+      m7gd.16xlarge: 4
+    autoscaling:
+      enabled: false
 clusters:
   my-cluster:
     buildkit:
-      amd64_instance_type: m6id.24xlarge
       amd64_replicas: 32
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
       arm64_replicas: 8
-      arm64_pods_per_node: 4
 ```
 Per-arch override keys are separate (`amd64_*` and `arm64_*`) — there is no flat `pods_per_node` key.
+
+`{amd64,arm64}_instance_types` maps each instance type to its pods per node, in
+preference order. Each entry becomes its own weighted NodePool, so the first is
+what a normal scale-up uses and later ones are only reached when the one above
+cannot provision (ICE, or the pool's limits). One Deployment means one pod spec:
+the first entry sizes the pod, and a later entry must hold at least its stated
+count of that pod or generation fails.
+
+No cluster currently overrides the maps — override only to give one cluster a
+different family or a different preference order.
 
 **Node Compactor:** All config under `node_compactor:` key. Knobs configurable via `clusters.yaml`: `enabled`, `interval_seconds` (20), `dry_run`, `min_nodes` (1), `min_node_age_seconds` (900), `capacity_reservation_nodes` (0), `max_uptime_hours` (48). Other knobs (`taint_rate`, `fleet_cooldown`, `spare_capacity_nodes`, `spare_capacity_ratio`, `spare_capacity_threshold`) are internal Python defaults in the compactor source, NOT configurable via clusters.yaml.
 
@@ -349,9 +362,11 @@ Key workflows (all callable as reusable workflows via `workflow_call` from the o
 | `osdc-pre-merge.yml` | Lint + test on PR |
 | `osdc-plan-prod.yml` | `just plan <cluster>` (read-only tofu plan; CI-safe) |
 | `osdc-deploy-prod.yml` | Per-cluster prod deploy. Calls `_osdc-deploy.yml` |
-| `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip-checks` input (firefighting only). |
+| `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip_lint_test` input (firefighting only). |
 | `_osdc-plan.yml` | Reusable: `just plan <cluster>` and tee to `plan.txt` |
 | `_osdc-slow-tests.yml` | Reusable: `just load-test`, `just test-compactor`, `just test-janitor` |
 | `osdc-capacity-report.yml` | `just simulate-cluster` + `just analyze-utilization`, periodic |
 
 When adding a new `just` recipe that CI should run, plumb it through the corresponding reusable workflow.
+
+The OSDC-rooted CI jobs — the `deploy`/`smoke`/`integration` jobs in `_osdc-deploy.yml`, plus `osdc-drain.yml` and `osdc-undrain.yml` — set up their toolchain via the local composite action `./.github/actions/osdc-setup` (installs just + mise + `uv sync`). Its setup steps are retried on transient failures by **retry-by-duplication** (`continue-on-error` on the first attempt plus a copy gated on `steps.<id>.outcome == 'failure'`), chosen over a retry action deliberately: GitHub Actions has no native step retry, and a retry action would run unpinnable third-party code on the deploy / merge-queue path. `actions/checkout` and `aws-actions/configure-aws-credentials` are intentionally NOT wrapped because they already retry internally. On the deploy path, the `smoke` step is also retried once by duplication, with a 180s settle wait before the retry, because smoke failures are usually transient post-deploy cluster churn.
