@@ -304,6 +304,37 @@ signing proxy, without the runner or worker holding a token.
   Job finishes regardless and the caller has to retry.
 - **Output is trusted as-is.** Nothing validates or gates what a task returns before a
   caller acts on it.
+- **A task can overwrite the response fields the endpoints own.** `kube.task_result()`
+  returns the last `{`-prefixed line the task pod printed that parses as JSON (within
+  `MAX_LOG_BYTES`), and both payloads spread it *last* — `{"task_id": task_id,
+  **result}` in `http_api.do_POST`, `{"state": "done", "task_id": task_id,
+  **task["result"]}` in `tasks.status`. A task printing
+  `{"task_id": "…", "state": "running"}` therefore replaces what the dispatcher minted:
+  a caller can be told the wrong id, or that a finished task is still running.
+  **This needs a schema decision, not a one-line reorder.** Spreading the result first
+  protects `task_id`/`state` but then silently drops a task's own fields of those
+  names — no merge order preserves both meanings. The two real options are a nested
+  envelope (`{"task_id":…, "state":…, "result": result}`, a breaking change for every
+  caller) or server-fields-last plus an audit of what callers read today. Deferred for
+  that reason; both call sites carry a `KNOWN GAP` comment pointing here.
+- **A slot can leak for the life of the pod.** `run_and_record()` releases the slot
+  `start_task()` reserved only by reaching `_finish()`, and nothing holds that if the
+  runner raises. `_run_to_completion()` catches `(ApiError, OSError)`, but
+  `kube._k8s_api()` and `kube._read_token()` raise bare `RuntimeError` from outside
+  `api_request()`'s try block, so those escape — including from the `finally:
+  kube.delete_job(...)`, which is why a leaked slot does not imply the Job was never
+  created. The entry then stays `"running"` forever: `_prune_locked()` only drops
+  `"done"` ones and `_running_locked()` keeps counting it against
+  `MAX_CONCURRENT_TASKS`. Symptoms are spread out — a waiting `/run` gets no response
+  at all and the handler logs a traceback, `/status` answers `"running"` forever,
+  `/healthz` shows `in_flight` that never drains, and enough leaks turn every later
+  call into a `429`. Reachability is low (an unset `KUBERNETES_SERVICE_HOST`, or the
+  projected token file missing at the moment it is read), but the loss is permanent.
+  **The fix is not simply a `try/finally` around `_finish()`** — `result` is unbound on
+  that path, so it needs a decision about what a crashed task records (a synthetic
+  error result, or dropping the reservation) and whether the exception still
+  propagates. `run_in_background()` needs its own cleanup rather than the same one: a
+  `Thread.start()` that fails leaves the slot reserved with no thread to release it.
 - **The proxy image floats** (`aws-sigv4-proxy:latest`) — digest-pin before
   non-prototype use.
 - **Callers are unauthenticated and unbounded.** `/run` has no notion of who is
