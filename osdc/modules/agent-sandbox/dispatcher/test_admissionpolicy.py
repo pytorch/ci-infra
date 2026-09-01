@@ -498,7 +498,7 @@ def test_the_deadline_ceiling_admits_the_deadline_the_dispatcher_deploys(policy)
     loudly, but with nothing in this suite noticing beforehand."""
     rule = next(v for v in policy["spec"]["validations"] if "activeDeadlineSeconds" in v["expression"])
     ceiling = int(re.search(r"activeDeadlineSeconds <= (\d+)", rule["expression"]).group(1))
-    assert dispatcher.TASK_DEADLINE_S <= ceiling, (
+    assert ceiling >= dispatcher.TASK_DEADLINE_S, (
         f"the dispatcher's default deadline ({dispatcher.TASK_DEADLINE_S}s) exceeds the policy ceiling ({ceiling}s)"
     )
     deployed = _deployed_env("TASK_DEADLINE_S")
