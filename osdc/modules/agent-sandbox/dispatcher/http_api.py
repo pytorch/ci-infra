@@ -230,6 +230,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if spec.get("wait", True):
             result = tasks.run_and_record(task_id, grant)
+            # KNOWN GAP (deferred, see README § Limitations "A task can overwrite the
+            # response fields the endpoints own"): on the success path `result` came
+            # from the untrusted task pod's log, and spreading it last lets it replace
+            # the task_id we just minted. Same shape as tasks.status(), and the same
+            # response-schema decision — reordering here alone would drop a task's own
+            # "task_id" field instead.
             self._send(200, {"task_id": task_id, **result})
             return
 
