@@ -12,6 +12,7 @@ as a move rather than a rewrite.
 
 import importlib.util
 import json
+import re
 import socket
 import ssl
 import threading
@@ -157,7 +158,7 @@ class TestJobManifest:
 
 class TestRunToCompletion:
     def test_creates_one_job_and_returns_the_parsed_result(self, fake_k8s):
-        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert result == {"cloned": True, "report": "ok"}
         assert len(fake_k8s["jobs"]) == 1
         assert fake_k8s["jobs"][0]["metadata"]["name"] == "sandbox-task-abc123abc123"
@@ -165,17 +166,17 @@ class TestRunToCompletion:
     def test_deletes_the_job_after_reading_the_log(self, fake_k8s):
         """The log is the result transport, so the Job can only be collected after it
         has been read — and it must be, or finished Jobs pile up against the quota."""
-        tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert any("sandbox-task-abc123abc123" in path for path in fake_k8s["deleted"])
 
     def test_last_json_line_wins(self, fake_k8s):
         fake_k8s["log"] = 'warning: detached HEAD\n{"cloned": true, "file_count": 3}\n'
-        assert tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})["file_count"] == 3
+        assert tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})["file_count"] == 3
 
     def test_failed_pod_without_output_reports_the_reason(self, fake_k8s):
         fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]}
         fake_k8s["log"] = "Killed\n"
-        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "DeadlineExceeded" in result["errors"]["task"]
 
     def test_failed_pod_that_did_print_a_result_keeps_it(self, fake_k8s):
@@ -183,7 +184,7 @@ class TestRunToCompletion:
         answer, and it must not be replaced by a generic pod failure."""
         fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "BackoffLimit"}]}
         fake_k8s["log"] = '{"cloned": false, "errors": {"clone": "could not read Username"}}\n'
-        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert result["errors"]["clone"] == "could not read Username"
 
     def test_api_failure_is_reported_not_raised(self, monkeypatch, fake_k8s):
@@ -191,7 +192,7 @@ class TestRunToCompletion:
             raise kube.ApiError("jobs.batch is forbidden")
 
         monkeypatch.setattr(kube, "create_job", boom)
-        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "forbidden" in result["errors"]["dispatch"]
 
 
@@ -401,12 +402,12 @@ class TestPolling:
     def test_waits_while_the_job_is_running(self, fake_k8s, monkeypatch):
         states = iter([("running", ""), ("running", ""), ("succeeded", "")])
         monkeypatch.setattr(kube, "job_state", lambda task_id: next(states))
-        assert tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})["report"] == "ok"
+        assert tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})["report"] == "ok"
 
     def test_gives_up_at_the_deadline(self, fake_k8s, monkeypatch):
         monkeypatch.setattr(kube, "TASK_DEADLINE_S", -1)
         monkeypatch.setattr(kube, "job_state", lambda task_id: ("running", ""))
-        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "did not finish" in result["errors"]["dispatch"]
 
     def test_running_job_reports_running(self, fake_k8s):
@@ -435,7 +436,7 @@ class TestPolling:
             raise kube.ApiError("etcdserver: request timed out")
 
         monkeypatch.setattr(kube, "job_state", boom)
-        result = tasks.run_to_completion("abc123abc123", {"repo": "org/repo"})
+        result = tasks._run_to_completion("abc123abc123", {"repo": "org/repo"})
         assert "timed out" in result["errors"]["dispatch"]
 
     def test_ssl_context_loads_a_present_ca(self, monkeypatch, tmp_path):
@@ -531,3 +532,70 @@ class TestServerShape:
 
     def test_handler_has_a_socket_timeout(self):
         assert 0 < http_api.Handler.timeout <= 60
+
+
+RUNTIME_DIR = "/usr/local/lib/sandbox-dispatcher/"
+
+
+class TestImageContents:
+    """The module set is written down twice and nothing used to compare the two copies.
+
+    deploy.sh derives the image tag from the contents of this directory, so editing or
+    adding a module rolls the tag and a new image is built and pushed. The Dockerfile
+    names the files to copy by hand, so a module reaches that image only if someone also
+    edits the COPY line. Nothing before this test compared the two, and the cheapest way
+    to find out was a pod that cannot import what it needs.
+
+    The hand-written list is deliberate — it is what keeps a test file out of the image
+    and makes an addition visible in review. This is the check that makes it safe, and it
+    is strict about the form on purpose: one build stage, exact filenames, copied into
+    RUNTIME_DIR, and nothing else. A Dockerfile that switches to a glob source or a
+    pruned build context (the modules/zombie-cleanup pattern) is a different design and
+    should replace this test rather than be made to satisfy it.
+    """
+
+    @staticmethod
+    def _dockerfile() -> str:
+        text = (Path(__file__).parent / "Dockerfile").read_text().replace("\\\n", " ")
+        assert len(re.findall(r"(?m)^FROM ", text)) == 1, (
+            "the Dockerfile has more than one build stage; this test reads every COPY as landing "
+            "in the final image, which is no longer true"
+        )
+        assert not re.findall(r"(?im)^\s*(?!COPY )copy\s", text), "a lowercase `copy` instruction would be missed here"
+        return text
+
+    @classmethod
+    def _copied_into_runtime_dir(cls) -> set[str]:
+        """Exactly what the Dockerfile places in RUNTIME_DIR, as written."""
+        copied = set()
+        for line in cls._dockerfile().splitlines():
+            if not line.startswith("COPY "):
+                continue
+            args = line.split()[1:]
+            assert not any(a.startswith("--from") for a in args), (
+                "a --from= COPY brings files out of another build stage, which this test cannot resolve"
+            )
+            args = [a for a in args if not a.startswith("--")]
+            if args[-1] != RUNTIME_DIR:
+                continue
+            copied.update(args[:-1])
+        return copied
+
+    @staticmethod
+    def _hashed_modules() -> set[str]:
+        """The same selection deploy.sh's _hash_dir() makes: every *.py under this
+        directory, recursively, that is not a test file."""
+        root = Path(__file__).parent
+        return {
+            p.relative_to(root).as_posix()
+            for p in root.rglob("*.py")
+            if not p.name.startswith("test_") and p.name != "conftest.py"
+        }
+
+    def test_the_image_holds_exactly_the_modules_deploy_sh_hashes(self):
+        copied, hashed = self._copied_into_runtime_dir(), self._hashed_modules()
+        assert copied == hashed, {
+            "hashed into the image tag but never copied into it (the pod cannot import these)": sorted(hashed - copied),
+            "copied into the image but not a module (a test file, a glob, or a stale name)": sorted(copied - hashed),
+            "fix": f"the COPY into {RUNTIME_DIR} in dispatcher/Dockerfile must name exactly these modules",
+        }

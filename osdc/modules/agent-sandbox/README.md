@@ -182,7 +182,7 @@ Background: [Securing Amazon Bedrock cross-Region inference](https://aws.amazon.
 
 ## The task-pod contract, and adding a volume
 
-`dispatcher.py::job_manifest()` builds every task pod, and
+`dispatcher/kube.py::job_manifest()` builds every task pod, and
 `kubernetes/base/admissionpolicy.yaml` restates the same contract in CEL so the API
 server rejects a Job that does not match it. The two are deliberately redundant;
 `dispatcher/test_admissionpolicy.py` is what keeps them from drifting apart.

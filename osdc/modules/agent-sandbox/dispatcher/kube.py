@@ -40,10 +40,14 @@ SLOT_MEMORY = os.environ.get("TASK_MEMORY", "4Gi")
 SLOT_DISK = os.environ.get("TASK_EPHEMERAL_STORAGE", "20Gi")
 
 MAX_LOG_BYTES = 1024 * 1024
-# How much of a non-2xx body to quote back. Same number as the request-body cap in
-# http_api, and deliberately a separate constant: this one bounds what we read FROM the
+# How much of a non-2xx body to READ, not how much of it survives into the error: the
+# quote itself is bounded by ERROR_QUOTE_CHARS below. Same number as the request-body cap
+# in http_api, and deliberately a separate constant: this one bounds what we read FROM the
 # API server, that one bounds what a caller may send us.
 MAX_ERROR_BYTES = 64 * 1024
+# How much of what was read reaches the ApiError message. Named rather than sliced inline
+# so both bounds on an error body are stated in the same place.
+ERROR_QUOTE_CHARS = 500
 
 
 class ApiError(RuntimeError):
@@ -95,7 +99,7 @@ def api_request(method: str, path: str, body: dict | None = None, raw: bool = Fa
         with urllib.request.urlopen(req, context=_ssl_context(), timeout=30) as resp:  # noqa: S310
             payload = resp.read(MAX_LOG_BYTES)
     except urllib.error.HTTPError as exc:
-        detail = exc.read(MAX_ERROR_BYTES).decode(errors="replace")[:500] if hasattr(exc, "read") else ""
+        detail = exc.read(MAX_ERROR_BYTES).decode(errors="replace")[:ERROR_QUOTE_CHARS] if hasattr(exc, "read") else ""
         raise ApiError(f"{method} {path} -> {exc.code}: {detail}") from None
     if raw:
         return payload.decode(errors="replace")

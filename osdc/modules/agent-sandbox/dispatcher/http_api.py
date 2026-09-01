@@ -8,7 +8,9 @@ Endpoints:
   GET  /status/<id>  -> {"state": "running"|"done", ...result}
 
 Everything below the parse is somebody else's file, so the rule for this one is that it
-never decides anything: it validates the shape of a request and hands it on.
+owns request shape, status codes and response bodies — no task state, and no Kubernetes
+call of its own. The one value it reads out of another module is kube.AGENT_IMAGE, so that
+a deploy which left the task image empty answers 500 rather than creating a Job.
 """
 
 from __future__ import annotations
