@@ -134,6 +134,33 @@ node count: Karpenter adds a node when a task pod is pending and takes it back w
 node empties. The trade is latency — a request that has to wait for a new node pays
 1–2 minutes before the task starts.
 
+## GPU tasks
+
+`{"gpu": true}` on `/run` runs the task on the **ai-sandbox-gpu** fleet — one L4 per node
+(`g6.4xlarge`), one task per node, under the separate `gvisor-gpu` RuntimeClass. Capacity
+is counted apart from CPU tasks and is deliberately small; the namespace quota caps GPUs
+at two regardless of what the dispatcher allows.
+
+The AMI is a separate build, and it pins the **NVIDIA driver** as well as the gVisor
+release:
+
+```
+just build-agent-sandbox-gpu-ami <cluster>
+```
+
+gVisor's nvproxy supports an explicit list of driver versions, so the two move together
+and the build fails rather than shipping an image whose driver is off the list.
+
+The trade-off is real and belongs in the decision, not a footnote: nvproxy forwards NVIDIA
+ioctls straight to the host driver, so a GPU task can reach the GPU driver — which the CPU
+sandbox cannot. A driver bug is a node takeover. That is why the fleet is dedicated, never
+shared with CI, and one task per node. `docs/agent-sandbox-gpu-gvisor.md` has the threat
+model, the pinning policy and the feature-parity matrix (single-GPU CUDA is the supported
+case; multi-GPU NCCL and NVLink are unverified).
+
+A GPU result carries a `gpu` block with what `nvidia-smi` saw inside the sandbox — that is
+the end-to-end evidence the device was actually injected and the ioctls forwarded.
+
 ## Choosing the Bedrock model
 
 **It must be a cross-region inference profile ID (`us.` / `global.` prefix), not

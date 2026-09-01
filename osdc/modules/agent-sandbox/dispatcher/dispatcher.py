@@ -16,9 +16,13 @@ so without a cap a caller loop would provision nodes until an AWS quota noticed.
 
 Endpoints:
   GET  /healthz      -> {"status": "ok"}
-  POST /run          -> body {"repo","ref","task","model"?,"wait"?}
+  POST /run          -> body {"repo","ref","task","model"?,"wait"?,"gpu"?}
                         wait=true (default): blocks, returns the task result
                         wait=false: returns {"task_id": ...} immediately
+                        gpu=true: runs on the ai-sandbox-gpu fleet with one L4 attached,
+                        under the gvisor-gpu RuntimeClass. Capacity is counted separately
+                        and is far smaller. See docs/agent-sandbox-gpu-gvisor.md for what
+                        nvproxy gives up.
   GET  /status/<id>  -> {"state": "running"|"done", ...result}
 
 Kubernetes access is stdlib urllib against the in-cluster API with the projected SA
@@ -68,6 +72,20 @@ POLL_INTERVAL_S = 2
 SLOT_CPU = os.environ.get("TASK_CPU", "2")
 SLOT_MEMORY = os.environ.get("TASK_MEMORY", "4Gi")
 SLOT_DISK = os.environ.get("TASK_EPHEMERAL_STORAGE", "20Gi")
+
+# A GPU task takes a whole fleet node. g6.4xlarge is 16 vCPU / 64 GiB with one L4, and the
+# nvidia.com/gpu: 1 request is what actually enforces one-task-per-node — CPU and memory
+# only have to be small enough to schedule alongside the daemonsets.
+GPU_SLOT_CPU = os.environ.get("GPU_TASK_CPU", "12")
+GPU_SLOT_MEMORY = os.environ.get("GPU_TASK_MEMORY", "48Gi")
+GPU_SLOT_DISK = os.environ.get("GPU_TASK_EPHEMERAL_STORAGE", "100Gi")
+# Separate RuntimeClass, not a flag on the CPU one: scheduling.nodeSelector is part of the
+# class, so one class cannot target both fleets.
+RUNTIME_CLASS = os.environ.get("RUNTIME_CLASS", "gvisor")
+GPU_RUNTIME_CLASS = os.environ.get("GPU_RUNTIME_CLASS", "gvisor-gpu")
+# Counted separately from CPU tasks and deliberately tiny: a GPU node is one task, costs
+# real money, and the fleet is the blast radius for a driver escape.
+MAX_CONCURRENT_GPU_TASKS = int(os.environ.get("MAX_CONCURRENT_GPU_TASKS", "1"))
 
 # Request-surface bounds. /run is unauthenticated behind a NetworkPolicy, so the body
 # is read under a size cap and the connection under a socket timeout.
@@ -150,7 +168,22 @@ def job_manifest(task_id: str, spec: dict) -> dict:
     backoffLimit 0 on purpose — a retry would clone and prompt the model a second time
     and bill for it, and the result object already carries per-stage errors, so a
     failure here is worth surfacing rather than repeating.
+
+    `gpu: true` swaps the RuntimeClass and the slot. Only the RuntimeClass decides which
+    fleet the pod lands on (its scheduling block stamps the nodeSelector and tolerations),
+    and only the GPU fleet's AMI has nvproxy enabled — so a GPU task on the CPU class
+    would start and then find no device.
     """
+    gpu = bool(spec.get("gpu"))
+    slot = {
+        "cpu": GPU_SLOT_CPU if gpu else SLOT_CPU,
+        "memory": GPU_SLOT_MEMORY if gpu else SLOT_MEMORY,
+        "ephemeral-storage": GPU_SLOT_DISK if gpu else SLOT_DISK,
+    }
+    if gpu:
+        # Extended resources must be equal in requests and limits, and this single
+        # device is what makes the node one-task-at-a-time.
+        slot["nvidia.com/gpu"] = "1"
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -167,9 +200,9 @@ def job_manifest(task_id: str, spec: dict) -> dict:
                 "metadata": {"labels": {"app": "sandbox-task", "osdc.io/module": "agent-sandbox"}},
                 "spec": {
                     "restartPolicy": "Never",
-                    # gvisor pins the pod to the ai-sandbox fleet and runs it under
-                    # runsc; the SA has no RBAC and no token mounted.
-                    "runtimeClassName": "gvisor",
+                    # The RuntimeClass pins the pod to its fleet and runs it under runsc;
+                    # the SA has no RBAC and no token mounted either way.
+                    "runtimeClassName": GPU_RUNTIME_CLASS if gpu else RUNTIME_CLASS,
                     "serviceAccountName": "sandbox-agent",
                     "automountServiceAccountToken": False,
                     "containers": [
@@ -185,6 +218,7 @@ def job_manifest(task_id: str, spec: dict) -> dict:
                                 {"name": "SANDBOX_REF", "value": spec.get("ref", "")},
                                 {"name": "SANDBOX_TASK", "value": spec.get("task", "")},
                                 {"name": "SANDBOX_MODEL", "value": spec.get("model", "")},
+                                {"name": "SANDBOX_GPU", "value": "1" if gpu else ""},
                             ],
                             "securityContext": {
                                 "runAsNonRoot": True,
@@ -195,18 +229,7 @@ def job_manifest(task_id: str, spec: dict) -> dict:
                             # a division, not a guess, and disk is the dimension the
                             # caller picks — an uncapped clone evicts its own pod
                             # instead of pushing the node into DiskPressure.
-                            "resources": {
-                                "requests": {
-                                    "cpu": SLOT_CPU,
-                                    "memory": SLOT_MEMORY,
-                                    "ephemeral-storage": SLOT_DISK,
-                                },
-                                "limits": {
-                                    "cpu": SLOT_CPU,
-                                    "memory": SLOT_MEMORY,
-                                    "ephemeral-storage": SLOT_DISK,
-                                },
-                            },
+                            "resources": {"requests": dict(slot), "limits": dict(slot)},
                         }
                     ],
                 },
@@ -300,10 +323,14 @@ def run_to_completion(task_id: str, spec: dict) -> dict:
         delete_job(task_id)
 
 
-def _running_locked() -> int:
-    """Tasks in flight. Callers hold _TASKS_LOCK, which is not reentrant, so this cannot
-    go through slots_in_use()."""
-    return sum(1 for t in _TASKS.values() if t["state"] == "running")
+def _running_locked(gpu: bool | None = None) -> int:
+    """Tasks in flight, optionally of one kind. Callers hold _TASKS_LOCK, which is not
+    reentrant, so this cannot go through slots_in_use().
+
+    CPU and GPU tasks are counted separately: a GPU node is one task and costs real money,
+    so its cap is much lower and must not be consumed by CPU work.
+    """
+    return sum(1 for t in _TASKS.values() if t["state"] == "running" and (gpu is None or t["gpu"] == gpu))
 
 
 def _prune_locked(now: float) -> None:
@@ -320,23 +347,30 @@ def _prune_locked(now: float) -> None:
 
 def _finish(task_id: str, result: dict) -> None:
     with _TASKS_LOCK:
-        _TASKS[task_id] = {"state": "done", "result": result, "finished_at": time.monotonic()}
+        gpu = _TASKS.get(task_id, {}).get("gpu", False)
+        _TASKS[task_id] = {
+            "state": "done",
+            "result": result,
+            "finished_at": time.monotonic(),
+            "gpu": gpu,
+        }
 
 
-def slots_in_use() -> int:
+def slots_in_use(gpu: bool | None = None) -> int:
     with _TASKS_LOCK:
-        return _running_locked()
+        return _running_locked(gpu)
 
 
-def start_task() -> str | None:
-    """Reserve a slot and return its task id. None when at capacity."""
+def start_task(gpu: bool = False) -> str | None:
+    """Reserve a slot of the requested kind and return its task id. None at capacity."""
     now = time.monotonic()
+    cap = MAX_CONCURRENT_GPU_TASKS if gpu else MAX_CONCURRENT_TASKS
     with _TASKS_LOCK:
         _prune_locked(now)
-        if _running_locked() >= MAX_CONCURRENT_TASKS:
+        if _running_locked(gpu) >= cap:
             return None
         task_id = uuid.uuid4().hex[:12]
-        _TASKS[task_id] = {"state": "running", "result": {}, "finished_at": 0.0}
+        _TASKS[task_id] = {"state": "running", "result": {}, "finished_at": 0.0, "gpu": gpu}
     return task_id
 
 
@@ -363,7 +397,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             # in_flight/capacity are here because a 429 is otherwise indistinguishable
             # from a wedged dispatcher: this says which one it is without kubectl.
-            self._send(200, {"status": "ok", "in_flight": slots_in_use(), "capacity": MAX_CONCURRENT_TASKS})
+            self._send(
+                200,
+                {
+                    "status": "ok",
+                    "in_flight": slots_in_use(False),
+                    "capacity": MAX_CONCURRENT_TASKS,
+                    "gpu_in_flight": slots_in_use(True),
+                    "gpu_capacity": MAX_CONCURRENT_GPU_TASKS,
+                },
+            )
             return
         if self.path.startswith("/status/"):
             task_id = self.path[len("/status/") :]
@@ -405,8 +448,9 @@ class Handler(BaseHTTPRequestHandler):
         for key in ("ref", "task", "model"):
             if key in spec and not isinstance(spec[key], str):
                 raise ValueError(f"'{key}' must be a string")
-        if "wait" in spec and not isinstance(spec["wait"], bool):
-            raise ValueError("'wait' must be a boolean")
+        for flag in ("wait", "gpu"):
+            if flag in spec and not isinstance(spec[flag], bool):
+                raise ValueError(f"'{flag}' must be a boolean")
         return spec
 
     def do_POST(self) -> None:
@@ -425,9 +469,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": "AGENT_IMAGE not set — deploy.sh did not substitute the task image"})
             return
 
-        task_id = start_task()
+        gpu = bool(spec.get("gpu"))
+        task_id = start_task(gpu)
         if task_id is None:
-            self._send(429, {"error": f"at capacity: {MAX_CONCURRENT_TASKS} tasks in flight"})
+            cap = MAX_CONCURRENT_GPU_TASKS if gpu else MAX_CONCURRENT_TASKS
+            kind = "GPU tasks" if gpu else "tasks"
+            self._send(429, {"error": f"at capacity: {cap} {kind} in flight"})
             return
 
         if spec.get("wait", True):

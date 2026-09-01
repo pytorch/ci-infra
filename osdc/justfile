@@ -2237,15 +2237,56 @@ build-agent-sandbox-ami cluster *args:
 
     echo "Building ai-sandbox gVisor AMI for $CLUSTER ($REGION, k8s $K8S_VERSION)..."
     cd "$PACKER_DIR"
-    packer init .
+    # Name the template in BOTH commands: the directory holds the GPU template too, and
+    # both `packer init .` and `packer build .` parse every file they find — which fails
+    # on "Duplicate variable" because the two templates declare the same inputs.
+    packer init ai-sandbox-gvisor.pkr.hcl
     packer build \
         -var "aws_region=${REGION}" \
         -var "cluster_name=${CNAME}" \
         -var "k8s_version=${K8S_VERSION}" \
-        {{args}} .
+        {{args}} ai-sandbox-gvisor.pkr.hcl
 
     echo ""
     echo "Built. The ai-sandbox fleet picks it up on the next node launch;"
+    echo "existing nodes keep their current AMI until they are recycled:"
+    echo "    just recycle-nodes $CLUSTER"
+
+# Build the ai-sandbox GPU AMI (nodepools-agent-sandbox) in a cluster's region
+#
+# Same as above for the ai-sandbox-gpu fleet, plus nvproxy. It pins the NVIDIA driver as
+# well as the gVisor release: nvproxy supports an explicit list of driver versions, so the
+# build fails rather than shipping an image whose driver is off the list. Overriding the
+# pin means checking the list first — docs/agent-sandbox-gpu-gvisor.md.
+#
+#   just build-agent-sandbox-gpu-ami <cluster>
+#   just build-agent-sandbox-gpu-ami <cluster> -var nvidia_ami_release=v20260801
+#
+# Builds on a plain c7a.xlarge: the driver-support gate reads the version from the module
+# file (modinfo), so the builder needs no GPU.
+build-agent-sandbox-gpu-ami cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    K8S_VERSION=$(uv run {{CFG}} "$CLUSTER" eks_version)
+    PACKER_DIR="{{UPSTREAM}}/modules/nodepools-agent-sandbox/packer"
+
+    echo "Building ai-sandbox GPU (gVisor + nvproxy) AMI for $CLUSTER ($REGION, k8s $K8S_VERSION)..."
+    cd "$PACKER_DIR"
+    # By file, not `.` — see the CPU recipe above.
+    packer init ai-sandbox-gpu-gvisor.pkr.hcl
+    packer build \
+        -var "aws_region=${REGION}" \
+        -var "cluster_name=${CNAME}" \
+        -var "k8s_version=${K8S_VERSION}" \
+        {{args}} ai-sandbox-gpu-gvisor.pkr.hcl
+
+    echo ""
+    echo "Built. The ai-sandbox-gpu fleet picks it up on the next node launch;"
     echo "existing nodes keep their current AMI until they are recycled:"
     echo "    just recycle-nodes $CLUSTER"
 
