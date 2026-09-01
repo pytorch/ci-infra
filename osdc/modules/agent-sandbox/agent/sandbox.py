@@ -5,7 +5,7 @@ Imported by task.py, which runs it once per pod. It holds NO credentials — it 
 public repos anonymously and reaches Bedrock through the sigv4 proxy, which signs
 with its own IRSA identity. This process never sees a token.
 
-The HTTP surface lives in the dispatcher (../dispatcher/dispatcher.py): it turns each
+The HTTP surface lives in the dispatcher (../dispatcher/http_api.py): it turns each
 request into one Job, so nothing here has to serialize or refuse concurrent work.
 """
 

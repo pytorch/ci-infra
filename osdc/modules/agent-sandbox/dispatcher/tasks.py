@@ -30,8 +30,14 @@ _TASKS: dict[str, dict] = {}
 _TASKS_LOCK = threading.Lock()
 
 
-def run_to_completion(task_id: str, spec: dict) -> dict:
-    """Create the Job, wait for it, return the result. Never raises."""
+def _run_to_completion(task_id: str, spec: dict) -> dict:
+    """Create the Job, wait for it, return the result. Never raises.
+
+    Underscored because it does not release the slot start_task() reserved; going through
+    run_and_record() is what does. A caller that paired start_task() with this one would
+    leave an entry "running" forever, which _prune_locked() never drops and
+    _running_locked() counts against MAX_CONCURRENT_TASKS for the life of the pod.
+    """
     # Grace beyond the Job's own activeDeadlineSeconds, which is the same number: without
     # it both fire at once and this loop reports a flat "did not finish" instead of the
     # Job's DeadlineExceeded, which at least names what was still running.
@@ -120,7 +126,7 @@ def status(task_id: str) -> dict | None:
 
 def run_and_record(task_id: str, spec: dict) -> dict:
     """Run the task and store its result so /status can answer for it afterwards."""
-    result = run_to_completion(task_id, spec)
+    result = _run_to_completion(task_id, spec)
     _finish(task_id, result)
     return result
 
