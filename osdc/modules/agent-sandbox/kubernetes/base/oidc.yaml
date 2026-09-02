@@ -117,11 +117,12 @@ spec:
     spec:
       backoffLimit: 2
       activeDeadlineSeconds: 300
-      # The history limits above only reap Jobs the CronJob owns. deploy.sh also creates a
-      # one-off `jwks-refresher-deploy-<epoch>` Job with `--from=cronjob/`, which copies
-      # this spec but is owned by nobody — without a TTL every deploy leaves a Job and its
-      # Pod in the namespace for good, against the same ResourceQuota task pods use.
-      ttlSecondsAfterFinished: 3600
+      # No ttlSecondsAfterFinished here, deliberately. It would ride along into the
+      # one-off Job deploy.sh creates with `--from=cronjob/` — which is what wants
+      # reaping, since nothing owns it — but it would ALSO apply to this CronJob's own
+      # Jobs and override the history limits above, which kube-linter rejects
+      # (job-ttl-seconds-after-finished) because the strictest of the two silently wins.
+      # deploy.sh deletes its own Job instead; see the comment there.
       template:
         metadata:
           labels:
