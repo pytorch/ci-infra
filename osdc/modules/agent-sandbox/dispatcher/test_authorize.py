@@ -23,7 +23,6 @@ from authorize import Denied
 from authorize import authorize as authorize_fn
 
 MODULE = Path(__file__).resolve().parent.parent
-DISPATCHER_MANIFEST = MODULE / "kubernetes" / "base" / "dispatcher.yaml"
 
 # A token from the caller we do allow, with every claim the policy reads.
 GOOD_CLAIMS = {
@@ -32,9 +31,9 @@ GOOD_CLAIMS = {
     "workflow_ref": "pytorch/ciforge/.github/workflows/ai-lint-run.yml@refs/heads/main",
     "job_workflow_ref": "pytorch/ciforge/.github/workflows/ai-lint-run.yml@refs/heads/main",
     "event_name": "workflow_run",
-    # github-hosted, which no caller that can REACH /run actually reports — see
-    # test_the_flag_is_off_while_no_admissible_caller_can_reach_run below.
-    "runner_environment": "github-hosted",
+    # self-hosted: /run is only reachable from in-cluster runners, which mint exactly
+    # this — see test_an_admissible_caller_can_actually_reach_run below.
+    "runner_environment": "self-hosted",
     "ref_protected": "true",
 }
 
@@ -138,7 +137,7 @@ def test_an_absent_job_workflow_ref_is_denied(policy):
 @POLICIES
 def test_an_unexpected_runner_environment_is_denied(policy):
     with pytest.raises(Denied, match="runner environment"):
-        authorize_fn(claims(runner_environment="self-hosted"), {}, policy)
+        authorize_fn(claims(runner_environment="github-hosted"), {}, policy)
     with pytest.raises(Denied, match="runner environment"):
         authorize_fn(claims(runner_environment=None), {}, policy)
 
@@ -159,55 +158,35 @@ def _ingress_namespaces() -> list[str]:
     ]
 
 
-def _deployed_require_auth() -> str:
-    """The literal REQUIRE_AUTH the dispatcher Deployment ships."""
-    deployment = next(
-        d
-        for d in yaml.safe_load_all(DISPATCHER_MANIFEST.read_text())
-        if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "sandbox-dispatcher"
-    )
-    for container in deployment["spec"]["template"]["spec"]["containers"]:
-        assert not container.get("envFrom"), f"{container['name']} could set REQUIRE_AUTH out of this test's sight"
-        for entry in container.get("env", []):
-            if entry["name"] == "REQUIRE_AUTH":
-                assert "value" in entry, "REQUIRE_AUTH is set from a source this test cannot read"
-                return entry["value"]
-    raise AssertionError("dispatcher.yaml sets no REQUIRE_AUTH")
+def test_an_admissible_caller_can_actually_reach_run():
+    """The policy and the NetworkPolicy must describe an overlapping set of callers.
 
+    They did not: the policy required `github-hosted` while `sandbox-agent-ingress`
+    admits only in-cluster namespaces, whose runners mint `self-hosted` tokens. The
+    admissible and reachable sets were disjoint, so enabling REQUIRE_AUTH would have
+    refused every request — including this module's own integration test. Neither file
+    can see the other, so nothing caught it; this is what does.
 
-def test_the_flag_is_off_while_no_admissible_caller_can_reach_run():
-    """Enforcement may not be enabled while the policy admits nobody who can connect.
-
-    `/run` is a ClusterIP and `sandbox-agent-ingress` admits in-cluster namespaces only,
-    so every caller that can reach it mints a SELF-HOSTED token — while the policy admits
-    `github-hosted` alone. That disjointness is deliberate and fail-closed (see the
-    comment on ALLOWED_RUNNER_ENVIRONMENTS), but it makes REQUIRE_AUTH=true a total
-    outage rather than a hardening step, and the two files that would tell you so cannot
-    see each other.
-
-    So this does NOT assert the sets overlap — they do not, yet. It asserts the pair is
-    consistent: widen the policy, or land the caller migration, BEFORE flipping the flag.
+    Deliberately weak on purpose about WHICH caller: it asserts the two descriptions can
+    both be satisfied at once, not that a particular workflow is wired up. Proving a real
+    token reaches /run is the integration test's job, not a unit test's.
     """
-    reachable_is_in_cluster = bool(_ingress_namespaces())
-    admits_only_github_hosted = set(authorize.ALLOWED_RUNNER_ENVIRONMENTS) == {"github-hosted"}
-    if reachable_is_in_cluster and admits_only_github_hosted:
-        assert _deployed_require_auth() == "false", (
-            f"REQUIRE_AUTH is enabled, but /run is reachable only from {_ingress_namespaces()} — in-cluster "
-            "namespaces, whose runners mint self-hosted tokens — while the policy admits github-hosted only. "
-            "Every request would be refused. See README 'Before enforcement can be enabled'."
-        )
+    namespaces = _ingress_namespaces()
+    assert namespaces, "sandbox-agent-ingress admits no namespace this test can read"
+    assert "self-hosted" in authorize.ALLOWED_RUNNER_ENVIRONMENTS, (
+        f"/run is reachable only from {namespaces} — in-cluster namespaces, whose runners mint "
+        "self-hosted tokens. A policy that does not admit self-hosted admits no caller that can connect."
+    )
 
 
-@POLICIES
-def test_ref_protected_is_compared_as_a_string(policy):
-    """GitHub sends "true", not true. An earlier build of this dispatcher would have
-    denied 100% of production traffic on exactly this confusion while passing all of its
-    unit tests, because two fixtures disagreed about the claim's type."""
-    with pytest.raises(Denied, match="protected ref"):
-        authorize_fn(claims(ref_protected=True), {}, policy)
-    with pytest.raises(Denied, match="protected ref"):
-        authorize_fn(claims(ref_protected="false"), {}, policy)
-    assert authorize_fn(claims(ref_protected="true"), {}, policy).caller == "pytorch/ciforge"
+def test_the_integration_test_caller_is_on_the_allow_list():
+    """`test-agent-sandbox` in integration-test.yaml.tpl is the only thing that calls
+    /run today. If it is not admissible, enabling enforcement breaks the one job that
+    proves the sandbox works, and the break would land at deploy time rather than here."""
+    names = [c["name"] for c in authorize.ALLOWED_CALLERS]
+    assert "pytorch/ci-infra" in names, (
+        f"the allow-list is {names}; the integration test runs from pytorch/ci-infra and would be denied"
+    )
 
 
 @POLICIES

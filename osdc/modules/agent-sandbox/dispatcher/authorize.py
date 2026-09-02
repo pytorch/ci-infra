@@ -54,6 +54,17 @@ ALLOWED_CALLERS = (
         "repository_owner_id": "21003710",  # the pytorch organisation
         "workflow_prefix": "pytorch/ciforge/",
     },
+    {
+        # This module's own integration test (`test-agent-sandbox` in
+        # osdc/integration-tests/workflows/integration-test.yaml.tpl). It is the only
+        # thing that calls /run today, it runs on an arc-runners self-hosted runner, and
+        # without it here enforcement could not be enabled without breaking the one job
+        # that proves the sandbox works.
+        "name": "pytorch/ci-infra",
+        "repository_id": "654341155",
+        "repository_owner_id": "21003710",
+        "workflow_prefix": "pytorch/ci-infra/",
+    },
 )
 
 # What an authorized run may do. v1 hardcodes both; v2 reads them from the manifest.
@@ -68,10 +79,9 @@ V1_MODEL = ""  # empty means "the dispatcher's configured default"
 #
 # A DENYLIST, with the residual that implies: a GitHub event type added after this line
 # was written is allowed by default, and so is any PR-family event nobody thought of.
-# That is tolerable only because no caller is admitted yet — see ALLOWED_RUNNER_
-# ENVIRONMENTS. Turn it into an explicit allowlist when the caller shape is decided and
-# the set of events it actually uses is known; guessing that set now would either block
-# the real caller or be a list nobody checked.
+# What bounds that is the Grant, not this set — a caller on an unforeseen event still
+# gets the same pinned repo and model. Worth turning into an explicit allowlist once the
+# real callers' event set is known; guessing it now would block them.
 #
 # workflow_run is deliberately NOT here, because it is the shape the real callers use —
 # a stage that runs from the default branch after an untrusted stage finishes. See the
@@ -87,25 +97,22 @@ DENIED_EVENTS = frozenset(
     }
 )
 
-# KNOWN UNSATISFIABLE, deliberately, and the reason is worth reading before changing it.
+# self-hosted, because `/run` is a ClusterIP that `sandbox-agent-ingress` opens to the
+# `arc-runners` namespace only: every caller that can REACH it mints a self-hosted token.
+# An earlier revision required github-hosted, which made the policy admit nobody who
+# could connect at all.
 #
-# `/run` is a ClusterIP that `sandbox-agent-ingress` opens to the `arc-runners` namespace
-# only, so every caller that can REACH it mints a self-hosted token — while this admits
-# github-hosted alone. The two sets are disjoint: flipping REQUIRE_AUTH today refuses
-# every request. That is a fail-closed state, not a working one, and
-# test_the_flag_is_off_while_no_admissible_caller_can_reach_run is what stops anyone
-# turning it into an outage by flipping the flag.
-#
-# It stays github-hosted until the caller migration lands rather than being widened to
-# self-hosted, because widening is not the free reachability fix it looks like. The
-# remaining claims attest to the enclosing JOB, not to the code running inside it: a
-# ciforge job on a protected ref can still execute PR content or a poisoned artifact, and
-# anything in that job with `id-token: write` can mint this token. github-hosted is what
-# currently keeps an ARC runner — the fleet that runs untrusted PR code, in this very
-# cluster — out of the admissible set, and self-hosted does not even attest to ARC, to
-# this cluster, or to a runner group. See the module README, "Before enforcement can be
-# enabled", for the two ways to close this properly.
-ALLOWED_RUNNER_ENVIRONMENTS = frozenset({"github-hosted"})
+# Read this as a SHAPE check — "the caller runs where the service is reachable from" —
+# and not as a trust boundary. It is specifically NOT a defence against untrusted code
+# minting a token, and it was a mistake to argue that it was: any job with
+# `id-token: write` can mint one on either kind of runner. **The client is untrusted by
+# design.** Trust comes from the dispatcher verifying the token's signature and matching
+# its claims here, and from the Grant bounding what that validated identity may do — the
+# repository to clone and the model are policy, so a token an attacker managed to mint
+# buys a prompt against the same pinned repo and model an honest caller gets, and nothing
+# else. Narrowing the runner environment does not shrink that blast radius and cannot
+# stand in for the manifest.
+ALLOWED_RUNNER_ENVIRONMENTS = frozenset({"self-hosted"})
 
 
 class Denied(RuntimeError):

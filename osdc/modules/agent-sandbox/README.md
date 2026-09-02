@@ -85,14 +85,21 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 `dispatcher/authorize.py`, not an env var, because it is the answer to "who may spend our
 Bedrock budget" and belongs in git history and review.
 
-v1 admits exactly one caller: a workflow in **`pytorch/ciforge`**, on a protected ref, on
-a **github-hosted** runner, on an event not in a denied set. The *repository* is matched on
+v1 admits two callers: a workflow in **`pytorch/ciforge`**, and one in
+**`pytorch/ci-infra`** (this module's own `test-agent-sandbox` integration job, the only
+thing that calls `/run` today). Either must be on a protected ref, on a **self-hosted**
+runner, on an event not in a denied set. The *repository* is matched on
 `repository_id`/`repository_owner_id` rather than on its name, because a repository can be
-renamed and its old name re-registered by someone else — but the two workflow refs are
-still matched on a name prefix, so a rename would break authorization even though the ids
-still resolve. Two residual sharp edges in that sentence: the event check is a **denylist**,
-so an event type GitHub adds later is allowed by default; and `github-hosted` is currently
-satisfiable by nobody who can reach the endpoint, which is the subject of the next section.
+renamed and its old name re-registered by someone else — the two workflow refs are still
+matched on a name prefix, so a rename breaks authorization even though the ids resolve.
+
+`self-hosted` is a **shape** check, not a trust boundary: `/run` is a ClusterIP reachable
+only from `arc-runners`, so that is simply what a caller who can connect reports. It is not
+a defence against untrusted code minting a token — **the client is untrusted by design**,
+any job with `id-token: write` can mint one on either kind of runner, and the dispatcher's
+job is to validate the token and bound what the validated identity may do. That bound is
+the Grant. One residual to keep in view: the event check is a **denylist**, so an event
+type GitHub adds later is allowed by default — again bounded by the Grant, not by the set.
 
 **The request decides less than it looks like it does.** Verification produces a frozen
 `Grant`, and the Job is built from the Grant alone — never from the request body. The
@@ -111,41 +118,22 @@ Two residuals worth knowing:
   are what bound the damage in the meantime. PyPI's Warehouse solves this with a `jti`
   table, which is the shape to copy if this matters later.
 
-### Before enforcement can be enabled
+### Enabling enforcement
 
-**No caller would survive the flip today, and choosing the one that should is a decision
-this PR does not make.** `/run` is a ClusterIP that `sandbox-agent-ingress` opens to the
-`arc-runners` namespace only, so every caller that can reach it mints a **self-hosted**
-token — while the policy admits **github-hosted** alone. The sets are disjoint. Every
-workflow in `pytorch/ciforge` runs github-hosted (`ubuntu-latest` or `ubuntu-24.04`), and
-the only in-tree caller of `/run` is this module's own `test-agent-sandbox` integration
-job, which lives in `pytorch/ci-infra` — not on the allow-list — and sends no token.
+`REQUIRE_AUTH` still ships **`false`**, but the policy now admits a caller that can
+actually reach the endpoint, so flipping it is a real next step rather than an outage. Two
+things have to be true first, and neither is code in this repo's dispatcher:
 
-That is fail-closed and deliberate. `test_the_flag_is_off_while_no_admissible_caller_can_
-reach_run` fails the build if `REQUIRE_AUTH` is set to `true` while it stays that way, so
-the mismatch cannot become a silent outage.
+- The **`test-agent-sandbox`** job must send a token. It needs `id-token: write`, a token
+  minted for this dispatcher's audience, and an `Authorization: Bearer` header on its
+  `curl`. It sends none today, so it would get a `401` the moment the flag flips.
+- Any **`pytorch/ciforge`** caller must run on an `arc-runners` runner. Every workflow in
+  that repo is `ubuntu-latest`/`ubuntu-24.04` today, and a github-hosted runner cannot
+  route to a ClusterIP in this cluster at all.
 
-Widening the runner-environment check to `self-hosted` is **not** the fix, tempting as the
-one-line diff looks. The other claims attest to the enclosing *job*, not to the code
-running inside it: a `pytorch/ciforge` job on a protected ref can still check out PR
-content or consume a poisoned artifact, and anything in it with `id-token: write` can mint
-the token. `github-hosted` is what currently keeps the ARC fleet — which runs untrusted PR
-code, in this cluster — out of the admissible set, and `self-hosted` would not even attest
-to ARC, to this cluster, or to a runner group.
-
-The two real options, neither of them one line:
-
-- **Give the caller a trusted in-cluster home.** A dedicated ephemeral runner set that
-  executes no untrusted code, an audited `pytorch/ciforge` workflow pinned to it, and a
-  runner-environment/workflow-ref pair narrow enough to name it. The workflow also needs
-  `id-token: write`, a token minted for this audience, and an `Authorization` header —
-  moving it onto ARC alone changes nothing.
-- **Admit `pytorch/ci-infra` for the integration test.** A policy expansion — a second
-  repository able to spend the Bedrock budget — plus the same token work in
-  `integration-test.yaml.tpl`, which today sends no header at all. It belongs in review,
-  not in a follow-up commit.
-
-Until one lands, `REQUIRE_AUTH=false` is the shipped state, not a temporary one.
+`test_an_admissible_caller_can_actually_reach_run` asserts the policy and the NetworkPolicy
+still describe an overlapping set, so the disjointness that made an earlier revision
+unsatisfiable cannot come back unnoticed.
 
 ### What the flag does
 
@@ -388,9 +376,9 @@ signing proxy, without the runner or worker holding a token.
   non-prototype use.
 - **Callers are unauthenticated in practice, and unbounded either way.** Caller identity
   now exists — `dispatcher/authorize.py`, OIDC-verified — but it is not enforced:
-  `REQUIRE_AUTH` ships `false` and cannot be flipped until there is a caller the policy
-  admits (see *Before enforcement can be enabled*), so today any pod in `arc-runners` can
-  still call `/run` with no token and the NetworkPolicy remains the only real gate.
+  `REQUIRE_AUTH` ships `false` until the admitted callers actually send tokens (see
+  *Enabling enforcement*), so today any pod in `arc-runners` can still call `/run` with no
+  token and the NetworkPolicy remains the only real gate.
   Quotas are a separate gap that authentication does not close: a caller looping `/run`
   holds slots for up to the clone plus invoke timeout and keeps every other consumer on
   `429` — a refusal rather than a hang, but still a denial of service. There is no
