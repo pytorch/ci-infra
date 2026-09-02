@@ -6,6 +6,9 @@
 # is best-effort defense-in-depth ONLY. A boundary that would hold — a dedicated sandbox
 # subnet with no NAT/IGW route, plus Security-Groups-for-Pods — does not exist yet. Do
 # not treat these policies as the thing that guarantees the agent cannot exfiltrate.
+#
+# NOT the whole set: `jwks-refresher-egress` lives in oidc.yaml, beside the CronJob it is
+# only meaningful for. Read both files when auditing what may leave this namespace.
 
 # Baseline: deny all ingress and egress in the namespace.
 apiVersion: networking.k8s.io/v1

@@ -447,9 +447,15 @@ def _digest(expression: str) -> str:
     """The EXACT parsed expression, not a whitespace-normalised one.
 
     Normalising first would have collapsed whitespace inside CEL string literals too, so
-    a real semantic change like 'a  b' -> 'a b' would keep its digest. YAML has already
-    folded these block scalars by the time we see them, so re-indenting or reflowing an
-    expression does not move the digest on its own.
+    a real semantic change like 'a  b' -> 'a b' would keep its digest.
+
+    The price is that reformatting is no longer free, and the expressions where it costs
+    most are exactly the ones this change had to re-pin. YAML folds a `>-` scalar's single
+    newlines into single spaces, so re-wrapping usually leaves the value identical — but a
+    run of whitespace the old normalisation collapsed now survives into the digest, and a
+    more-indented line inside a folded scalar keeps its newline instead of folding. So
+    read a digest failure as "re-read the mirror beside this rule", never as "the
+    formatter moved something and the pin needs bumping".
     """
     return hashlib.sha256(expression.encode()).hexdigest()[:12]
 

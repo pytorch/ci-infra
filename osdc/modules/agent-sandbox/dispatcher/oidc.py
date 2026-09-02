@@ -92,7 +92,12 @@ def _check_age(fetched_at: float) -> None:
 
 
 def _load_keyset() -> PyJWKSet:
-    """The mounted JWKS, re-read when the file changes or the interval elapses.
+    """The mounted JWKS, re-read once JWKS_RELOAD_INTERVAL_S has elapsed.
+
+    On the interval only — nothing here watches the file, so a rotation lands up to one
+    interval late. That is deliberate (a kubelet updates a ConfigMap volume on its own
+    sync period anyway, so mtime would not be prompt either), but it is a bound worth
+    knowing rather than a freshness guarantee.
 
     Not cached forever: the ConfigMap is updated out of band, and a process that read it
     once at startup would keep rejecting valid tokens after the first key rotation.
@@ -113,6 +118,13 @@ def _load_keyset() -> PyJWKSet:
             raise InvalidToken(f"no signing keys available: {exc}") from None
         except ValueError as exc:
             raise InvalidToken(f"signing keys are unreadable: {exc}") from None
+
+        # Checked before any .get(): a valid JSON document that is a list or a string
+        # parses fine and then raises AttributeError out of here, which is not an
+        # InvalidToken, so it escapes do_POST and closes the connection with no response
+        # at all — the one answer this endpoint exists to avoid.
+        if not isinstance(document, dict):
+            raise InvalidToken(f"signing key file is a JSON {type(document).__name__}, not an object")
 
         fetched_at = document.get("fetched_at")
         if not isinstance(fetched_at, (int, float)):

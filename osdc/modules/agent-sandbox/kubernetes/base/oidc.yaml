@@ -91,7 +91,10 @@ subjects:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: jwks-refresh
+  # jwks-refresher, matching its ServiceAccount, Role, RoleBinding, NetworkPolicy and pod
+  # label. Nothing depends on the shorter spelling except deploy.sh's `--from=cronjob/`,
+  # and this object has never been applied to a cluster, so there is nothing to prune.
+  name: jwks-refresher
   namespace: ai-sandbox
   labels:
     osdc.io/module: agent-sandbox
@@ -114,6 +117,11 @@ spec:
     spec:
       backoffLimit: 2
       activeDeadlineSeconds: 300
+      # The history limits above only reap Jobs the CronJob owns. deploy.sh also creates a
+      # one-off `jwks-refresher-deploy-<epoch>` Job with `--from=cronjob/`, which copies
+      # this spec but is owned by nobody — without a TTL every deploy leaves a Job and its
+      # Pod in the namespace for good, against the same ResourceQuota task pods use.
+      ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels:
@@ -162,9 +170,19 @@ spec:
                   ephemeral-storage: "100Mi"
 
 ---
-# The refresher's egress: DNS, the API server, and HTTPS out. It is the only pod in this
-# namespace besides the sigv4 proxy that is allowed off-cluster, and the only reason it
-# is allowed is that it holds no RBAC worth stealing.
+# The refresher's egress: DNS, the API server, and HTTPS out.
+#
+# Kept beside the CronJob it governs rather than in networkpolicy.yaml with the others.
+# That is the one exception in the repo, and the reason is that this policy is only
+# meaningful while this file's CronJob exists — deleting oidc.yaml without deleting the
+# policy would leave a rule selecting nothing. The trade is that someone auditing egress
+# has two files to read, which the comment in networkpolicy.yaml now points at.
+#
+# It is not the only TRUSTED pod allowed off-cluster in a broader sense: task pods have
+# `sandbox-agent-egress` for TCP 443 to anywhere, because a clone has to reach GitHub.
+# What is true, and is the point, is that the two components holding something worth
+# stealing — the dispatcher's create-Job RBAC and the proxy's AWS identity — are not both
+# on that list: the dispatcher reaches DNS and the API server only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

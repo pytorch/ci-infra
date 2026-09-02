@@ -708,6 +708,36 @@ class TestAuthenticatedSurface:
         tasks._finish(task_id, {"report": "mine"})
         assert _get(f"{server}/status/{task_id}")["report"] == "mine"
 
+    def test_an_authenticated_run_is_readable_back_through_status(self, server, signed):
+        """The end-to-end ownership loop, which no other test closes.
+
+        Every /status test above seeds the table by hand with a literal owner string, so
+        all of them keep passing if the owner /run actually records stops matching the one
+        /status derives. That string is authorize.Grant.caller on both sides; this is the
+        test that fails if only one side changes.
+        """
+        token = self._token(signed)
+        task_id = self._authed_post(server, token, {"task": "hello", "wait": False})["task_id"]
+        request = urllib.request.Request(  # noqa: S310
+            f"{server}/status/{task_id}", headers={"Authorization": f"Bearer {token}"}
+        )
+        payload = json.loads(_opener.open(request, timeout=30).read())
+        assert payload["task_id"] == task_id
+        assert payload["state"] in ("running", "done")
+
+        # ...and the same task is invisible to a different authenticated caller.
+        tasks._finish(task_id, {"report": "mine"})
+        other = tasks.start_task("someone-else")
+        tasks._finish(other, {"report": "theirs"})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener.open(
+                urllib.request.Request(  # noqa: S310
+                    f"{server}/status/{other}", headers={"Authorization": f"Bearer {token}"}
+                ),
+                timeout=30,
+            )
+        assert exc.value.code == 404
+
     def test_status_applies_the_same_policy_as_run(self, server, signed):
         """An identity-only check on /status let a token that /run had denied — wrong
         event, unprotected ref, self-hosted runner — read every task owned by that

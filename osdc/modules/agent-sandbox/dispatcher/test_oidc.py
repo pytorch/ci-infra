@@ -201,6 +201,18 @@ class TestKeySetHandling:
         with pytest.raises(oidc.InvalidToken, match="unreadable"):
             oidc.verify(a_token(keys))
 
+    @pytest.mark.parametrize("document", ["[]", '"a string"', "42", "null"], ids=["list", "string", "int", "null"])
+    def test_a_key_file_that_is_not_a_json_object_refuses(self, tmp_path, monkeypatch, keys, document):
+        """Valid JSON, wrong shape. Before the isinstance check these raised AttributeError
+        out of _load_keyset — not an InvalidToken, so it escaped do_POST and closed the
+        connection with no response at all rather than answering 401."""
+        path = tmp_path / "jwks.json"
+        path.write_text(document)
+        monkeypatch.setattr(oidc, "JWKS_PATH", path)
+        oidc._CACHE.update(keyset=None, loaded_at=0.0)
+        with pytest.raises(oidc.InvalidToken, match="not an object"):
+            oidc.verify(a_token(keys))
+
     def test_a_key_file_with_no_timestamp_refuses(self, tmp_path, monkeypatch, keys):
         path = tmp_path / "jwks.json"
         path.write_text(json.dumps({"jwks": {"keys": []}}))
