@@ -48,7 +48,7 @@ EKS_CLUSTER_NAME = os.environ["EKS_CLUSTER_NAME"]
 REGION = os.environ["REGION"]
 MAX_RESERVATION_HOURS = int(os.environ["MAX_RESERVATION_HOURS"])
 DEFAULT_TIMEOUT_HOURS = int(os.environ["DEFAULT_TIMEOUT_HOURS"])
-MAX_TOTAL_RESERVATION_HOURS = 48
+UNLIMITED_EXTENSION_USER_ALLOWLIST = frozenset({"bobren", "huydhn"})
 QUEUE_URL = os.environ["QUEUE_URL"]
 PRIMARY_AVAILABILITY_ZONE = os.environ["PRIMARY_AVAILABILITY_ZONE"]
 GPU_DEV_CONTAINER_IMAGE = os.environ.get(
@@ -10479,49 +10479,53 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
 
             if isinstance(current_expires_at, str):
                 current_expiry = datetime.fromisoformat(
-                    current_expires_at.replace("Z", "+00:00")
-                )
+                    current_expires_at.replace('Z', '+00:00'))
             else:
                 current_expiry = datetime.fromisoformat(current_expires_at)
 
-            new_expiry = current_expiry + timedelta(hours=float(extension_hours))
+            new_expiry = current_expiry + \
+                timedelta(hours=float(extension_hours))
             new_expires_at = new_expiry.isoformat()
 
+            # Check maximum total duration (48 hours from launch time)
+            MAX_TOTAL_HOURS = 48
             launched_at = reservation.get("launched_at")
-            is_single_gpu = reservation.get("gpu_count") == 1
-            if launched_at and not is_single_gpu:
+            reservation_user = str(reservation.get("user_id", "")).strip().lower()
+            has_unlimited_extensions = (
+                reservation.get("gpu_count") == 1
+                and reservation_user in UNLIMITED_EXTENSION_USER_ALLOWLIST
+            )
+            if launched_at and not has_unlimited_extensions:
                 if isinstance(launched_at, str):
                     launch_time = datetime.fromisoformat(
-                        launched_at.replace("Z", "+00:00")
-                    )
+                        launched_at.replace('Z', '+00:00'))
                 else:
                     launch_time = datetime.fromisoformat(launched_at)
 
-                total_duration = (new_expiry - launch_time).total_seconds() / 3600
-                if total_duration > MAX_TOTAL_RESERVATION_HOURS:
-                    error_msg = f"Cannot extend reservation beyond {MAX_TOTAL_RESERVATION_HOURS} hours total. Current total would be {total_duration:.1f} hours (launched at {launched_at})"
+                total_duration = (
+                    new_expiry - launch_time).total_seconds() / 3600
+                if total_duration > MAX_TOTAL_HOURS:
+                    error_msg = f"Cannot extend reservation beyond {MAX_TOTAL_HOURS} hours total. Current total would be {total_duration:.1f} hours (launched at {launched_at})"
                     logger.error(error_msg)
                     update_reservation_error(
-                        full_reservation_id, error_msg, "extension_error"
-                    )
+                        full_reservation_id, error_msg, "extension_error")
                     return True
 
                 logger.info(
-                    f"Extension approved: total duration will be {total_duration:.1f}h / {MAX_TOTAL_RESERVATION_HOURS}h max"
-                )
-            elif is_single_gpu:
+                    f"Extension approved: total duration will be {total_duration:.1f}h / {MAX_TOTAL_HOURS}h max")
+            elif has_unlimited_extensions:
                 logger.info(
-                    "Extension approved: single-GPU reservations have no total duration limit"
+                    f"Extension approved: allowlisted user {reservation_user} has no total duration limit for single-GPU reservations"
                 )
 
             logger.info(
-                f"Extending reservation {full_reservation_id} from {current_expires_at} to {new_expires_at}"
-            )
+                f"Extending reservation {full_reservation_id} from {current_expires_at} to {new_expires_at}")
 
         except Exception as date_error:
             error_msg = f"Error calculating new expiration time: {str(date_error)}"
             logger.error(error_msg)
-            update_reservation_error(full_reservation_id, error_msg, "extension_error")
+            update_reservation_error(
+                full_reservation_id, error_msg, "extension_error")
             return True
 
         try:
