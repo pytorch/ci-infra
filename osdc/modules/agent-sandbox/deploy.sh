@@ -202,9 +202,14 @@ fi
 #                            The Service of the same name stays: it now points at the
 #                            dispatcher, so callers keep their address.
 #   sandbox-agent-egress   — the warm worker's egress, replaced by sandbox-task-egress.
+#   jwks-refresh (CronJob) — renamed to jwks-refresher, matching its ServiceAccount and
+#                            the rest of its objects. Listed rather than assumed absent:
+#                            if any cluster ever applied the old name, `apply` leaves it
+#                            running and two CronJobs race for the same ConfigMap.
 kubectl delete networkpolicy default-deny-ingress -n "$NAMESPACE" --ignore-not-found
 kubectl delete networkpolicy sandbox-agent-egress -n "$NAMESPACE" --ignore-not-found
 kubectl delete deployment sandbox-agent -n "$NAMESPACE" --ignore-not-found
+kubectl delete cronjob jwks-refresh -n "$NAMESPACE" --ignore-not-found
 
 # --- Revoke the sandbox's own AWS identity (idempotent) ---
 # A cluster deployed before the proxies existed has an IRSA role annotated on the

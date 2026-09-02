@@ -23,6 +23,7 @@ from authorize import Denied
 from authorize import authorize as authorize_fn
 
 MODULE = Path(__file__).resolve().parent.parent
+DISPATCHER_MANIFEST = MODULE / "kubernetes" / "base" / "dispatcher.yaml"
 
 # A token from the caller we do allow, with every claim the policy reads.
 GOOD_CLAIMS = {
@@ -31,9 +32,9 @@ GOOD_CLAIMS = {
     "workflow_ref": "pytorch/ciforge/.github/workflows/ai-lint-run.yml@refs/heads/main",
     "job_workflow_ref": "pytorch/ciforge/.github/workflows/ai-lint-run.yml@refs/heads/main",
     "event_name": "workflow_run",
-    # self-hosted, because only an in-cluster runner can reach the Service at all —
-    # see test_the_admitted_runner_environment_can_actually_reach_run below.
-    "runner_environment": "self-hosted",
+    # github-hosted, which no caller that can REACH /run actually reports — see
+    # test_the_flag_is_off_while_no_admissible_caller_can_reach_run below.
+    "runner_environment": "github-hosted",
     "ref_protected": "true",
 }
 
@@ -137,41 +138,64 @@ def test_an_absent_job_workflow_ref_is_denied(policy):
 @POLICIES
 def test_an_unexpected_runner_environment_is_denied(policy):
     with pytest.raises(Denied, match="runner environment"):
-        authorize_fn(claims(runner_environment="github-hosted"), {}, policy)
+        authorize_fn(claims(runner_environment="self-hosted"), {}, policy)
     with pytest.raises(Denied, match="runner environment"):
         authorize_fn(claims(runner_environment=None), {}, policy)
 
 
-def test_the_admitted_runner_environment_can_actually_reach_run():
-    """The policy and the NetworkPolicy have to describe an overlapping set of callers.
-
-    They did not: the allow-list required `github-hosted` while `sandbox-agent-ingress`
-    admits only the in-cluster `arc-runners` namespace to a ClusterIP, so the admissible
-    and the reachable sets were disjoint and flipping REQUIRE_AUTH would have refused
-    every request. Neither file can see the other, so nothing caught it — this is the
-    thing that does.
-    """
-    policy_yaml = MODULE / "kubernetes" / "base" / "networkpolicy.yaml"
+def _ingress_namespaces() -> list[str]:
+    """The namespaces `sandbox-agent-ingress` lets reach the dispatcher."""
+    document = MODULE / "kubernetes" / "base" / "networkpolicy.yaml"
     ingress = next(
         d
-        for d in yaml.safe_load_all(policy_yaml.read_text())
+        for d in yaml.safe_load_all(document.read_text())
         if d and d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "sandbox-agent-ingress"
     )
-    sources = [
+    return [
         peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
         for rule in ingress["spec"]["ingress"]
         for peer in rule["from"]
         if "namespaceSelector" in peer
     ]
-    assert sources, "sandbox-agent-ingress admits no namespace this test can read"
-    assert all(ns != "" for ns in sources)
-    # Every admitted source is an in-cluster namespace, so every caller that can reach
-    # /run mints a self-hosted token. A github-hosted-only policy admits nobody.
-    assert "github-hosted" not in authorize.ALLOWED_RUNNER_ENVIRONMENTS, (
-        f"/run is reachable only from {sources}, which are in-cluster namespaces — a token minted there "
-        "reports runner_environment=self-hosted, so admitting github-hosted alone admits no caller at all"
+
+
+def _deployed_require_auth() -> str:
+    """The literal REQUIRE_AUTH the dispatcher Deployment ships."""
+    deployment = next(
+        d
+        for d in yaml.safe_load_all(DISPATCHER_MANIFEST.read_text())
+        if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "sandbox-dispatcher"
     )
-    assert "self-hosted" in authorize.ALLOWED_RUNNER_ENVIRONMENTS
+    for container in deployment["spec"]["template"]["spec"]["containers"]:
+        assert not container.get("envFrom"), f"{container['name']} could set REQUIRE_AUTH out of this test's sight"
+        for entry in container.get("env", []):
+            if entry["name"] == "REQUIRE_AUTH":
+                assert "value" in entry, "REQUIRE_AUTH is set from a source this test cannot read"
+                return entry["value"]
+    raise AssertionError("dispatcher.yaml sets no REQUIRE_AUTH")
+
+
+def test_the_flag_is_off_while_no_admissible_caller_can_reach_run():
+    """Enforcement may not be enabled while the policy admits nobody who can connect.
+
+    `/run` is a ClusterIP and `sandbox-agent-ingress` admits in-cluster namespaces only,
+    so every caller that can reach it mints a SELF-HOSTED token — while the policy admits
+    `github-hosted` alone. That disjointness is deliberate and fail-closed (see the
+    comment on ALLOWED_RUNNER_ENVIRONMENTS), but it makes REQUIRE_AUTH=true a total
+    outage rather than a hardening step, and the two files that would tell you so cannot
+    see each other.
+
+    So this does NOT assert the sets overlap — they do not, yet. It asserts the pair is
+    consistent: widen the policy, or land the caller migration, BEFORE flipping the flag.
+    """
+    reachable_is_in_cluster = bool(_ingress_namespaces())
+    admits_only_github_hosted = set(authorize.ALLOWED_RUNNER_ENVIRONMENTS) == {"github-hosted"}
+    if reachable_is_in_cluster and admits_only_github_hosted:
+        assert _deployed_require_auth() == "false", (
+            f"REQUIRE_AUTH is enabled, but /run is reachable only from {_ingress_namespaces()} — in-cluster "
+            "namespaces, whose runners mint self-hosted tokens — while the policy admits github-hosted only. "
+            "Every request would be refused. See README 'Before enforcement can be enabled'."
+        )
 
 
 @POLICIES
@@ -203,7 +227,7 @@ def test_the_allow_list_is_code_not_configuration():
     authorize.py grows a way to be configured from outside git.
     """
     source = Path(authorize.__file__).read_text()
-    for reader in ("os.environ", "getenv", "import os"):
+    for reader in ("os.environ", "os.getenv", "getenv", "import os", "from os import", "open(", "read_text"):
         assert reader not in source, f"authorize.py references {reader!r} — the policy must stay a code constant"
 
 
@@ -211,10 +235,16 @@ def test_every_allowed_caller_carries_its_own_workflow_prefix():
     """The prefix is per caller, not global. A single global one would match a second
     entry on repository id and then deny it at the workflow check, which reads as a policy
     bug rather than as the misconfiguration it is."""
+    names = [c["name"] for c in authorize.ALLOWED_CALLERS]
+    assert len(names) == len(set(names)), (
+        f"two allowed callers share a name, which is the /status ownership key: {names}"
+    )
     for caller in authorize.ALLOWED_CALLERS:
-        prefix = caller["workflow_prefix"]
-        assert prefix.startswith(caller["name"] + "/"), (
-            f"{caller['name']} has workflow_prefix {prefix!r}, which no workflow of its own can match"
+        # Exactly `owner/repo/`, not merely starting with it: `pytorch/ciforge/nonexistent`
+        # starts with the repo and still matches no workflow that repo can produce.
+        assert caller["workflow_prefix"] == caller["name"] + "/", (
+            f"{caller['name']} has workflow_prefix {caller['workflow_prefix']!r}; it must be exactly "
+            f"{caller['name'] + '/'!r}, or it names a path no workflow of that repo can have"
         )
 
 

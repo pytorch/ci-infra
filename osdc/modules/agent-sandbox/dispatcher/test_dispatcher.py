@@ -725,7 +725,11 @@ class TestAuthenticatedSurface:
         assert payload["task_id"] == task_id
         assert payload["state"] in ("running", "done")
 
-        # ...and the same task is invisible to a different authenticated caller.
+        # ...and a task owned by somebody else stays invisible to this authenticated
+        # caller, which is the half that would break if the two sides derived the owner
+        # differently. Note what this does NOT prove: two allow-list entries sharing a
+        # `name` would share results, and only test_every_allowed_caller_carries_its_own_
+        # workflow_prefix's uniqueness assertion stands between us and that.
         tasks._finish(task_id, {"report": "mine"})
         other = tasks.start_task("someone-else")
         tasks._finish(other, {"report": "theirs"})
