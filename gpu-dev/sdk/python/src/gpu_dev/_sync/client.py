@@ -80,7 +80,7 @@ class GpuDev:
         Args:
             gpu_type: GPU type (``"h100"``, ``"b200"``, ``"a100"``, ``"t4"``, ...).
             gpu_count: Number of GPUs (1, 2, 4, or 8 depending on type).
-            hours: Duration in hours (max 48 with extensions).
+            hours: Initial reservation duration in hours.
             name: Optional human-readable name for the reservation.
             jupyter: Enable Jupyter Lab access.
             disk_name: Persistent disk to attach.

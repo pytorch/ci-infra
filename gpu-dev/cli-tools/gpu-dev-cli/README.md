@@ -594,8 +594,8 @@ Host gpu-dev-*
 |-------|-------|
 | Maximum duration | 24 hours |
 | Minimum duration | 5 minutes (0.0833 hours) |
-| Extension | Once, up to 24 additional hours |
-| Total max time | 48 hours (24h initial + 24h extension) |
+| Extension | Up to 24 additional hours per request |
+| Total max time | 48 hours for multi-GPU reservations; unlimited for single-GPU reservations |
 
 **Expiry Warnings**:
 - 30 minutes before expiry

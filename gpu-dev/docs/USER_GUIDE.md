@@ -1099,8 +1099,9 @@ gpu-dev edit <reservation-id> --extend
 
 **Limits:**
 - Maximum initial duration: 24 hours
-- Maximum extension: 24 additional hours
-- Total maximum: 48 hours
+- Maximum extension per request: 24 hours
+- Total maximum: 48 hours for multi-GPU reservations; single-GPU reservations
+  can be extended repeatedly with no total duration limit
 
 ### Cancel a Reservation
 
@@ -1430,7 +1431,10 @@ gpu-dev config show
 
 **Q: How long can I keep a reservation?**
 
-A: Maximum 24 hours initially. You can extend once for up to 24 additional hours (48 hours total). Use `gpu-dev edit <id> --extend` before your reservation expires.
+A: Maximum 24 hours initially. Each extension can add up to 24 hours. Multi-GPU
+reservations have a 48-hour total limit, while single-GPU reservations can be
+extended repeatedly with no total duration limit. Use
+`gpu-dev edit <id> --extend` before your reservation expires.
 
 **Q: What happens when my reservation expires?**
 
