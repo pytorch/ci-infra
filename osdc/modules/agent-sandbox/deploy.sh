@@ -179,14 +179,21 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 # earlier revision guarded only the wait and claimed in this comment that a failure
 # warns; it did not.
 #
-# The Job this creates is owned by nobody — the CronJob's history limits do not reap it —
-# so it relies on the `ttlSecondsAfterFinished` in that CronJob's jobTemplate, which
-# `--from` copies. Without it every deploy would leave a Job and a Pod behind for good.
+# This Job is owned by NOBODY: the CronJob's successfulJobsHistoryLimit only reaps Jobs
+# the CronJob itself created, so without the delete below every deploy would leave a Job
+# and its Pod in the namespace for good. A ttlSecondsAfterFinished on the CronJob's
+# jobTemplate would ride along here and be tidier, but it would also override those
+# history limits for the scheduled Jobs — kube-linter rejects exactly that. Deleting only
+# on SUCCESS is the better trade anyway: a Job that did not complete is the one whose logs
+# you want. Residual: a deploy interrupted between create and delete leaks one Job.
 JWKS_JOB="jwks-refresher-deploy-$(date +%s)"
 echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
 if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresher -n "$NAMESPACE"; then
-  kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s \
-    || echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
+  if kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s; then
+    kubectl delete job "$JWKS_JOB" -n "$NAMESPACE" --ignore-not-found
+  else
+    echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — kept for inspection; check its logs before enabling REQUIRE_AUTH."
+  fi
 else
   echo "[agent-sandbox] Warning: could not start ${JWKS_JOB}; the CronJob will attempt another refresh within 6h."
 fi
