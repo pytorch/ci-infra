@@ -46,7 +46,7 @@ def _patch_extension_dependencies(lambda_index, monkeypatch, reservation):
     return update_error
 
 
-@pytest.mark.parametrize("user_id", ["bobren", "huydhn"])
+@pytest.mark.parametrize("user_id", ["bobren@meta.com", "huydhn@meta.com"])
 def test_allowlisted_single_gpu_extension_has_no_total_duration_limit(
     lambda_index, monkeypatch, aws_mocks, user_id
 ):
@@ -66,10 +66,10 @@ def test_allowlisted_single_gpu_extension_has_no_total_duration_limit(
 def test_non_allowlisted_single_gpu_extension_keeps_total_duration_limit(
     lambda_index, monkeypatch, aws_mocks
 ):
-    reservation = _reservation("alice", Decimal("1"))
+    reservation = _reservation("alice@meta.com", Decimal("1"))
     update_error = _patch_extension_dependencies(lambda_index, monkeypatch, reservation)
 
-    assert lambda_index.process_extend_reservation_action(_record("alice")) is True
+    assert lambda_index.process_extend_reservation_action(_record("alice@meta.com")) is True
 
     update_error.assert_called_once()
     assert "beyond 48 hours total" in update_error.call_args.args[1]
@@ -79,10 +79,10 @@ def test_non_allowlisted_single_gpu_extension_keeps_total_duration_limit(
 def test_allowlisted_multi_gpu_extension_keeps_total_duration_limit(
     lambda_index, monkeypatch, aws_mocks
 ):
-    reservation = _reservation("bobren", Decimal("8"))
+    reservation = _reservation("bobren@meta.com", Decimal("8"))
     update_error = _patch_extension_dependencies(lambda_index, monkeypatch, reservation)
 
-    assert lambda_index.process_extend_reservation_action(_record("bobren")) is True
+    assert lambda_index.process_extend_reservation_action(_record("bobren@meta.com")) is True
 
     update_error.assert_called_once()
     assert "beyond 48 hours total" in update_error.call_args.args[1]
