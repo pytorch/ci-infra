@@ -26,6 +26,7 @@ import hashlib
 import re
 from pathlib import Path
 
+import authorize
 import kube
 import pytest
 import yaml
@@ -86,7 +87,15 @@ def deployed_image(monkeypatch):
 
 def a_job(**pod_overrides) -> dict:
     """A real job_manifest() with the pod spec optionally mutated."""
-    job = kube.job_manifest("abc123456789", {"repo": "pytorch/pytorch", "task": "hello"})
+    grant = authorize.Grant(
+        caller="pytorch/ciforge",
+        workflow_ref="pytorch/ciforge/.github/workflows/x.yml@refs/heads/main",
+        clone_repo="pytorch/pytorch",
+        model="",
+        task="hello",
+        ref="",
+    )
+    job = kube.job_manifest("abc123456789", grant)
     job["spec"]["template"]["spec"].update(pod_overrides)
     return job
 
@@ -405,12 +414,12 @@ EXPRESSION_DIGESTS = {
     "task pods must declare no init containers": "37fef9251087",
     "task containers must not use envFrom — it pulls a whole Secret or ConfigMap into the sandbox": "89e7123f9143",
     "task container env must be literal values — valueFrom reads Secrets, ConfigMaps and pod fields into the sandbox": "794a441e820d",
-    "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged": "97536754281c",
-    "task containers must not add Linux capabilities": "ddba99823b9e",
-    "task containers must not unmask /proc": "9befcf62623e",
+    "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged": "8c0bbaf088a3",
+    "task containers must not add Linux capabilities": "d15fed6ab652",
+    "task containers must not unmask /proc": "f9d3102f1226",
     "task containers must not publish a hostPort": "aadf2d231816",
-    "task containers must set cpu, memory and ephemeral-storage limits": "c6288f00cdd5",
-    "task containers must request exactly what they limit (Guaranteed QoS)": "e3569a0a6e49",
+    "task containers must set cpu, memory and ephemeral-storage limits": "82ea58d521a8",
+    "task containers must request exactly what they limit (Guaranteed QoS)": "e5824532099d",
     "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": "3bf5faca144b",
     "task Jobs must run one pod at a time (parallelism: 1)": "240258b6ce47",
     "task Jobs must run exactly one pod (completions: 1)": "dd57deb1df82",
@@ -435,7 +444,28 @@ VARIABLE_DIGESTS = {
 
 
 def _digest(expression: str) -> str:
-    return hashlib.sha256(re.sub(r"\s+", " ", expression).strip().encode()).hexdigest()[:12]
+    """The EXACT parsed expression, not a whitespace-normalised one.
+
+    Normalising first would have collapsed whitespace inside CEL string literals too, so
+    a real semantic change like 'a  b' -> 'a b' would keep its digest.
+
+    The price is that reformatting is no longer free, and the expressions where it costs
+    most are exactly the ones this change had to re-pin. YAML folds a `>-` scalar's single
+    newlines into single spaces, so re-wrapping usually leaves the value identical — but a
+    run of whitespace the old normalisation collapsed now survives into the digest, and a
+    more-indented line inside a folded scalar keeps its newline instead of folding. So
+    read a digest failure as "re-read the mirror beside this rule", never as "the
+    formatter moved something and the pin needs bumping".
+    """
+    return hashlib.sha256(expression.encode()).hexdigest()[:12]
+
+
+def test_every_rule_has_a_distinct_message(policy):
+    """Both MIRRORS and EXPRESSION_DIGESTS are keyed by message, so two rules sharing one
+    would collapse into a single entry and quietly leave the other rule unguarded."""
+    messages = [v["message"] for v in policy["spec"]["validations"]]
+    duplicated = sorted({m for m in messages if messages.count(m) > 1})
+    assert not duplicated, f"these messages are used by more than one rule: {duplicated}"
 
 
 def test_no_variable_changed_without_being_rechecked(policy):
@@ -528,3 +558,19 @@ def _deployed_env(name: str) -> str | None:
                 assert "value" in entry, f"{name} is set from {entry.get('valueFrom')}, which this test cannot read"
                 return entry["value"]
     return None
+
+
+def test_the_jwks_configmap_ships_with_no_data(documents):
+    """Seeding it in the manifest made every deploy blank the live signing keys: apply
+    reasserts what the manifest declares, so the seed overwrote whatever the refresher had
+    written. The content belongs to the refresher; declaring any `data` here brings the
+    bug straight back."""
+    oidc_path = POLICY_PATH.parent / "oidc.yaml"
+    configmap = next(
+        d
+        for d in yaml.safe_load_all(oidc_path.read_text())
+        if d and d["kind"] == "ConfigMap" and d["metadata"]["name"] == "oidc-jwks"
+    )
+    assert "data" not in configmap, (
+        "oidc-jwks must declare no data — see the comment above it in oidc.yaml before changing this"
+    )

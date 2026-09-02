@@ -85,13 +85,17 @@ def _ssl_context() -> ssl.SSLContext:
     return ctx
 
 
-def api_request(method: str, path: str, body: dict | None = None, raw: bool = False):
-    """One API call. Returns parsed JSON, or text when raw (pod logs are not JSON)."""
+def api_request(method: str, path: str, body: dict | None = None, raw: bool = False, content_type: str = ""):
+    """One API call. Returns parsed JSON, or text when raw (pod logs are not JSON).
+
+    `content_type` exists for PATCH, which the API server rejects as application/json —
+    it wants to be told which patch dialect the body is in.
+    """
     url = f"{_k8s_api()}{path}"
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Authorization": f"Bearer {_read_token()}"}
     if data:
-        headers["Content-Type"] = "application/json"
+        headers["Content-Type"] = content_type or "application/json"
     if not raw:
         headers["Accept"] = "application/json"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)  # noqa: S310
@@ -113,8 +117,13 @@ def api_request(method: str, path: str, body: dict | None = None, raw: bool = Fa
         raise ApiError(f"{method} {path} -> unparseable response: {exc}") from None
 
 
-def job_manifest(task_id: str, spec: dict) -> dict:
+def job_manifest(task_id: str, grant) -> dict:
     """The Job for one task: the task image under gVisor, with no identity.
+
+    Takes a `Grant`, never a request body, and that signature is the layering rule made
+    unavoidable: by the time execution reaches this function every decision has been
+    made, and there is nothing here to make one from. A future capability manifest
+    changes where the Grant's values come from and leaves this function untouched.
 
     Every isolation property of a task pod is decided here, which is why
     kubernetes/base/admissionpolicy.yaml restates the same contract in the API server:
@@ -154,10 +163,10 @@ def job_manifest(task_id: str, spec: dict) -> dict:
                                 {"name": "AWS_REGION", "value": REGION},
                                 {"name": "SIGV4_PROXY", "value": SIGV4_PROXY},
                                 {"name": "BEDROCK_DEFAULT_MODEL_ID", "value": DEFAULT_MODEL},
-                                {"name": "SANDBOX_REPO", "value": spec["repo"]},
-                                {"name": "SANDBOX_REF", "value": spec.get("ref", "")},
-                                {"name": "SANDBOX_TASK", "value": spec.get("task", "")},
-                                {"name": "SANDBOX_MODEL", "value": spec.get("model", "")},
+                                {"name": "SANDBOX_REPO", "value": grant.clone_repo},
+                                {"name": "SANDBOX_REF", "value": grant.ref},
+                                {"name": "SANDBOX_TASK", "value": grant.task},
+                                {"name": "SANDBOX_MODEL", "value": grant.model},
                             ],
                             "securityContext": {
                                 "runAsNonRoot": True,
@@ -188,8 +197,8 @@ def job_manifest(task_id: str, spec: dict) -> dict:
     }
 
 
-def create_job(task_id: str, spec: dict) -> None:
-    api_request("POST", f"/apis/batch/v1/namespaces/{NAMESPACE}/jobs", body=job_manifest(task_id, spec))
+def create_job(task_id: str, grant) -> None:
+    api_request("POST", f"/apis/batch/v1/namespaces/{NAMESPACE}/jobs", body=job_manifest(task_id, grant))
 
 
 def job_state(task_id: str) -> tuple[str, str]:

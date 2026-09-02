@@ -167,6 +167,37 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
     -e "s|__K8S_API_CIDR__|${K8S_API_CIDR}|g" \
   | kubectl_apply_if_changed -f -
 
+# --- Populate the OIDC signing keys now, not at the CronJob's next tick ---
+# The ConfigMap carries no keys until a refresh runs, so until this succeeds the
+# dispatcher refuses every authenticated request. The CronJob is every 6 hours, which is
+# the wrong amount of time to wait after a first deploy. Named per run so repeated
+# deploys do not collide.
+#
+# BOTH steps are guarded, and that is the point: under `set -euo pipefail` an unguarded
+# `kubectl create job` aborts the whole deploy, which is not what a failed key fetch
+# deserves — everything else has already applied and the CronJob retries on its own. An
+# earlier revision guarded only the wait and claimed in this comment that a failure
+# warns; it did not.
+#
+# This Job is owned by NOBODY: the CronJob's successfulJobsHistoryLimit only reaps Jobs
+# the CronJob itself created, so without the delete below every deploy would leave a Job
+# and its Pod in the namespace for good. A ttlSecondsAfterFinished on the CronJob's
+# jobTemplate would ride along here and be tidier, but it would also override those
+# history limits for the scheduled Jobs — kube-linter rejects exactly that. Deleting only
+# on SUCCESS is the better trade anyway: a Job that did not complete is the one whose logs
+# you want. Residual: a deploy interrupted between create and delete leaks one Job.
+JWKS_JOB="jwks-refresher-deploy-$(date +%s)"
+echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
+if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresher -n "$NAMESPACE"; then
+  if kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s; then
+    kubectl delete job "$JWKS_JOB" -n "$NAMESPACE" --ignore-not-found
+  else
+    echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — kept for inspection; check its logs before enabling REQUIRE_AUTH."
+  fi
+else
+  echo "[agent-sandbox] Warning: could not start ${JWKS_JOB}; the CronJob will attempt another refresh within 6h."
+fi
+
 # --- Prune objects earlier designs left behind (idempotent) ---
 # `kubectl apply` never deletes what the manifests stop containing, so anything dropped
 # from kubernetes/base/ keeps running until it is deleted by name. This has already bitten
@@ -178,9 +209,14 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 #                            The Service of the same name stays: it now points at the
 #                            dispatcher, so callers keep their address.
 #   sandbox-agent-egress   — the warm worker's egress, replaced by sandbox-task-egress.
+#   jwks-refresh (CronJob) — renamed to jwks-refresher, matching its ServiceAccount and
+#                            the rest of its objects. Listed rather than assumed absent:
+#                            if any cluster ever applied the old name, `apply` leaves it
+#                            running and two CronJobs race for the same ConfigMap.
 kubectl delete networkpolicy default-deny-ingress -n "$NAMESPACE" --ignore-not-found
 kubectl delete networkpolicy sandbox-agent-egress -n "$NAMESPACE" --ignore-not-found
 kubectl delete deployment sandbox-agent -n "$NAMESPACE" --ignore-not-found
+kubectl delete cronjob jwks-refresh -n "$NAMESPACE" --ignore-not-found
 
 # --- Revoke the sandbox's own AWS identity (idempotent) ---
 # A cluster deployed before the proxies existed has an IRSA role annotated on the
@@ -209,7 +245,7 @@ kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=1
 echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd;"
 echo "each call runs in its own gVisor pod, up to the namespace quota:"
 echo "    curl -sf -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \\"
-echo "      -d '{\"repo\":\"pytorch/pytorch\",\"ref\":\"main\",\"task\":\"...\"}'"
+echo "      -d '{\"ref\":\"main\",\"task\":\"...\"}'   # the repo to clone is policy, not a field"
 echo "  or, without holding the connection open:"
-echo "    curl -sf -X POST .../run -d '{\"repo\":\"...\",\"wait\":false}'   # -> {\"task_id\": ...}"
+echo "    curl -sf -X POST .../run -d '{\"wait\":false}'   # -> {\"task_id\": ...}"
 echo "    curl -sf .../status/<task_id>"

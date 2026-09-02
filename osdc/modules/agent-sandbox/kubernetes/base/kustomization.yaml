@@ -18,6 +18,7 @@ resources:
   - serviceaccounts.yaml
   - rbac.yaml
   - admissionpolicy.yaml
+  - oidc.yaml
   - quota.yaml
   - sigv4-proxy.yaml
   - proxy-pdb.yaml
