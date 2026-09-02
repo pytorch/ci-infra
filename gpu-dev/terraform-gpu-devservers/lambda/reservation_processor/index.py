@@ -48,7 +48,7 @@ EKS_CLUSTER_NAME = os.environ["EKS_CLUSTER_NAME"]
 REGION = os.environ["REGION"]
 MAX_RESERVATION_HOURS = int(os.environ["MAX_RESERVATION_HOURS"])
 DEFAULT_TIMEOUT_HOURS = int(os.environ["DEFAULT_TIMEOUT_HOURS"])
-UNLIMITED_EXTENSION_UNIXNAME_ALLOWLIST = frozenset({"bobren", "huydhn"})
+UNLIMITED_EXTENSION_USER_ALLOWLIST = frozenset({"bobren@meta.com", "huydhn@meta.com"})
 QUEUE_URL = os.environ["QUEUE_URL"]
 PRIMARY_AVAILABILITY_ZONE = os.environ["PRIMARY_AVAILABILITY_ZONE"]
 GPU_DEV_CONTAINER_IMAGE = os.environ.get(
@@ -10490,11 +10490,9 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
             # Check maximum total duration (48 hours from launch time)
             MAX_TOTAL_HOURS = 48
             launched_at = reservation.get("launched_at")
-            reservation_unixname = str(
-                reservation.get("user_id", "")).strip().lower().partition("@")[0]
             has_unlimited_extensions = (
                 reservation.get("gpu_count") == 1
-                and reservation_unixname in UNLIMITED_EXTENSION_UNIXNAME_ALLOWLIST
+                and reservation.get("user_id") in UNLIMITED_EXTENSION_USER_ALLOWLIST
             )
             if launched_at and not has_unlimited_extensions:
                 if isinstance(launched_at, str):
@@ -10516,7 +10514,7 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
                     f"Extension approved: total duration will be {total_duration:.1f}h / {MAX_TOTAL_HOURS}h max")
             elif has_unlimited_extensions:
                 logger.info(
-                    f"Extension approved: allowlisted user {reservation_unixname} has no total duration limit for single-GPU reservations"
+                    f"Extension approved: allowlisted user {reservation.get('user_id')} has no total duration limit for single-GPU reservations"
                 )
 
             logger.info(
