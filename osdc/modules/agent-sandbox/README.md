@@ -64,9 +64,12 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 
   Waits for the task by default, so a caller sees the result on the same connection —
   budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
-  returns `202 {"task_id"}` instead. `repo` and `model` are still accepted for
-  compatibility but must agree with policy, and disagreeing is a `403` — see *Who may
-  call* below for why the request does not get to choose them.
+  returns `202 {"task_id"}` instead. `repo` and `model` are still *parsed* — a non-string
+  is a `400` — but neither reaches the Job: the Grant decides both. A `repo` that matches
+  policy is accepted and one that does not is a `403`; **any non-empty `model` is a `403`
+  today**, because v1's policy model is the empty string meaning "the dispatcher's
+  configured default", so there is no value a caller can send that agrees with it. Send
+  neither. See *Who may call* below.
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
 - `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
@@ -82,9 +85,15 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 Bedrock budget" and belongs in git history and review.
 
 v1 admits exactly one caller: a workflow in **`pytorch/ciforge`**, on a protected ref, on
-a github-hosted runner, on an event that is not from the pull-request family. Callers are
+a **self-hosted** runner, on an event that is not from the pull-request family. Callers are
 matched on `repository_id`/`repository_owner_id`, never on names, because a repository can
 be renamed and its old name re-registered by someone else.
+
+Self-hosted is a reachability fact rather than a trust one: `/run` is a ClusterIP that
+`sandbox-agent-ingress` opens to the `arc-runners` namespace only, so a github-hosted
+runner cannot route to it at all. An earlier draft required `github-hosted` and was
+therefore unsatisfiable — see *Before enforcement can be enabled* below, because that
+mismatch has not entirely gone away.
 
 **The request decides less than it looks like it does.** Verification produces a frozen
 `Grant`, and the Job is built from the Grant alone — never from the request body. The
@@ -103,10 +112,31 @@ Two residuals worth knowing:
   are what bound the damage in the meantime. PyPI's Warehouse solves this with a `jti`
   table, which is the shape to copy if this matters later.
 
-### Enabling enforcement
+### Before enforcement can be enabled
 
-`REQUIRE_AUTH` in `kubernetes/base/dispatcher.yaml` ships **`false`**, and flipping it to
-`true` is the point of this work, not an optional extra. It governs exactly one case: a
+**There is no caller today that would survive the flip, and that is a decision this PR
+does not make.** The policy admits `pytorch/ciforge`; every workflow in that repo runs on
+`ubuntu-latest`, and a github-hosted runner cannot reach a ClusterIP in this cluster. The
+only thing that actually calls `/run` is this module's own `test-agent-sandbox`
+integration job, which runs from `pytorch/ci-infra` — a repo the allow-list does not
+contain — and sends no token at all. So flipping `REQUIRE_AUTH` today would refuse every
+request, including the integration test that proves the sandbox works.
+
+Closing that needs one of two choices, and they are not equivalent:
+
+- **Run the caller inside the cluster.** A `pytorch/ciforge` workflow on an OSDC
+  `arc-runners` runner mints a self-hosted token, reaches the Service, and is admitted as
+  written. Nothing else changes.
+- **Add `pytorch/ci-infra` to `ALLOWED_CALLERS`** so the integration test authenticates.
+  That is a policy expansion — a second repository able to spend the Bedrock budget — and
+  belongs in review, not in a follow-up commit.
+
+Until one of them lands, treat `REQUIRE_AUTH=false` as the shipped state rather than a
+temporary one.
+
+### What the flag does
+
+`REQUIRE_AUTH` in `kubernetes/base/dispatcher.yaml` ships **`false`**. It governs exactly one case: a
 request with no `Authorization` header at all. A token that *is* presented is always
 verified and always authorized, whatever the flag says, so a forged or denied token is
 rejected either way.
@@ -133,8 +163,10 @@ object and nothing more.
 The manifest declares that ConfigMap with **no `data`** — the content belongs to the
 refresher. That is load-bearing rather than tidy: seeding it in the manifest meant every
 `kubectl apply` put the seed back over live keys, so each deploy blanked them. `deploy.sh`
-runs a refresh immediately after applying, so the window with no keys is seconds rather
-than up to six hours, and the dispatcher fails closed throughout it.
+runs a refresh immediately after applying, so the window with no keys is a minute or two
+rather than up to six hours, and the dispatcher fails closed throughout it. A minute or
+two, not seconds: the refresh Job has to finish and then the kubelet has to notice the
+ConfigMap changed, which it does on its own sync period.
 
 The refresher writes a `fetched_at` timestamp *into* the document. That is not
 decoration: a ConfigMap volume only updates when its content changes and GitHub rotates
@@ -157,8 +189,11 @@ one image does not re-roll the other. Requires a local docker daemon.
 - `ci-agent-sandbox` (`agent/`) — the untrusted task: `task.py` runs one task and exits,
   `sandbox.py` is the clone + Bedrock library. Holds nothing.
 - `ci-agent-sandbox-dispatcher` (`dispatcher/`) — the trusted side: the HTTP surface and
-  the Job creation. Separate image so its dependencies never ship inside the sandbox;
-  both are stdlib-only today.
+  the Job creation. The task image is stdlib-only; this one is not, and the separate-image
+  split is what keeps that from mattering. It installs `python3-jwt` and
+  `python3-cryptography` **from apt, not pip**, because GitHub signs its OIDC tokens
+  RS256 and the standard library has no public-key crypto at all. None of that reaches
+  the sandbox: `agent/` is built from its own Dockerfile and gains nothing from the line.
 
 ## Deploy
 
@@ -337,13 +372,15 @@ signing proxy, without the runner or worker holding a token.
   `Thread.start()` that fails leaves the slot reserved with no thread to release it.
 - **The proxy image floats** (`aws-sigv4-proxy:latest`) — digest-pin before
   non-prototype use.
-- **Callers are unauthenticated and unbounded.** `/run` has no notion of who is
-  asking: any pod in `arc-runners` can call it, and the NetworkPolicy is the only
-  gate. With one serial worker, a caller looping `/run` holds the single slot for up
-  to the clone plus invoke timeout and keeps every other consumer on `429` — visible
-  as a refusal rather than a hang, but still a denial of service. Fine while there
-  is one consumer. A caller identity and per-request ephemerality are the same piece
-  of work and neither exists — do it before a second consumer does.
+- **Callers are unauthenticated in practice, and unbounded either way.** Caller identity
+  now exists — `dispatcher/authorize.py`, OIDC-verified — but it is not enforced:
+  `REQUIRE_AUTH` ships `false` and cannot be flipped until there is a caller the policy
+  admits (see *Before enforcement can be enabled*), so today any pod in `arc-runners` can
+  still call `/run` with no token and the NetworkPolicy remains the only real gate.
+  Quotas are a separate gap that authentication does not close: a caller looping `/run`
+  holds slots for up to the clone plus invoke timeout and keeps every other consumer on
+  `429` — a refusal rather than a hang, but still a denial of service. There is no
+  per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
 - **The clone reaches the internet directly.** `sandbox-agent-egress` allows TCP 443
   to any address because `NetworkPolicy` selects on CIDR and GitHub's ranges move.
   Closing it means git behind a proxy the way Bedrock is, landing together with the

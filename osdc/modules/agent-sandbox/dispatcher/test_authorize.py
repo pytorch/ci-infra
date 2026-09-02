@@ -14,11 +14,15 @@ that is only promised in a design doc is not a seam.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import authorize
 import pytest
+import yaml
 from authorize import Denied
 from authorize import authorize as authorize_fn
+
+MODULE = Path(__file__).resolve().parent.parent
 
 # A token from the caller we do allow, with every claim the policy reads.
 GOOD_CLAIMS = {
@@ -27,7 +31,9 @@ GOOD_CLAIMS = {
     "workflow_ref": "pytorch/ciforge/.github/workflows/ai-lint-run.yml@refs/heads/main",
     "job_workflow_ref": "pytorch/ciforge/.github/workflows/ai-lint-run.yml@refs/heads/main",
     "event_name": "workflow_run",
-    "runner_environment": "github-hosted",
+    # self-hosted, because only an in-cluster runner can reach the Service at all —
+    # see test_the_admitted_runner_environment_can_actually_reach_run below.
+    "runner_environment": "self-hosted",
     "ref_protected": "true",
 }
 
@@ -129,11 +135,43 @@ def test_an_absent_job_workflow_ref_is_denied(policy):
 
 
 @POLICIES
-def test_a_self_hosted_runner_is_denied(policy):
-    """arc-runners is the namespace that can already reach /run over the network. A token
-    minted there must not also be accepted."""
+def test_an_unexpected_runner_environment_is_denied(policy):
     with pytest.raises(Denied, match="runner environment"):
-        authorize_fn(claims(runner_environment="self-hosted"), {}, policy)
+        authorize_fn(claims(runner_environment="github-hosted"), {}, policy)
+    with pytest.raises(Denied, match="runner environment"):
+        authorize_fn(claims(runner_environment=None), {}, policy)
+
+
+def test_the_admitted_runner_environment_can_actually_reach_run():
+    """The policy and the NetworkPolicy have to describe an overlapping set of callers.
+
+    They did not: the allow-list required `github-hosted` while `sandbox-agent-ingress`
+    admits only the in-cluster `arc-runners` namespace to a ClusterIP, so the admissible
+    and the reachable sets were disjoint and flipping REQUIRE_AUTH would have refused
+    every request. Neither file can see the other, so nothing caught it — this is the
+    thing that does.
+    """
+    policy_yaml = MODULE / "kubernetes" / "base" / "networkpolicy.yaml"
+    ingress = next(
+        d
+        for d in yaml.safe_load_all(policy_yaml.read_text())
+        if d and d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "sandbox-agent-ingress"
+    )
+    sources = [
+        peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
+        for rule in ingress["spec"]["ingress"]
+        for peer in rule["from"]
+        if "namespaceSelector" in peer
+    ]
+    assert sources, "sandbox-agent-ingress admits no namespace this test can read"
+    assert all(ns != "" for ns in sources)
+    # Every admitted source is an in-cluster namespace, so every caller that can reach
+    # /run mints a self-hosted token. A github-hosted-only policy admits nobody.
+    assert "github-hosted" not in authorize.ALLOWED_RUNNER_ENVIRONMENTS, (
+        f"/run is reachable only from {sources}, which are in-cluster namespaces — a token minted there "
+        "reports runner_environment=self-hosted, so admitting github-hosted alone admits no caller at all"
+    )
+    assert "self-hosted" in authorize.ALLOWED_RUNNER_ENVIRONMENTS
 
 
 @POLICIES
@@ -154,13 +192,30 @@ def test_a_non_string_task_is_denied(policy):
         authorize_fn(claims(), {"task": {"$ref": "something"}}, policy)
 
 
-def test_the_allow_list_is_code_not_configuration(monkeypatch):
+def test_the_allow_list_is_code_not_configuration():
     """It is the answer to "who may spend our Bedrock budget", so it belongs in git
-    history and code review. An env var would move that decision out of both."""
-    monkeypatch.setenv("ALLOWED_CALLERS", "attacker/repo")
-    monkeypatch.setenv("ALLOWED_WORKFLOW_PREFIX", "attacker/repo/")
-    with pytest.raises(Denied):
-        authorize_fn(claims(repository_id="999"), {}, None)
+    history and code review. An env var would move that decision out of both.
+
+    Asserted against the source rather than by setting env vars and watching a request
+    fail: the earlier version of this test set ALLOWED_CALLERS and ALLOWED_WORKFLOW_PREFIX
+    and then submitted claims the module constants deny anyway, so it passed whether or
+    not the module read the environment — it tested nothing. This fails the moment
+    authorize.py grows a way to be configured from outside git.
+    """
+    source = Path(authorize.__file__).read_text()
+    for reader in ("os.environ", "getenv", "import os"):
+        assert reader not in source, f"authorize.py references {reader!r} — the policy must stay a code constant"
+
+
+def test_every_allowed_caller_carries_its_own_workflow_prefix():
+    """The prefix is per caller, not global. A single global one would match a second
+    entry on repository id and then deny it at the workflow check, which reads as a policy
+    bug rather than as the misconfiguration it is."""
+    for caller in authorize.ALLOWED_CALLERS:
+        prefix = caller["workflow_prefix"]
+        assert prefix.startswith(caller["name"] + "/"), (
+            f"{caller['name']} has workflow_prefix {prefix!r}, which no workflow of its own can match"
+        )
 
 
 def test_an_unparseable_require_auth_value_crashes_rather_than_disabling_auth(monkeypatch):

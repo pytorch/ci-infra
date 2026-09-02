@@ -2,10 +2,14 @@
 
 Endpoints:
   GET  /healthz      -> {"status": "ok"}
-  POST /run          -> body {"repo","ref","task","model"?,"wait"?}
+  POST /run          -> body {"ref"?,"task"?,"wait"?}
                         wait=true (default): blocks, returns the task result
                         wait=false: returns {"task_id": ...} immediately
-  GET  /status/<id>  -> {"state": "running"|"done", ...result}
+                        `repo` and `model` are still ACCEPTED, but they are policy, not
+                        request: authorize.py decides both, and a supplied value that
+                        disagrees is a 403 rather than a substitution.
+  GET  /status/<id>  -> {"state": "running"|"done", ...result}, scoped to the caller
+                        that owns the task; anyone else's reads as 404.
 
 Everything below the parse is somebody else's file, so the rule for this one is that it
 owns request shape, status codes and response bodies — no task state, and no Kubernetes
@@ -144,18 +148,16 @@ class Handler(BaseHTTPRequestHandler):
     def _caller(self) -> str:
         """Who is asking. Raises oidc.InvalidToken (401) or authorize.Denied (403).
 
+        Literally _grant_for's answer with the body empty, rather than a second copy of
+        the same preamble — two copies of one authentication rule is how /status ends up
+        admitting a token /run would refuse. Reading a result is a smaller decision than
+        dispatching one, but "smaller" was never "different".
+
         The unauthenticated identity is a real name rather than None, so it participates
         in task ownership like any other: during the migration window unauthenticated
         callers can read each other's results, and nobody else's.
         """
-        header = self.headers.get("Authorization")
-        if header is None and not REQUIRE_AUTH:
-            return "unauthenticated"
-        # The SAME check /run runs, not a weaker identity-only one. Reading a task's
-        # result is a smaller decision than dispatching it, but "smaller" was letting a
-        # token that /run had denied — wrong event, unprotected ref, self-hosted runner —
-        # read every task owned by that repository.
-        return authorize.authorize(oidc.verify(oidc.bearer_token(header)), {}).caller
+        return self._grant_for({}).caller
 
     def _grant_for(self, spec: dict):
         """Authenticate the caller and turn the request into a Grant.

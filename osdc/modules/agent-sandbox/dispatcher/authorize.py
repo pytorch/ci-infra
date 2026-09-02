@@ -1,7 +1,12 @@
-"""Who may call, and what they get. The only file here that decides policy.
+"""Who may call, and what they get. Every authorization decision about a TOKEN is here.
 
-It imports nothing else in this process on purpose. A reviewer asking "what is a caller
-allowed to make happen?" reads this file and stops.
+It imports nothing else in this process on purpose. A reviewer asking "what may an
+authenticated caller make happen?" reads this file and stops.
+
+One decision is deliberately NOT here, and you have to read http_api.py for it: while
+`REQUIRE_AUTH` is false, a request carrying no Authorization header at all is never shown
+to this file — `http_api._grant_for` hands it a v1 Grant directly. That is the migration
+window, it is the only path that skips this file, and it disappears when the flag flips.
 
 The seam for v2 is a data type, not an interface. `authorize()` returns a frozen `Grant`
 carrying every value the run is allowed to use — the model, the repository to clone —
@@ -34,17 +39,19 @@ from dataclasses import dataclass
 # experiments before they ship to pytorch/pytorch. The numeric ids are what is actually
 # checked: a repository can be renamed and the name re-registered by someone else, while
 # repository_id and repository_owner_id are immutable.
+# `workflow_prefix` is PER CALLER, not global. GitHub spells a workflow ref
+# `owner/repo/.github/workflows/file.yml@refs/heads/main`, so the prefix names the
+# repository the workflow must live in — a second entry here with a single global prefix
+# would match on repository id and then be denied at the workflow check, which reads as a
+# policy bug rather than as the misconfiguration it is.
 ALLOWED_CALLERS = (
     {
         "name": "pytorch/ciforge",
         "repository_id": "1133856973",
         "repository_owner_id": "21003710",  # the pytorch organisation
+        "workflow_prefix": "pytorch/ciforge/",
     },
 )
-
-# The workflow files inside an allowed repo whose tokens are accepted. A prefix, because
-# GitHub spells these `owner/repo/.github/workflows/file.yml@refs/heads/main`.
-ALLOWED_WORKFLOW_PREFIX = "pytorch/ciforge/"
 
 # What an authorized run may do. v1 hardcodes both; v2 reads them from the manifest.
 # The clone target is public, which is what lets the task pod clone with no credential
@@ -62,11 +69,19 @@ V1_MODEL = ""  # empty means "the dispatcher's configured default"
 # workflow that reads PR content can shape it. The Grant is what bounds the damage.
 DENIED_EVENTS = frozenset({"pull_request", "pull_request_target", "pull_request_review", "issue_comment"})
 
-# Verified 2026-08-25: every workflow in pytorch/ciforge runs on `ubuntu-latest`. Keeping
-# this to github-hosted means a token minted on a self-hosted runner — including anything
-# in the arc-runners fleet, which is the namespace that can already reach /run over the
-# network — is not accepted.
-ALLOWED_RUNNER_ENVIRONMENTS = frozenset({"github-hosted"})
+# This USED to be {"github-hosted"}, on the observation that every workflow in
+# pytorch/ciforge runs on `ubuntu-latest`. That made the policy unsatisfiable, and the
+# observation is why: `/run` is a ClusterIP admitted by `sandbox-agent-ingress` from the
+# `arc-runners` namespace only, so a github-hosted runner cannot route to it at all. The
+# admissible set and the reachable set were disjoint, and flipping REQUIRE_AUTH would
+# have admitted nobody. test_authorize.py pins this against the NetworkPolicy.
+#
+# Read this as a REACHABILITY statement, not a trust one — it buys very little on its
+# own. What actually distinguishes a legitimate caller is the checks above and below:
+# an immutable repository id, both workflow refs inside that repo, a protected ref, and
+# a non-pull-request event. A self-hosted runner in this fleet that is running untrusted
+# code still cannot mint a token that passes those.
+ALLOWED_RUNNER_ENVIRONMENTS = frozenset({"self-hosted"})
 
 
 class Denied(RuntimeError):
@@ -81,7 +96,11 @@ class Grant:
     builder takes one of these and never sees the request body.
     """
 
-    caller: str  # "pytorch/ciforge" — for the audit line, not for any decision
+    # "pytorch/ciforge". This is an ACCESS-CONTROL KEY, not just an audit label: it is
+    # recorded as the task's owner and /status compares against it, so a task belonging
+    # to another caller reads as absent. Changing how this string is derived changes who
+    # can read whose results.
+    caller: str
     workflow_ref: str
     clone_repo: str
     model: str
@@ -134,11 +153,12 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
     # in __required_verifiable_claims__ and indexes it unguarded
     # (warehouse/oidc/models/github.py). If that turns out to be wrong the failure is a
     # clear 403 naming the claim, which is the direction to be wrong in.
+    workflow_prefix = caller["workflow_prefix"]
     workflow_ref = claims.get("workflow_ref") or ""
-    if not workflow_ref.startswith(ALLOWED_WORKFLOW_PREFIX):
+    if not workflow_ref.startswith(workflow_prefix):
         raise Denied("workflow is not on the allow-list")
     job_workflow_ref = claims.get("job_workflow_ref") or ""
-    if not job_workflow_ref.startswith(ALLOWED_WORKFLOW_PREFIX):
+    if not job_workflow_ref.startswith(workflow_prefix):
         raise Denied("job workflow is not on the allow-list")
 
     if claims.get("runner_environment") not in ALLOWED_RUNNER_ENVIRONMENTS:
@@ -154,10 +174,12 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
 
     clone_repo, model = policy(caller) if policy else (V1_CLONE_REPO, V1_MODEL)
 
-    # The request contributes the prompt and the commit to read. Everything else about
-    # the run is policy: a caller cannot name a repository to clone or a model to spend,
-    # and `repo` in the body is ignored rather than validated, so there is no version of
-    # this where a validation slip lets one through.
+    # The request contributes the prompt and the commit to read, and nothing else reaches
+    # the Grant: a caller cannot name a repository to clone or a model to spend, because
+    # this function never reads those keys. It does not follow that they are ignored —
+    # http_api.do_POST compares a supplied `repo`/`model` against the Grant afterwards and
+    # answers 403 on a mismatch, so a caller is told it was overruled rather than quietly
+    # given something else.
     task = request.get("task", "")
     ref = request.get("ref", "")
     if not isinstance(task, str) or not isinstance(ref, str):

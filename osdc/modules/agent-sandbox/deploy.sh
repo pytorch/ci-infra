@@ -178,9 +178,13 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 # deserves — everything else has already applied and the CronJob retries on its own. An
 # earlier revision guarded only the wait and claimed in this comment that a failure
 # warns; it did not.
-JWKS_JOB="jwks-refresh-deploy-$(date +%s)"
+#
+# The Job this creates is owned by nobody — the CronJob's history limits do not reap it —
+# so it relies on the `ttlSecondsAfterFinished` in that CronJob's jobTemplate, which
+# `--from` copies. Without it every deploy would leave a Job and a Pod behind for good.
+JWKS_JOB="jwks-refresher-deploy-$(date +%s)"
 echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
-if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresh -n "$NAMESPACE"; then
+if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresher -n "$NAMESPACE"; then
   kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s \
     || echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — check its logs before enabling REQUIRE_AUTH."
 else
@@ -229,7 +233,7 @@ kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=1
 echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd;"
 echo "each call runs in its own gVisor pod, up to the namespace quota:"
 echo "    curl -sf -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \\"
-echo "      -d '{\"repo\":\"pytorch/pytorch\",\"ref\":\"main\",\"task\":\"...\"}'"
+echo "      -d '{\"ref\":\"main\",\"task\":\"...\"}'   # the repo to clone is policy, not a field"
 echo "  or, without holding the connection open:"
-echo "    curl -sf -X POST .../run -d '{\"repo\":\"...\",\"wait\":false}'   # -> {\"task_id\": ...}"
+echo "    curl -sf -X POST .../run -d '{\"wait\":false}'   # -> {\"task_id\": ...}"
 echo "    curl -sf .../status/<task_id>"
