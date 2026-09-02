@@ -18,8 +18,11 @@ behind a return type is just typed code, while one implementation behind an ABC 
 abstraction reviewers rightly object to.
 
 Two rules keep that promise honest, and neither is enforced by a type:
-  1. Nothing downstream of authorize() reads the request body. The Job is built from the
-     Grant.
+  1. JOB CONSTRUCTION consumes only the Grant. `kube.job_manifest` never sees the request
+     body — which is narrower than "nothing downstream reads the body", and deliberately
+     so: http_api still reads `wait` to pick a response shape, and compares a supplied
+     `repo`/`model` against the Grant so a caller is told it was overruled. Neither
+     reaches the Job.
   2. Grant carries the fields v2 will govern even while v1 hardcodes them.
 test_authorize.py runs the same allow/deny table against the v1 constants and against a
 stub loader carrying the v2 signature, so the seam is exercised now rather than promised.
@@ -63,25 +66,46 @@ V1_MODEL = ""  # empty means "the dispatcher's configured default"
 # v1 rather than reasoned about: a pull_request token from a fork, if one can be minted
 # at all, would be an authorized caller identity attached to an unreviewed workflow.
 #
+# A DENYLIST, with the residual that implies: a GitHub event type added after this line
+# was written is allowed by default, and so is any PR-family event nobody thought of.
+# That is tolerable only because no caller is admitted yet — see ALLOWED_RUNNER_
+# ENVIRONMENTS. Turn it into an explicit allowlist when the caller shape is decided and
+# the set of events it actually uses is known; guessing that set now would either block
+# the real caller or be a list nobody checked.
+#
 # workflow_run is deliberately NOT here, because it is the shape the real callers use —
 # a stage that runs from the default branch after an untrusted stage finishes. See the
 # module README on the residual that leaves: the prompt is caller-controlled, so a
 # workflow that reads PR content can shape it. The Grant is what bounds the damage.
-DENIED_EVENTS = frozenset({"pull_request", "pull_request_target", "pull_request_review", "issue_comment"})
+DENIED_EVENTS = frozenset(
+    {
+        "pull_request",
+        "pull_request_target",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "issue_comment",
+    }
+)
 
-# This USED to be {"github-hosted"}, on the observation that every workflow in
-# pytorch/ciforge runs on `ubuntu-latest`. That made the policy unsatisfiable, and the
-# observation is why: `/run` is a ClusterIP admitted by `sandbox-agent-ingress` from the
-# `arc-runners` namespace only, so a github-hosted runner cannot route to it at all. The
-# admissible set and the reachable set were disjoint, and flipping REQUIRE_AUTH would
-# have admitted nobody. test_authorize.py pins this against the NetworkPolicy.
+# KNOWN UNSATISFIABLE, deliberately, and the reason is worth reading before changing it.
 #
-# Read this as a REACHABILITY statement, not a trust one — it buys very little on its
-# own. What actually distinguishes a legitimate caller is the checks above and below:
-# an immutable repository id, both workflow refs inside that repo, a protected ref, and
-# a non-pull-request event. A self-hosted runner in this fleet that is running untrusted
-# code still cannot mint a token that passes those.
-ALLOWED_RUNNER_ENVIRONMENTS = frozenset({"self-hosted"})
+# `/run` is a ClusterIP that `sandbox-agent-ingress` opens to the `arc-runners` namespace
+# only, so every caller that can REACH it mints a self-hosted token — while this admits
+# github-hosted alone. The two sets are disjoint: flipping REQUIRE_AUTH today refuses
+# every request. That is a fail-closed state, not a working one, and
+# test_the_flag_is_off_while_no_admissible_caller_can_reach_run is what stops anyone
+# turning it into an outage by flipping the flag.
+#
+# It stays github-hosted until the caller migration lands rather than being widened to
+# self-hosted, because widening is not the free reachability fix it looks like. The
+# remaining claims attest to the enclosing JOB, not to the code running inside it: a
+# ciforge job on a protected ref can still execute PR content or a poisoned artifact, and
+# anything in that job with `id-token: write` can mint this token. github-hosted is what
+# currently keeps an ARC runner — the fleet that runs untrusted PR code, in this very
+# cluster — out of the admissible set, and self-hosted does not even attest to ARC, to
+# this cluster, or to a runner group. See the module README, "Before enforcement can be
+# enabled", for the two ways to close this properly.
+ALLOWED_RUNNER_ENVIRONMENTS = frozenset({"github-hosted"})
 
 
 class Denied(RuntimeError):

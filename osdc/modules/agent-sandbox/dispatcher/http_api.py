@@ -206,14 +206,19 @@ class Handler(BaseHTTPRequestHandler):
         # Both of these are policy, not request. Refused rather than ignored, and both
         # rather than just `repo`: a caller that asks for a cheap model, gets the
         # policy's, and is told nothing has been misled about what it is spending.
-        if spec.get("repo") and spec["repo"] != grant.clone_repo:
+        #
+        # Keyed on PRESENCE, not truthiness. `spec.get("repo")` skipped `"repo": ""`,
+        # which disagrees with the policy repository as much as any other wrong value
+        # does, and skipped `"model": ""` too — so the one `model` a caller could send
+        # without a 403 was the one that silently meant "whatever you have configured".
+        if "repo" in spec and spec["repo"] != grant.clone_repo:
             self._send(
                 403,
                 {"error": f"the repository to clone is set by policy ({grant.clone_repo}), not by the request"},
             )
             return
 
-        if spec.get("model") and spec["model"] != grant.model:
+        if "model" in spec and spec["model"] != grant.model:
             self._send(403, {"error": "the model is set by policy, not by the request"})
             return
 

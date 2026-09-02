@@ -65,11 +65,12 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   Waits for the task by default, so a caller sees the result on the same connection —
   budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
   returns `202 {"task_id"}` instead. `repo` and `model` are still *parsed* — a non-string
-  is a `400` — but neither reaches the Job: the Grant decides both. A `repo` that matches
-  policy is accepted and one that does not is a `403`; **any non-empty `model` is a `403`
-  today**, because v1's policy model is the empty string meaning "the dispatcher's
-  configured default", so there is no value a caller can send that agrees with it. Send
-  neither. See *Who may call* below.
+  is a `400` — but neither reaches the Job: the Grant decides both. Supplying either is
+  checked rather than ignored, so a `repo` that matches policy is accepted and one that
+  does not is a `403`. **`model` is a `403` whatever you send**, because v1's policy model
+  is the empty string meaning "the dispatcher's configured default" — including `""`,
+  which is compared like any other value rather than skipped. Send neither. See *Who may
+  call* below.
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
 - `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
@@ -85,15 +86,13 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 Bedrock budget" and belongs in git history and review.
 
 v1 admits exactly one caller: a workflow in **`pytorch/ciforge`**, on a protected ref, on
-a **self-hosted** runner, on an event that is not from the pull-request family. Callers are
-matched on `repository_id`/`repository_owner_id`, never on names, because a repository can
-be renamed and its old name re-registered by someone else.
-
-Self-hosted is a reachability fact rather than a trust one: `/run` is a ClusterIP that
-`sandbox-agent-ingress` opens to the `arc-runners` namespace only, so a github-hosted
-runner cannot route to it at all. An earlier draft required `github-hosted` and was
-therefore unsatisfiable — see *Before enforcement can be enabled* below, because that
-mismatch has not entirely gone away.
+a **github-hosted** runner, on an event not in a denied set. The *repository* is matched on
+`repository_id`/`repository_owner_id` rather than on its name, because a repository can be
+renamed and its old name re-registered by someone else — but the two workflow refs are
+still matched on a name prefix, so a rename would break authorization even though the ids
+still resolve. Two residual sharp edges in that sentence: the event check is a **denylist**,
+so an event type GitHub adds later is allowed by default; and `github-hosted` is currently
+satisfiable by nobody who can reach the endpoint, which is the subject of the next section.
 
 **The request decides less than it looks like it does.** Verification produces a frozen
 `Grant`, and the Job is built from the Grant alone — never from the request body. The
@@ -114,25 +113,39 @@ Two residuals worth knowing:
 
 ### Before enforcement can be enabled
 
-**There is no caller today that would survive the flip, and that is a decision this PR
-does not make.** The policy admits `pytorch/ciforge`; every workflow in that repo runs on
-`ubuntu-latest`, and a github-hosted runner cannot reach a ClusterIP in this cluster. The
-only thing that actually calls `/run` is this module's own `test-agent-sandbox`
-integration job, which runs from `pytorch/ci-infra` — a repo the allow-list does not
-contain — and sends no token at all. So flipping `REQUIRE_AUTH` today would refuse every
-request, including the integration test that proves the sandbox works.
+**No caller would survive the flip today, and choosing the one that should is a decision
+this PR does not make.** `/run` is a ClusterIP that `sandbox-agent-ingress` opens to the
+`arc-runners` namespace only, so every caller that can reach it mints a **self-hosted**
+token — while the policy admits **github-hosted** alone. The sets are disjoint. Every
+workflow in `pytorch/ciforge` runs github-hosted (`ubuntu-latest` or `ubuntu-24.04`), and
+the only in-tree caller of `/run` is this module's own `test-agent-sandbox` integration
+job, which lives in `pytorch/ci-infra` — not on the allow-list — and sends no token.
 
-Closing that needs one of two choices, and they are not equivalent:
+That is fail-closed and deliberate. `test_the_flag_is_off_while_no_admissible_caller_can_
+reach_run` fails the build if `REQUIRE_AUTH` is set to `true` while it stays that way, so
+the mismatch cannot become a silent outage.
 
-- **Run the caller inside the cluster.** A `pytorch/ciforge` workflow on an OSDC
-  `arc-runners` runner mints a self-hosted token, reaches the Service, and is admitted as
-  written. Nothing else changes.
-- **Add `pytorch/ci-infra` to `ALLOWED_CALLERS`** so the integration test authenticates.
-  That is a policy expansion — a second repository able to spend the Bedrock budget — and
-  belongs in review, not in a follow-up commit.
+Widening the runner-environment check to `self-hosted` is **not** the fix, tempting as the
+one-line diff looks. The other claims attest to the enclosing *job*, not to the code
+running inside it: a `pytorch/ciforge` job on a protected ref can still check out PR
+content or consume a poisoned artifact, and anything in it with `id-token: write` can mint
+the token. `github-hosted` is what currently keeps the ARC fleet — which runs untrusted PR
+code, in this cluster — out of the admissible set, and `self-hosted` would not even attest
+to ARC, to this cluster, or to a runner group.
 
-Until one of them lands, treat `REQUIRE_AUTH=false` as the shipped state rather than a
-temporary one.
+The two real options, neither of them one line:
+
+- **Give the caller a trusted in-cluster home.** A dedicated ephemeral runner set that
+  executes no untrusted code, an audited `pytorch/ciforge` workflow pinned to it, and a
+  runner-environment/workflow-ref pair narrow enough to name it. The workflow also needs
+  `id-token: write`, a token minted for this audience, and an `Authorization` header —
+  moving it onto ARC alone changes nothing.
+- **Admit `pytorch/ci-infra` for the integration test.** A policy expansion — a second
+  repository able to spend the Bedrock budget — plus the same token work in
+  `integration-test.yaml.tpl`, which today sends no header at all. It belongs in review,
+  not in a follow-up commit.
+
+Until one lands, `REQUIRE_AUTH=false` is the shipped state, not a temporary one.
 
 ### What the flag does
 
@@ -163,10 +176,11 @@ object and nothing more.
 The manifest declares that ConfigMap with **no `data`** — the content belongs to the
 refresher. That is load-bearing rather than tidy: seeding it in the manifest meant every
 `kubectl apply` put the seed back over live keys, so each deploy blanked them. `deploy.sh`
-runs a refresh immediately after applying, so the window with no keys is a minute or two
-rather than up to six hours, and the dispatcher fails closed throughout it. A minute or
-two, not seconds: the refresh Job has to finish and then the kubelet has to notice the
-ConfigMap changed, which it does on its own sync period.
+runs a refresh immediately after applying, so the window with no keys is minutes rather
+than up to six hours, and the dispatcher fails closed throughout it. Minutes, not seconds,
+and not a bound anyone has measured: the Job has to be scheduled and pull an image, the
+kubelet then notices the ConfigMap changed on its own sync period, and the dispatcher
+re-reads the mount only every `JWKS_RELOAD_INTERVAL_S`.
 
 The refresher writes a `fetched_at` timestamp *into* the document. That is not
 decoration: a ConfigMap volume only updates when its content changes and GitHub rotates
@@ -381,7 +395,7 @@ signing proxy, without the runner or worker holding a token.
   holds slots for up to the clone plus invoke timeout and keeps every other consumer on
   `429` — a refusal rather than a hang, but still a denial of service. There is no
   per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
-- **The clone reaches the internet directly.** `sandbox-agent-egress` allows TCP 443
+- **The clone reaches the internet directly.** `sandbox-task-egress` allows TCP 443
   to any address because `NetworkPolicy` selects on CIDR and GitHub's ranges move.
   Closing it means git behind a proxy the way Bedrock is, landing together with the
   no-NAT subnet — neither exists, and either alone breaks cloning.
