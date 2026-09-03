@@ -8,7 +8,8 @@ that task pods run as, and the NetworkPolicies. These check the security spine i
 
 There is no standing worker to assert on: the dispatcher creates one Job per request, so
 task pods exist only while a task runs. Their shape is asserted in the dispatcher's own
-unit tests, against the Job manifest it builds.
+unit tests, against the Job manifest it builds — and here against the API server, which
+is the only place the admission policy's CEL is actually evaluated.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+import yaml
 from helpers import assert_deployment_ready, filter_deployments, filter_services, run_kubectl
 
 pytestmark = [pytest.mark.live]
@@ -57,6 +59,160 @@ class TestAgentSandboxRuntimeClass:
         node_selector = rc.get("scheduling", {}).get("nodeSelector", {})
         assert node_selector.get("node-fleet") == "ai-sandbox", (
             f"gvisor RuntimeClass must pin node-fleet=ai-sandbox, got {node_selector!r}."
+        )
+
+
+class TestTaskAdmissionPolicy:
+    """The cluster-side copy of the task-pod isolation contract.
+
+    The dispatcher's unit tests check that the two copies agree; only a live cluster can
+    check that the CEL compiles and that the API server actually denies. A policy whose
+    expressions fail to type-check is still created and reports the failure in
+    `.status.typeChecking` — under `failurePolicy: Fail` such a rule then denies every
+    matching request at runtime, so the symptom is an outage rather than a hole, and
+    `kubectl get` succeeding says nothing either way. The probes below are the assertion.
+
+    These are all CREATE probes. The nodeName rule's UPDATE branch cannot be reached from
+    here — it needs a pod the scheduler has actually bound — and is covered by the
+    integration test, which dispatches a real task and would hang out its deadline if a
+    task pod could not be updated after binding.
+    """
+
+    POLICY = "agent-sandbox-task-jobs"
+
+    def _server_dry_run(self, manifest: str) -> subprocess.CompletedProcess:
+        """Apply against the API server without persisting. Server-side dry-run runs the
+        full admission chain, this policy included."""
+        return subprocess.run(
+            ["kubectl", "-n", NAMESPACE, "apply", "--dry-run=server", "-f", "-"],
+            input=manifest,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _task_pod(self, name: str, **spec_overrides: object) -> str:
+        """A pod carrying the task label, so the Pod pass sees it. That pass is not
+        scoped to the dispatcher's service account — pods are created by the Job
+        controller — which is what lets this run under the smoke suite's own identity."""
+        spec: dict = {
+            "runtimeClassName": "gvisor",
+            "serviceAccountName": "sandbox-agent",
+            "automountServiceAccountToken": False,
+            "restartPolicy": "Never",
+            "containers": [
+                {
+                    "name": "task",
+                    "image": "harbor:30002/osdc/ci-agent-sandbox:admission-probe",
+                    "securityContext": {
+                        "allowPrivilegeEscalation": False,
+                        "runAsNonRoot": True,
+                    },
+                    "resources": {
+                        "requests": {"cpu": "1", "memory": "1Gi", "ephemeral-storage": "1Gi"},
+                        "limits": {"cpu": "1", "memory": "1Gi", "ephemeral-storage": "1Gi"},
+                    },
+                }
+            ],
+        }
+        spec.update(spec_overrides)
+        # None means "omit the field", not "set it to null" — the rules that matter here
+        # are `has(x) && ...`, and absence is the case they exist to reject.
+        spec = {k: v for k, v in spec.items() if v is not None}
+        return yaml.safe_dump(
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": name, "namespace": NAMESPACE, "labels": {"app": "sandbox-task"}},
+                "spec": spec,
+            }
+        )
+
+    def test_policy_and_both_bindings_are_deployed(self) -> None:
+        policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
+        assert policy["spec"]["failurePolicy"] == "Fail"
+        bound = {
+            b["metadata"]["name"]
+            for b in run_kubectl(["get", "validatingadmissionpolicybinding"])["items"]
+            if b["spec"]["policyName"] == self.POLICY
+        }
+        assert bound == {"agent-sandbox-task-jobs", "agent-sandbox-task-pods"}, (
+            f"the policy needs both its bindings to be enforced on Jobs and on Pods; found {sorted(bound)}."
+        )
+
+    def test_the_policy_type_checks(self) -> None:
+        """A type error does not stop the policy being created; it is reported here, and
+        at runtime it becomes a denial of every matching request."""
+        policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
+        status = policy.get("status", {})
+        assert status.get("observedGeneration") == policy["metadata"]["generation"], (
+            "the API server has not finished type-checking this generation of the policy yet — "
+            f"observedGeneration={status.get('observedGeneration')}, generation={policy['metadata']['generation']}."
+        )
+        assert "typeChecking" in status, "no typeChecking result on an observed policy generation"
+        failures = status["typeChecking"].get("expressionWarnings") or []
+        assert not failures, f"CEL type-check warnings on {self.POLICY}: {failures}"
+
+    def test_a_compliant_task_pod_is_admitted(self) -> None:
+        """The positive half. Without it a policy that denies everything — a broken
+        expression under failurePolicy: Fail — would look like a passing negative test."""
+        result = self._server_dry_run(self._task_pod("admission-probe-good"))
+        assert result.returncode == 0, f"a compliant task pod was rejected: {result.stderr.strip()}"
+
+    # Each violation is chosen so that NOTHING ELSE in the admission chain would reject
+    # it first: no `runtimeClassName: runc` (there is no runc RuntimeClass to resolve, so
+    # the RuntimeClass admission plugin would answer before this policy did), and an
+    # emptyDir rather than a hostPath (Pod Security would answer first). Dropping a
+    # required field, or adding a volume type nothing else objects to, leaves this policy
+    # as the only thing that can say no.
+    @pytest.mark.parametrize(
+        ("case", "overrides"),
+        [
+            ("no gvisor", {"runtimeClassName": None}),
+            ("a mounted token", {"automountServiceAccountToken": True}),
+            ("a volume", {"volumes": [{"name": "scratch", "emptyDir": {}}]}),
+            ("a pinned nodeName", {"nodeName": "ip-10-0-0-1.ec2.internal"}),
+            # The two rules whose CEL is not a shape already proven by the cases above: a
+            # map-keyed `all`, and a bound on a field the API server defaults. Both are
+            # unevaluated until something here denies with them.
+            (
+                "a device request",
+                {
+                    "containers": [
+                        {
+                            "name": "task",
+                            "image": "harbor:30002/osdc/ci-agent-sandbox:admission-probe",
+                            "securityContext": {"allowPrivilegeEscalation": False, "runAsNonRoot": True},
+                            # Equal on both sides on purpose: Kubernetes requires that of
+                            # an extended resource, so this satisfies the limits-present
+                            # and Guaranteed-QoS rules and only the allowlist can say no.
+                            "resources": {
+                                "requests": {
+                                    "cpu": "1",
+                                    "memory": "1Gi",
+                                    "ephemeral-storage": "1Gi",
+                                    "nvidia.com/gpu": "1",
+                                },
+                                "limits": {
+                                    "cpu": "1",
+                                    "memory": "1Gi",
+                                    "ephemeral-storage": "1Gi",
+                                    "nvidia.com/gpu": "1",
+                                },
+                            },
+                        }
+                    ]
+                },
+            ),
+            ("a long termination grace period", {"terminationGracePeriodSeconds": 3600}),
+        ],
+    )
+    def test_the_policy_denies_what_it_says_it_denies(self, case: str, overrides: dict) -> None:
+        name = "admission-probe-" + case.lower().replace(" ", "-")
+        result = self._server_dry_run(self._task_pod(name, **overrides))
+        assert result.returncode != 0, f"a task pod with {case} was ADMITTED — the policy is not enforcing."
+        assert "agent-sandbox-task-jobs" in result.stderr, (
+            f"a task pod with {case} was rejected, but not by this policy: {result.stderr.strip()}"
         )
 
 
