@@ -69,7 +69,7 @@ Related docs:
 | **Environments** | osdc-production |
 | **Added by** | @zxiiro |
 | **Requested by** | @zxiiro |
-| **PoC** | @zxiiro, @jordanconway · Linux Foundation |
+| **PoC** | @zxiiro, @mtarsel · Linux Foundation |
 | **Used by** | `osdc-deploy-prod.yml` via `_osdc-deploy.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu apply` / smoke / integration-test jobs for `lf-prod-aws-ue1` and `lf-prod-aws-ue2` |
 
 ### `LF_AWS_PLAN_ROLE_ARN`
@@ -79,7 +79,7 @@ Related docs:
 | **Environments** | osdc-staging |
 | **Added by** | @zxiiro |
 | **Requested by** | @zxiiro |
-| **PoC** | @zxiiro, @jordanconway · Linux Foundation |
+| **PoC** | @zxiiro, @mtarsel · Linux Foundation |
 | **Used by** | `osdc-plan-prod.yml` via `_osdc-plan.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu plan` on pull requests for `lf-prod-aws-ue1` and `lf-prod-aws-ue2` |
 
 ### `CRCR_GITHUB_APP_ID`
@@ -140,7 +140,7 @@ Related docs:
 |---|---|
 | **Added by** | @jeanschmidt |
 | **Requested by** | @jeanschmidt |
-| **PoC** | @zxiiro, @jordanconway · Linux Foundation |
+| **PoC** | @zxiiro, @mtarsel · Linux Foundation |
 | **Used by** | `ali-deploy-canary.yml`, `ali-deploy-prod.yml`, `ali-on-pr.yml`, `arc-deploy-prod.yml`, `arc-on-pr.yml`, `crcr-deploy-prod.yml`, `crcr-on-pr.yml` — AWS account ID for the PyTorch Foundation-owned AWS account (`391835788720`, us-east-1), used for ALI, ARC, and CRCR infrastructure |
 
 ### `PY_FOUNDATION_AWS_DEPLOY_ROLE`
@@ -149,7 +149,7 @@ Related docs:
 |---|---|
 | **Added by** | @jeanschmidt |
 | **Requested by** | @jeanschmidt |
-| **PoC** | @zxiiro, @jordanconway · Linux Foundation |
+| **PoC** | @zxiiro, @mtarsel · Linux Foundation |
 | **Used by** | `ali-deploy-canary.yml`, `ali-deploy-prod.yml`, `ali-on-pr.yml`, `arc-deploy-prod.yml`, `arc-on-pr.yml`, `crcr-deploy-prod.yml`, `crcr-on-pr.yml` — OIDC IAM role in the PyTorch Foundation AWS account, assumed for both `tofu plan` (PRs) and `tofu apply` (main branch) |
 
 ---

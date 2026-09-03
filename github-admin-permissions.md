@@ -12,7 +12,7 @@ Currently this applies to the repos / orgs:
 Administration of these repos are managed by Linux Foundation staff with the
 following primary points of contact:
 
-* Jordan Conway <jconway@linuxfoundation.org>
+* Mick Tarsel <mtarsel@linuxfoundation.org>
 * Thanh Ha <thanh.ha@linuxfoundation.org>
 
 ## Offboarding accounts
