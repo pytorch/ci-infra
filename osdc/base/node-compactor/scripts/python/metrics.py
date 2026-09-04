@@ -80,6 +80,12 @@ gpu_quarantined_nodes = Gauge(
     ["fleet"],
 )
 
+gpu_admission_failures = Gauge(
+    "compactor_gpu_admission_failures",
+    "Device plugin allocation failures per GPU node within the detection window",
+    ["node"],
+)
+
 # --- Counters ---
 
 reconcile_cycles_total = Counter(

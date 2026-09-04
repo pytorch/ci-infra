@@ -3191,6 +3191,28 @@ class TestQuarantineGPUBlackHoles:
         assert mock_apply.call_args[0][2] == "node-compactor.osdc.io/gpu-unhealthy"
 
     @patch("compactor.apply_taint")
+    def test_updates_in_memory_state_same_cycle(self, _mock_apply):
+        """Downstream scheduling checks in this same cycle must see the taint."""
+        cfg = make_config()
+        node = self._failing_node()
+        states = {"bad": node}
+
+        quarantine_gpu_black_holes(MagicMock(), cfg, states)
+
+        assert node.is_gpu_quarantined is True
+        assert any(t.key == "node-compactor.osdc.io/gpu-unhealthy" for t in node.node_taints)
+
+    @patch("compactor.apply_taint")
+    def test_dry_run_does_not_mutate_state(self, _mock_apply):
+        cfg = make_config(dry_run=True)
+        node = self._failing_node()
+
+        quarantine_gpu_black_holes(MagicMock(), cfg, {"bad": node})
+
+        assert node.is_gpu_quarantined is False
+        assert node.node_taints == []
+
+    @patch("compactor.apply_taint")
     def test_healthy_node_untouched(self, mock_apply):
         cfg = make_config()
         states = {"ok": self._failing_node("ok", failures=0)}
