@@ -44,6 +44,9 @@ DRY_RUN=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.dry_run "false")
 MIN_NODES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_nodes "1")
 MIN_NODE_AGE=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_node_age_seconds "900")
 CAPACITY_RESERVATION_NODES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.capacity_reservation_nodes "0")
+GPU_QUARANTINE_ENABLED=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.gpu_quarantine_enabled "true")
+GPU_QUARANTINE_THRESHOLD=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.gpu_quarantine_threshold "3")
+GPU_QUARANTINE_WINDOW=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.gpu_quarantine_window_seconds "300")
 
 # --- Compute content-based image tag ---
 # Hash all source files that go into the image so we can skip build+push
@@ -138,6 +141,9 @@ kubectl kustomize "$COMPACTOR_DIR/kubernetes/" \
     -e "s|COMPACTOR_MIN_NODES_PLACEHOLDER|\"${MIN_NODES}\"|g" \
     -e "s|COMPACTOR_MIN_NODE_AGE_PLACEHOLDER|\"${MIN_NODE_AGE}\"|g" \
     -e "s|COMPACTOR_CAPACITY_RESERVATION_NODES_PLACEHOLDER|\"${CAPACITY_RESERVATION_NODES}\"|g" \
+    -e "s|COMPACTOR_GPU_QUARANTINE_ENABLED_PLACEHOLDER|\"${GPU_QUARANTINE_ENABLED}\"|g" \
+    -e "s|COMPACTOR_GPU_QUARANTINE_THRESHOLD_PLACEHOLDER|\"${GPU_QUARANTINE_THRESHOLD}\"|g" \
+    -e "s|COMPACTOR_GPU_QUARANTINE_WINDOW_SECONDS_PLACEHOLDER|\"${GPU_QUARANTINE_WINDOW}\"|g" \
   | kubectl_apply_if_changed -f -
 
 echo "Node compactor deployed."

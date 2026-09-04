@@ -42,6 +42,10 @@ def make_config(**overrides):
         "peak_window_seconds": 2700,
         "pending_pod_max_age_seconds": 14400,
         "pending_pod_min_age_seconds": 0,
+        "gpu_quarantine_enabled": True,
+        "gpu_quarantine_threshold": 3,
+        "gpu_quarantine_window_seconds": 300,
+        "gpu_quarantine_max_fleet_ratio": 0.2,
     }
     defaults.update(overrides)
     return Config(**defaults)

@@ -74,6 +74,18 @@ reserved_nodes = Gauge(
     ["nodepool"],
 )
 
+gpu_quarantined_nodes = Gauge(
+    "compactor_gpu_quarantined_nodes",
+    "GPU nodes quarantined for rejecting pods with device plugin allocation failures",
+    ["fleet"],
+)
+
+gpu_admission_failures = Gauge(
+    "compactor_gpu_admission_failures",
+    "Device plugin allocation failures per GPU node within the detection window",
+    ["node"],
+)
+
 # --- Counters ---
 
 reconcile_cycles_total = Counter(
