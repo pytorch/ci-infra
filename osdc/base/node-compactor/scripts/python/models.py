@@ -18,6 +18,14 @@ ANNOTATION_CAPACITY_RESERVED = "node-compactor.osdc.io/capacity-reserved"
 ANNOTATION_DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
 LABEL_NODE_FLEET = "node-fleet"
 
+# Quarantine taint for GPU nodes whose kubelet rejects every GPU pod at
+# admission. Deliberately NOT the same key as the consolidation taint: every
+# untaint path (remove_taint, cleanup_stale_taints, burst untaint) is keyed on
+# cfg.taint_key, so a separate key makes the quarantine structurally immune to
+# being cleared by demand pressure, cooldown, or min_nodes. The node drains as
+# its healthy in-flight pods finish and Karpenter's WhenEmpty policy reaps it.
+TAINT_KEY_GPU_UNHEALTHY = "node-compactor.osdc.io/gpu-unhealthy"
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -40,6 +48,10 @@ DEFAULTS = {
     "COMPACTOR_PEAK_WINDOW_SECONDS": "1800",
     "COMPACTOR_PENDING_POD_MAX_AGE_SECONDS": "14400",
     "COMPACTOR_PENDING_POD_MIN_AGE_SECONDS": "0",
+    "COMPACTOR_GPU_QUARANTINE_ENABLED": "true",
+    "COMPACTOR_GPU_QUARANTINE_THRESHOLD": "3",
+    "COMPACTOR_GPU_QUARANTINE_WINDOW_SECONDS": "300",
+    "COMPACTOR_GPU_QUARANTINE_MAX_FLEET_RATIO": "0.2",
 }
 
 
@@ -62,6 +74,12 @@ class Config:
     peak_window_seconds: int
     pending_pod_max_age_seconds: int
     pending_pod_min_age_seconds: int
+    # Defaulted so existing Config construction sites (notably test fixtures)
+    # need no change; from_env() always passes them explicitly from DEFAULTS.
+    gpu_quarantine_enabled: bool = DEFAULTS["COMPACTOR_GPU_QUARANTINE_ENABLED"] == "true"
+    gpu_quarantine_threshold: int = int(DEFAULTS["COMPACTOR_GPU_QUARANTINE_THRESHOLD"])
+    gpu_quarantine_window_seconds: int = int(DEFAULTS["COMPACTOR_GPU_QUARANTINE_WINDOW_SECONDS"])
+    gpu_quarantine_max_fleet_ratio: float = float(DEFAULTS["COMPACTOR_GPU_QUARANTINE_MAX_FLEET_RATIO"])
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -86,6 +104,10 @@ class Config:
             peak_window_seconds=int(env("COMPACTOR_PEAK_WINDOW_SECONDS")),
             pending_pod_max_age_seconds=int(env("COMPACTOR_PENDING_POD_MAX_AGE_SECONDS")),
             pending_pod_min_age_seconds=int(env("COMPACTOR_PENDING_POD_MIN_AGE_SECONDS")),
+            gpu_quarantine_enabled=env("COMPACTOR_GPU_QUARANTINE_ENABLED").lower() in ("true", "1", "yes"),
+            gpu_quarantine_threshold=int(env("COMPACTOR_GPU_QUARANTINE_THRESHOLD")),
+            gpu_quarantine_window_seconds=int(env("COMPACTOR_GPU_QUARANTINE_WINDOW_SECONDS")),
+            gpu_quarantine_max_fleet_ratio=float(env("COMPACTOR_GPU_QUARANTINE_MAX_FLEET_RATIO")),
         )
 
         if cfg.peak_window_seconds < 0:
@@ -102,6 +124,16 @@ class Config:
             raise ValueError(
                 f"COMPACTOR_PENDING_POD_MIN_AGE_SECONDS ({cfg.pending_pod_min_age_seconds}) "
                 f"must be < COMPACTOR_PENDING_POD_MAX_AGE_SECONDS ({cfg.pending_pod_max_age_seconds})"
+            )
+        if cfg.gpu_quarantine_threshold < 1:
+            raise ValueError(f"COMPACTOR_GPU_QUARANTINE_THRESHOLD must be >= 1, got {cfg.gpu_quarantine_threshold}")
+        if cfg.gpu_quarantine_window_seconds <= 0:
+            raise ValueError(
+                f"COMPACTOR_GPU_QUARANTINE_WINDOW_SECONDS must be > 0, got {cfg.gpu_quarantine_window_seconds}"
+            )
+        if not 0 < cfg.gpu_quarantine_max_fleet_ratio <= 1:
+            raise ValueError(
+                f"COMPACTOR_GPU_QUARANTINE_MAX_FLEET_RATIO must be in (0, 1], got {cfg.gpu_quarantine_max_fleet_ratio}"
             )
 
         return cfg
@@ -140,9 +172,13 @@ class NodeState:
     pods: list[PodInfo] = field(default_factory=list)
     is_tainted: bool = False
     is_reserved: bool = False  # has capacity-reservation annotation
+    is_gpu_quarantined: bool = False  # has the gpu-unhealthy taint
     node_taints: list = field(default_factory=list)  # raw taint objects from API
     labels: dict = field(default_factory=dict)  # node metadata labels
     annotations: dict = field(default_factory=dict)  # node metadata annotations
+    # Creation timestamps of pods this node's kubelet rejected with a device
+    # plugin allocation failure. Rebuilt every reconcile from live pod objects.
+    admission_failures: list[datetime] = field(default_factory=list)
 
     @property
     def workload_pods(self) -> list[PodInfo]:

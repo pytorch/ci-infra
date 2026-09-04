@@ -70,6 +70,19 @@ defaults:
     max_uptime_hours: 48
     min_nodes: 1
     dry_run: false
+    # Quarantine GPU nodes that reject pods with device-plugin allocation
+    # failures. One dead GPU fails GetPreferredAllocation for EVERY GPU pod on
+    # the node (the plugin builds the link topology across all GPUs before
+    # filtering to the requested ones) while the node keeps reporting Ready and
+    # advertising full allocatable GPUs — so it accepts work at full rate and
+    # destroys all of it. Nothing on the node reflects the fault; the rejected
+    # pods are the only signal.
+    gpu_quarantine_enabled: true
+    gpu_quarantine_threshold: 3
+    gpu_quarantine_window_seconds: 300
+    # Cap per fleet: a bad AMI or driver rollout must not cordon every GPU node
+    # at once. Karpenter's own node-repair path uses the same 20% guard.
+    gpu_quarantine_max_fleet_ratio: 0.2
   bin_pack_scheduler:
     replicas: 3
   nodepools:
