@@ -20,19 +20,35 @@ loki.source.journal "system" {
     relabel_rules = loki.relabel.journal_relabel.rules
 }
 
-// Filter journal to only the units we care about
+// Filter journal to only the units we care about.
+//
+// Order matters. `unit` is derived FIRST and the keep is applied to the
+// derived label, because kernel messages carry no `_SYSTEMD_UNIT` at all —
+// they are identified by `_TRANSPORT=kernel`. Keeping directly on
+// `__journal__systemd_unit` (as this did previously) therefore dropped every
+// kernel line silently while still listing "kernel" in the regex, which cost
+// us the NVIDIA Xid records during the 2026-09-03 GPU black-hole incident.
 loki.relabel "journal_relabel" {
     forward_to = []
 
     rule {
         source_labels = ["__journal__systemd_unit"]
-        regex         = "kubelet.service|containerd.service|kernel|nvidia-fabricmanager.service|nvidia-persistenced.service"
-        action        = "keep"
+        target_label  = "unit"
+    }
+
+    // Kernel messages have no systemd unit; label them from the transport so
+    // the keep below retains them. NVRM/Xid lines arrive on this path.
+    rule {
+        source_labels = ["__journal__transport"]
+        regex         = "kernel"
+        target_label  = "unit"
+        replacement   = "kernel"
     }
 
     rule {
-        source_labels = ["__journal__systemd_unit"]
-        target_label  = "unit"
+        source_labels = ["unit"]
+        regex         = "kubelet.service|containerd.service|kernel|nvidia-fabricmanager.service|nvidia-persistenced.service"
+        action        = "keep"
     }
 }
 
