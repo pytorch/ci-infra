@@ -35,6 +35,10 @@ def make_config(**overrides) -> Config:
         "peak_window_seconds": 2700,
         "pending_pod_max_age_seconds": 14400,
         "pending_pod_min_age_seconds": 0,
+        "gpu_quarantine_enabled": True,
+        "gpu_quarantine_threshold": 3,
+        "gpu_quarantine_window_seconds": 300,
+        "gpu_quarantine_max_fleet_ratio": 0.2,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -1142,3 +1146,96 @@ class TestTerminatingPodFiltering:
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "active"
+
+
+# ============================================================================
+# GPU black-hole admission failure collection
+# ============================================================================
+
+
+class TestAdmissionFailureCollection:
+    """build_node_states() records device-plugin admission failures per node.
+
+    Failed pods hold no resources and are otherwise discarded, but they are
+    the only observable trace of a GPU black hole: the node stays Ready and
+    keeps advertising every GPU as allocatable throughout.
+    """
+
+    REAL_MESSAGE = (
+        "Pod was rejected: Allocate failed due to device plugin GetPreferredAllocation "
+        "rpc failed with err: rpc error: code = Unknown desc = error getting list of "
+        "preferred allocation devices: unable to get device link information: error "
+        "getting NVLink for devices (0, 1): failed to get nvlink remote pci info: "
+        "failed to get nvlink state: GPU is lost, which is unexpected"
+    )
+
+    def _rejected_pod(self, name: str, node_name: str = "node-1", message: str | None = None):
+        pod = make_mock_pod(name, node_name=node_name, phase="Failed")
+        pod.status.reason = "UnexpectedAdmissionError"
+        pod.status.message = self.REAL_MESSAGE if message is None else message
+        return pod
+
+    def test_records_rejected_pods(self):
+        cfg = make_config()
+        client = MagicMock()
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "g5-24xlarge"})
+        pods = [self._rejected_pod(f"runner-{i}") for i in range(3)]
+        client.list.side_effect = [[node], [], pods]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert len(states["node-1"].admission_failures) == 3
+
+    def test_rejected_pods_do_not_consume_capacity(self):
+        """A rejected pod never ran, so it must not count as load."""
+        cfg = make_config()
+        client = MagicMock()
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "g5-24xlarge"})
+        client.list.side_effect = [[node], [], [self._rejected_pod("runner-1")]]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert states["node-1"].pods == []
+        assert states["node-1"].cpu_used == 0
+
+    def test_ignores_unrelated_failures(self):
+        cfg = make_config()
+        client = MagicMock()
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "g5-24xlarge"})
+        evicted = make_mock_pod("evicted-1", node_name="node-1", phase="Failed")
+        evicted.status.reason = "Evicted"
+        evicted.status.message = "The node was low on resource: memory"
+        client.list.side_effect = [[node], [], [evicted]]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert states["node-1"].admission_failures == []
+
+    def test_attributes_failures_to_the_owning_node(self):
+        cfg = make_config()
+        client = MagicMock()
+        bad = make_mock_node("bad", labels={"karpenter.sh/nodepool": "g5-24xlarge"})
+        good = make_mock_node("good", labels={"karpenter.sh/nodepool": "g5-24xlarge"})
+        pods = [self._rejected_pod("r1", node_name="bad"), self._rejected_pod("r2", node_name="bad")]
+        client.list.side_effect = [[bad, good], [], pods]
+
+        states, _ = build_node_states(client, cfg, {"bad": "pool", "good": "pool"})
+
+        assert len(states["bad"].admission_failures) == 2
+        assert states["good"].admission_failures == []
+
+    def test_detects_the_gpu_unhealthy_taint(self):
+        cfg = make_config()
+        client = MagicMock()
+        node = make_mock_node(
+            "node-1",
+            labels={"karpenter.sh/nodepool": "g5-24xlarge"},
+            taints=[make_mock_taint("node-compactor.osdc.io/gpu-unhealthy")],
+        )
+        client.list.side_effect = [[node], [], []]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert states["node-1"].is_gpu_quarantined is True
+        # The quarantine taint must not be mistaken for the consolidation taint.
+        assert states["node-1"].is_tainted is False
