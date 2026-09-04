@@ -28,6 +28,7 @@ import metrics as m
 from discovery import build_node_states, discover_managed_nodes
 from gpu_health import select_quarantine_nodes
 from lightkube import ApiError, Client
+from lightkube.models.core_v1 import Taint
 from models import LABEL_NODE_FLEET, TAINT_KEY_GPU_UNHEALTHY, Config, NodeState
 from packing import _count_spare_nodes, compute_taints, select_reserved_nodes
 from phantom import apply_pending_phantom_load
@@ -58,7 +59,11 @@ def quarantine_gpu_black_holes(client: Client, cfg: Config, node_states: dict[st
 
     Returns the set of node names newly quarantined this cycle.
     """
-    quarantine, _failure_counts = select_quarantine_nodes(node_states, cfg, _fleet_group_key)
+    quarantine, failure_counts = select_quarantine_nodes(node_states, cfg, _fleet_group_key)
+    m.refresh_gauge(
+        m.gpu_admission_failures,
+        {(node,): float(count) for node, count in failure_counts.items()},
+    )
 
     quarantined: set[str] = set()
     for node_name in sorted(quarantine):
@@ -66,6 +71,13 @@ def quarantine_gpu_black_holes(client: Client, cfg: Config, node_states: dict[st
             apply_taint(client, node_name, TAINT_KEY_GPU_UNHEALTHY, cfg.dry_run)
             m.taint_operations_total.labels(action="gpu_quarantine", status="success").inc()
             quarantined.add(node_name)
+            if not cfg.dry_run:
+                # Reflect the taint in the in-memory view so this cycle's
+                # scheduling-compatibility checks already treat the node as
+                # unusable rather than waiting for the next reconcile.
+                ns = node_states[node_name]
+                ns.is_gpu_quarantined = True
+                ns.node_taints.append(Taint(key=TAINT_KEY_GPU_UNHEALTHY, value="true", effect="NoSchedule"))
         except ApiError as e:
             if e.status.code == 404:
                 log.info("Node %s disappeared before quarantine, skipping", node_name)
