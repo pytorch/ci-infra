@@ -3,10 +3,12 @@
 import logging
 from datetime import UTC, datetime
 
+from gpu_health import admission_failure_time
 from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Namespace, Node, Pod
 from models import (
     ANNOTATION_CAPACITY_RESERVED,
+    TAINT_KEY_GPU_UNHEALTHY,
     Config,
     NodeState,
     PodInfo,
@@ -96,6 +98,7 @@ def build_node_states(
 
         taints = node.spec.taints or [] if node.spec else []
         is_tainted = any(t.key == cfg.taint_key for t in taints)
+        is_gpu_quarantined = any(t.key == TAINT_KEY_GPU_UNHEALTHY for t in taints)
         is_reserved = annotations.get(ANNOTATION_CAPACITY_RESERVED) == "true"
 
         node_states[name] = NodeState(
@@ -107,6 +110,7 @@ def build_node_states(
             creation_time=creation,
             is_tainted=is_tainted,
             is_reserved=is_reserved,
+            is_gpu_quarantined=is_gpu_quarantined,
             node_taints=list(taints),
             labels=dict(labels),
             annotations=dict(annotations),
@@ -192,6 +196,14 @@ def build_node_states(
         if node_name not in node_states:
             continue
         if phase in ("Succeeded", "Failed"):
+            # Terminal pods hold no resources, but a Failed pod rejected by the
+            # kubelet's device plugin allocation is the only place a GPU black
+            # hole is visible — the node itself still looks healthy. Record it
+            # before discarding the pod.
+            if phase == "Failed":
+                failed_at = admission_failure_time(pod)
+                if failed_at:
+                    node_states[node_name].admission_failures.append(failed_at)
             continue
         # Skip Terminating pods — resources will be freed imminently
         if pod.metadata and pod.metadata.deletionTimestamp:
