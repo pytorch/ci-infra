@@ -8,6 +8,7 @@ source -- a completed copy winning `max(StartTime)` would silently restore
 stale data.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -143,3 +144,47 @@ def test_only_third_party_copies_means_empty_disk(ec2, lambda_index, aws_mocks):
 
     assert is_new_disk is True
     assert "SnapshotId" not in ec2.create_volume.call_args.kwargs
+
+
+def test_pending_query_runs_before_completed_query(ec2, lambda_index):
+    """Order matters: a snapshot that completes between the two queries would
+    otherwise appear in neither result set and be silently skipped, restoring
+    the previous session's snapshot instead of gating."""
+    calls = []
+    ec2.describe_snapshots.side_effect = lambda **kw: (
+        calls.append("pending"), {"Snapshots": []}
+    )[1]
+    ec2.get_paginator.return_value.paginate.side_effect = lambda **kw: (
+        calls.append("completed"), [{"Snapshots": [_ours("snap-ours", NOW)]}]
+    )[1]
+
+    _restore(lambda_index)
+
+    assert calls == ["pending", "completed"], f"query order was {calls}"
+
+
+def test_clone_source_selection_skips_third_party_copy(monkeypatch, lambda_index, aws_mocks):
+    """A clone pins its source snapshot permanently in DynamoDB, so picking a
+    scanner copy wedges the disk once the scanner deletes it."""
+    client = MagicMock()
+    client.get_paginator.return_value.paginate.return_value = [
+        {"Snapshots": [
+            _ours("snap-ours", NOW - timedelta(hours=2)),
+            _wiz_copy("snap-wiz", NOW - timedelta(minutes=5), state="completed"),
+        ]}
+    ]
+    monkeypatch.setattr(lambda_index, "ec2_client", client)
+    disks_table = MagicMock()
+    disks_table.get_item.return_value = {"Item": {}}
+    aws_mocks["dynamodb"].Table.return_value = disks_table
+    monkeypatch.setattr(lambda_index, "write_operation_result", MagicMock())
+
+    lambda_index.process_clone_disk_action({
+        "body": json.dumps({
+            "user_id": "user@example.com", "source_disk": "src",
+            "target_disk": "dst", "operation_id": "op-1",
+        })
+    })
+
+    written = disks_table.put_item.call_args.kwargs["Item"]
+    assert written["clone_source_snapshot"] == "snap-ours"
