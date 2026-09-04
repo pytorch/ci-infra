@@ -26,8 +26,10 @@ import time
 
 import metrics as m
 from discovery import build_node_states, discover_managed_nodes
+from gpu_health import select_quarantine_nodes
 from lightkube import ApiError, Client
-from models import LABEL_NODE_FLEET, Config, NodeState
+from lightkube.models.core_v1 import Taint
+from models import LABEL_NODE_FLEET, TAINT_KEY_GPU_UNHEALTHY, Config, NodeState
 from packing import _count_spare_nodes, compute_taints, select_reserved_nodes
 from phantom import apply_pending_phantom_load
 from prometheus_client import start_http_server
@@ -45,6 +47,55 @@ log = logging.getLogger("compactor")
 def _fleet_group_key(ns: NodeState) -> str:
     """Group nodes by fleet (node-fleet label), falling back to nodepool."""
     return ns.labels.get(LABEL_NODE_FLEET) or ns.nodepool
+
+
+def quarantine_gpu_black_holes(client: Client, cfg: Config, node_states: dict[str, NodeState]) -> set[str]:
+    """Taint GPU nodes that are rejecting every GPU pod at admission.
+
+    The taint uses its own key, so none of the untaint paths below (which are
+    all keyed on ``cfg.taint_key``) can clear it under demand pressure. The
+    node drains as its healthy in-flight pods finish and Karpenter's WhenEmpty
+    policy reaps it — no running job is killed.
+
+    Returns the set of node names newly quarantined this cycle.
+    """
+    quarantine, failure_counts = select_quarantine_nodes(node_states, cfg, _fleet_group_key)
+    m.refresh_gauge(
+        m.gpu_admission_failures,
+        {(node,): float(count) for node, count in failure_counts.items()},
+    )
+
+    quarantined: set[str] = set()
+    for node_name in sorted(quarantine):
+        try:
+            apply_taint(client, node_name, TAINT_KEY_GPU_UNHEALTHY, cfg.dry_run)
+            m.taint_operations_total.labels(action="gpu_quarantine", status="success").inc()
+            quarantined.add(node_name)
+            if not cfg.dry_run:
+                # Reflect the taint in the in-memory view so this cycle's
+                # scheduling-compatibility checks already treat the node as
+                # unusable rather than waiting for the next reconcile.
+                ns = node_states[node_name]
+                ns.is_gpu_quarantined = True
+                ns.node_taints.append(Taint(key=TAINT_KEY_GPU_UNHEALTHY, value="true", effect="NoSchedule"))
+        except ApiError as e:
+            if e.status.code == 404:
+                log.info("Node %s disappeared before quarantine, skipping", node_name)
+            else:
+                log.exception("Failed to quarantine node %s", node_name)
+                m.taint_operations_total.labels(action="gpu_quarantine", status="error").inc()
+        except Exception:
+            log.exception("Failed to quarantine node %s", node_name)
+            m.taint_operations_total.labels(action="gpu_quarantine", status="error").inc()
+
+    fleet_counts: dict[str, int] = {}
+    for ns in node_states.values():
+        if ns.is_gpu_quarantined:
+            fleet = _fleet_group_key(ns)
+            fleet_counts[fleet] = fleet_counts.get(fleet, 0) + 1
+    m.refresh_gauge(m.gpu_quarantined_nodes, {(fleet,): float(c) for fleet, c in fleet_counts.items()})
+
+    return quarantined
 
 
 # ============================================================================
@@ -96,6 +147,12 @@ def reconcile(
         m.refresh_gauge(m.workload_pods, {})
         m.refresh_gauge(m.tainted_nodes, {})
         return
+
+    # Quarantine GPU black holes before anything else looks at capacity. Such a
+    # node reports Ready and advertises every GPU as allocatable, so each
+    # utilization-based decision below would happily treat it as usable and
+    # keep feeding it work it can only destroy.
+    quarantine_gpu_black_holes(client, cfg, node_states)
 
     # Apply phantom load from pending pods before any utilization-based decisions.
     # This makes the compactor "see" pods that are about to land, preventing
@@ -371,6 +428,14 @@ def main() -> int:
         cfg.pending_pod_max_age_seconds,
         cfg.pending_pod_min_age_seconds,
     )
+    log.info(
+        "GPU quarantine: enabled=%s, threshold=%d failure(s) in %ds, max %.0f%% of a fleet, taint=%s",
+        cfg.gpu_quarantine_enabled,
+        cfg.gpu_quarantine_threshold,
+        cfg.gpu_quarantine_window_seconds,
+        cfg.gpu_quarantine_max_fleet_ratio * 100,
+        TAINT_KEY_GPU_UNHEALTHY,
+    )
 
     # Expose Prometheus metrics on :8080/metrics. Bind ::0 so the socket
     # accepts both IPv6 and IPv4-mapped IPv6 connections — the pod has
@@ -389,6 +454,9 @@ def main() -> int:
             "dry_run": str(cfg.dry_run),
             "taint_key": cfg.taint_key,
             "nodepool_label": cfg.nodepool_label,
+            "gpu_quarantine_enabled": str(cfg.gpu_quarantine_enabled),
+            "gpu_quarantine_threshold": str(cfg.gpu_quarantine_threshold),
+            "gpu_quarantine_window_seconds": str(cfg.gpu_quarantine_window_seconds),
         }
     )
 

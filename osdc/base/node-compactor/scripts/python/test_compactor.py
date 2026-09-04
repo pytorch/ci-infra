@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from compactor import _fleet_group_key, main, reconcile
+from compactor import _fleet_group_key, main, quarantine_gpu_black_holes, reconcile
 from fit import _pods_fit_on_nodes
 from lightkube import ApiError
 from models import (
@@ -50,6 +50,10 @@ def make_config(**overrides) -> Config:
         "peak_window_seconds": 2700,
         "pending_pod_max_age_seconds": 14400,
         "pending_pod_min_age_seconds": 0,
+        "gpu_quarantine_enabled": True,
+        "gpu_quarantine_threshold": 3,
+        "gpu_quarantine_window_seconds": 300,
+        "gpu_quarantine_max_fleet_ratio": 0.2,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -3150,3 +3154,127 @@ class TestPendingPodsInBinPack:
         to_taint, *_ = compute_taints(nodes, cfg, pending_pods=[pp])
         # Zero-request pod doesn't inflate bin_pack; surplus = 3-1 = 2 tainted
         assert len(to_taint) == 2
+
+
+class TestQuarantineGPUBlackHoles:
+    """Tests for quarantine_gpu_black_holes().
+
+    A GPU black hole reports Ready and advertises full allocatable GPUs the
+    whole time it is destroying pods, so quarantine has to run before any
+    capacity decision treats it as usable.
+    """
+
+    def _failing_node(self, name="bad", failures=3, gpu=4, fleet="g5", quarantined=False) -> NodeState:
+        ns = NodeState(
+            name=name,
+            nodepool="g5-24xlarge",
+            allocatable_cpu=96.0,
+            allocatable_memory=384 * GiB,
+            allocatable_gpu=gpu,
+            creation_time=NOW - timedelta(hours=2),
+            labels={"node-fleet": fleet},
+            is_gpu_quarantined=quarantined,
+        )
+        ns.admission_failures = [NOW - timedelta(seconds=5)] * failures
+        return ns
+
+    @patch("compactor.apply_taint")
+    def test_taints_black_hole(self, mock_apply):
+        cfg = make_config()
+        states = {"bad": self._failing_node()}
+
+        quarantined = quarantine_gpu_black_holes(MagicMock(), cfg, states)
+
+        assert quarantined == {"bad"}
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args[0][1] == "bad"
+        assert mock_apply.call_args[0][2] == "node-compactor.osdc.io/gpu-unhealthy"
+
+    @patch("compactor.apply_taint")
+    def test_updates_in_memory_state_same_cycle(self, _mock_apply):
+        """Downstream scheduling checks in this same cycle must see the taint."""
+        cfg = make_config()
+        node = self._failing_node()
+        states = {"bad": node}
+
+        quarantine_gpu_black_holes(MagicMock(), cfg, states)
+
+        assert node.is_gpu_quarantined is True
+        assert any(t.key == "node-compactor.osdc.io/gpu-unhealthy" for t in node.node_taints)
+
+    @patch("compactor.apply_taint")
+    def test_dry_run_does_not_mutate_state(self, _mock_apply):
+        cfg = make_config(dry_run=True)
+        node = self._failing_node()
+
+        quarantine_gpu_black_holes(MagicMock(), cfg, {"bad": node})
+
+        assert node.is_gpu_quarantined is False
+        assert node.node_taints == []
+
+    @patch("compactor.apply_taint")
+    def test_healthy_node_untouched(self, mock_apply):
+        cfg = make_config()
+        states = {"ok": self._failing_node("ok", failures=0)}
+
+        quarantined = quarantine_gpu_black_holes(MagicMock(), cfg, states)
+
+        assert quarantined == set()
+        mock_apply.assert_not_called()
+
+    @patch("compactor.apply_taint")
+    def test_disabled_is_a_no_op(self, mock_apply):
+        cfg = make_config(gpu_quarantine_enabled=False)
+
+        quarantine_gpu_black_holes(MagicMock(), cfg, {"bad": self._failing_node()})
+
+        mock_apply.assert_not_called()
+
+    @patch("compactor.apply_taint")
+    def test_vanished_node_is_not_an_error(self, mock_apply):
+        """Karpenter may reap the node between our read and our patch."""
+        mock_apply.side_effect = _make_api_error(404)
+        cfg = make_config()
+
+        quarantined = quarantine_gpu_black_holes(MagicMock(), cfg, {"bad": self._failing_node()})
+
+        assert quarantined == set()
+
+    @patch("compactor.apply_taint")
+    def test_api_error_is_recorded_not_raised(self, mock_apply):
+        mock_apply.side_effect = _make_api_error(500)
+        cfg = make_config()
+
+        quarantined = quarantine_gpu_black_holes(MagicMock(), cfg, {"bad": self._failing_node()})
+
+        assert quarantined == set()
+
+    @patch("compactor.apply_taint")
+    def test_unexpected_error_does_not_break_the_cycle(self, mock_apply):
+        """One bad node must not stop the compactor reconciling the rest."""
+        mock_apply.side_effect = RuntimeError("boom")
+        cfg = make_config()
+
+        quarantined = quarantine_gpu_black_holes(MagicMock(), cfg, {"bad": self._failing_node()})
+
+        assert quarantined == set()
+
+    @patch("compactor.apply_taint")
+    def test_reconcile_quarantines_before_capacity_decisions(self, mock_apply):
+        """End-to-end through reconcile(), not just the helper."""
+        cfg = make_config()
+        client = MagicMock()
+        node = self._failing_node()
+
+        with (
+            patch("compactor.discover_managed_nodes", return_value={"bad": "g5-24xlarge"}),
+            patch("compactor.build_node_states", return_value=({"bad": node}, [])),
+            patch("compactor.check_pending_pods", return_value=(set(), 0)),
+            patch("compactor.compute_taints", return_value=(set(), set(), set(), set())),
+            patch("compactor.remove_taint"),
+        ):
+            reconcile(client, cfg, {})
+
+        assert any(call.args[2] == "node-compactor.osdc.io/gpu-unhealthy" for call in mock_apply.call_args_list), (
+            "reconcile() did not apply the quarantine taint"
+        )
