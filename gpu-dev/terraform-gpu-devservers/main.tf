@@ -488,9 +488,9 @@ locals {
         { key = "cr2", id = null, instance_count = 2 },                   # B200 on-demand (2 instances)
         # cr-0ff6b4e00366a231d replaces cr-0f5f6bb30a8fe3c68 (expired 2026-09-01).
         # The new block holds ONE instance where the old held two, so cr3 + cr4
-        # must sum to <= 1. Both start at 0 so this is safe to land before the
-        # block opens (2026-09-10 11:30 UTC); set exactly one to 1 afterwards.
-        { key = "cr3", id = "cr-0ff6b4e00366a231d", instance_count = 0 }, # B200 reservation us-east-2b (full 8-GPU node)
+        # must sum to <= 1. The instance goes to cr3 (whole node); cr4 stays at 0
+        # until there is a second instance to partition.
+        { key = "cr3", id = "cr-0ff6b4e00366a231d", instance_count = 1 }, # B200 reservation us-east-2b (full 8-GPU node)
         { key = "cr4", id = "cr-0ff6b4e00366a231d", instance_count = 0, mig_profile = "b200-6full-2mig-balanced" }, # B200 reservation us-east-2b (MIG node, auto-labeled)
       ]
       # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
