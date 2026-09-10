@@ -484,10 +484,14 @@ locals {
       ]
       b200 = [
         { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 0 }, # B200 reservation us-east-2a (disabled - CR freed)
-        { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
+        { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 0 }, # B200 reservation us-east-2b (disabled - CR deleted 2026-09)
         { key = "cr2", id = null, instance_count = 2 },                   # B200 on-demand (2 instances)
-        { key = "cr3", id = "cr-0f5f6bb30a8fe3c68", instance_count = 1 }, # B200 reservation us-east-2b (1 regular instance)
-        { key = "cr4", id = "cr-0f5f6bb30a8fe3c68", instance_count = 1, mig_profile = "b200-6full-2mig-balanced" }, # B200 reservation us-east-2b (1 MIG instance, auto-labeled)
+        # cr-0ff6b4e00366a231d replaces cr-0f5f6bb30a8fe3c68 (expired 2026-09-01).
+        # The new block holds ONE instance where the old held two, so cr3 + cr4
+        # must sum to <= 1. Both start at 0 so this is safe to land before the
+        # block opens (2026-09-10 11:30 UTC); set exactly one to 1 afterwards.
+        { key = "cr3", id = "cr-0ff6b4e00366a231d", instance_count = 0 }, # B200 reservation us-east-2b (full 8-GPU node)
+        { key = "cr4", id = "cr-0ff6b4e00366a231d", instance_count = 0, mig_profile = "b200-6full-2mig-balanced" }, # B200 reservation us-east-2b (MIG node, auto-labeled)
       ]
       # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
     }
@@ -564,7 +568,8 @@ locals {
       "cr-0c366fb8339a10f69" = "primary"   # us-east-2a
       "cr-0122dff5e01d566dc" = "secondary" # us-east-2b
       "cr-08e7fee0b8dc3de5e" = "secondary" # us-east-2b
-      "cr-0f5f6bb30a8fe3c68" = "secondary" # us-east-2b
+      "cr-0f5f6bb30a8fe3c68" = "secondary" # us-east-2b (expired 2026-09-01 - kept to prevent ASG destroy)
+      "cr-0ff6b4e00366a231d" = "secondary" # us-east-2b (capacity block 2026-09-10 -> 2026-11-05, 1 instance)
       # H200 capacity reservations
       "cr-0f6d0766f5d3339e6" = "tertiary" # us-east-2c (may be expired - kept to prevent ASG destroy)
       "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
