@@ -7426,31 +7426,13 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
             return vol_id, True, None
 
         # Step 2: Find the snapshot to restore from.
-        # Query pending BEFORE completed. A snapshot that is pending during the
-        # first query and completed by the second must land in at least one
-        # result set -- in this order it does (pending, then also completed, and
-        # the StartTime comparison below lets it through). Querying completed
-        # first would let it fall into the gap between the two calls and be
-        # silently skipped, restoring the previous session's snapshot instead.
-        pending_filters = [
-            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-            {"Name": "status", "Values": ["pending"]},
-        ]
-        if disk_name:
-            pending_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
-
-        pending_response = ec2_client.describe_snapshots(
-            OwnerIds=["self"],
-            Filters=pending_filters
-        )
-
-        pending_snapshots = filter_own_snapshots(
-            pending_response.get('Snapshots', []), "pending"
-        )
-
+        # One query for both states, split on State below. Two separate queries
+        # leave a window where a snapshot that is pending during the first and
+        # completed by the second is returned by neither, so the disk silently
+        # restores an older snapshot -- the exact failure this gate prevents.
         snapshot_filters = [
             {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-            {"Name": "status", "Values": ["completed"]},
+            {"Name": "status", "Values": ["pending", "completed"]},
         ]
         if disk_name:
             snapshot_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
@@ -7468,10 +7450,13 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
             snapshots.extend(page.get('Snapshots', []))
 
         # Drop soft-deleted ones (delete-date tag) and third-party copies
-        active_snapshots = filter_own_snapshots([
+        own_snapshots = filter_own_snapshots([
             snap for snap in snapshots
             if 'delete-date' not in {t['Key']: t['Value'] for t in snap.get('Tags', [])}
-        ], "completed")
+        ])
+
+        pending_snapshots = [s for s in own_snapshots if s.get('State') == 'pending']
+        active_snapshots = [s for s in own_snapshots if s.get('State') == 'completed']
 
         latest_snapshot = max(active_snapshots, key=lambda s: s['StartTime']) if active_snapshots else None
         if pending_snapshots:
