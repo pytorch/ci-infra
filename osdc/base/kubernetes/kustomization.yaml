@@ -12,8 +12,6 @@ resources:
   - nvidia-device-plugin.yaml
   - harbor-namespace.yaml
   - registry-mirror-config.yaml
-  - algif-mitigation.yaml
-  - dirtyfrag-mitigation.yaml
   # node-taint-remover ships only a ConfigMap (generated at apply time from
   # lib/taint_remover.py to avoid drift). Its kustomization.yaml is a
   # placeholder; deploy.sh in deploy-base does the actual ConfigMap apply

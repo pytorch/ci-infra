@@ -2098,20 +2098,6 @@ class TestRealStartupTaintsRegistry:
         assert entries[0]["value"] == "true"
         assert entries[0]["effect"] == "NoSchedule"
 
-    def test_real_registry_contains_algif_mitigation_taint(self):
-        entries = self._entries_for_key("node-init.osdc.io/algif-mitigation")
-        assert len(entries) == 1
-        assert entries[0]["module"] is None
-        assert entries[0]["value"] == "true"
-        assert entries[0]["effect"] == "NoSchedule"
-
-    def test_real_registry_contains_dirtyfrag_mitigation_taint(self):
-        entries = self._entries_for_key("node-init.osdc.io/dirtyfrag-mitigation")
-        assert len(entries) == 1
-        assert entries[0]["module"] is None
-        assert entries[0]["value"] == "true"
-        assert entries[0]["effect"] == "NoSchedule"
-
     def test_real_registry_renders_taints_in_nodepool(self, monkeypatch):
         """End-to-end: with cache-enforcer enabled, all base + cache-enforcer taint keys appear."""
         monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer")
@@ -2121,8 +2107,6 @@ class TestRealStartupTaintsRegistry:
         assert "node-init.osdc.io/cache-enforcer" in keys
         assert "node-init.osdc.io/registry-mirror" in keys
         assert "node-init.osdc.io/perf-tuning" in keys
-        assert "node-init.osdc.io/algif-mitigation" in keys
-        assert "node-init.osdc.io/dirtyfrag-mitigation" in keys
 
     def test_real_registry_skips_cache_enforcer_when_module_disabled(self, monkeypatch):
         """With cache-enforcer disabled, only the base taints (module=None) appear."""
@@ -2133,8 +2117,6 @@ class TestRealStartupTaintsRegistry:
         assert "node-init.osdc.io/cache-enforcer" not in keys
         assert "node-init.osdc.io/registry-mirror" in keys
         assert "node-init.osdc.io/perf-tuning" in keys
-        assert "node-init.osdc.io/algif-mitigation" in keys
-        assert "node-init.osdc.io/dirtyfrag-mitigation" in keys
 
     def test_real_registry_skips_cache_enforcer_on_release_runner_nodepool(self, monkeypatch):
         """cache-enforcer DS excludes release runners by nodeAffinity — its taint must also be skipped there."""

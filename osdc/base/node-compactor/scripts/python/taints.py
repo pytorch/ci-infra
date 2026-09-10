@@ -38,8 +38,6 @@ _IGNORED_TAINT_KEYS = frozenset(
         "node-init.osdc.io/cache-enforcer",
         "node-init.osdc.io/registry-mirror",
         "node-init.osdc.io/perf-tuning",
-        "node-init.osdc.io/algif-mitigation",
-        "node-init.osdc.io/dirtyfrag-mitigation",
         # Karpenter startup taint (NoExecute on brand-new nodes, removed once
         # the kubelet registers). karpenter.sh/disrupted is intentionally NOT
         # ignored — it marks a node Karpenter has committed to terminating,

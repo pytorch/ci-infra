@@ -42,7 +42,7 @@ osdc/
 │   └── python/
 │       └── configure_harbor_projects.py  # Harbor proxy cache project setup
 ├── base/                   # Deployed to EVERY cluster
-│   ├── kubernetes/         # StorageClass, NVIDIA plugin, Harbor NS, perf tuning, image-cache-janitor, nodelocaldns, node-taint-remover, registry-mirror config, git-cache, algif-mitigation (CVE-2026-31431, temporary), dirtyfrag-mitigation (CVE-2026-43284 + CVE-2026-43500, temporary)
+│   ├── kubernetes/         # StorageClass, NVIDIA plugin, Harbor NS, perf tuning, image-cache-janitor, nodelocaldns, node-taint-remover, registry-mirror config, git-cache
 │   │   ├── eniconfigs/     # AZ-named ENIConfig CRs (one per AZ from private_subnets_by_az terraform output); inert until VPC CNI Custom Networking is enabled. Not used under IPv6-only mode (Custom Networking is IPv4-only); retained as IPv4 rollback safety net
 │   │   ├── harbor/         # PDB template (sed-substituted, applied by _deploy-harbor)
 │   │   ├── image-cache-janitor/ # Cleans up unused cached container images on nodes

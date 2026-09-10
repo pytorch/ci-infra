@@ -84,24 +84,6 @@ STARTUP_TAINTS: list[dict] = [
         "value": "true",
         "effect": "NoSchedule",
     },
-    {
-        "module": None,
-        "key": "node-init.osdc.io/algif-mitigation",
-        "value": "true",
-        "effect": "NoSchedule",
-    },
-    {
-        "module": None,
-        "key": "node-init.osdc.io/dirtyfrag-mitigation",
-        "value": "true",
-        "effect": "NoSchedule",
-    },
-    # The two CVE-mitigation entries above MUST be removed in lockstep with
-    # their owning DaemonSet manifests at
-    # base/kubernetes/{algif,dirtyfrag}-mitigation.yaml. Deleting the DS while
-    # leaving the registry entry in place would taint every new node with a
-    # taint nothing removes, hanging workload scheduling indefinitely. The
-    # AMI-version gates in clusters.yaml track when both can be retired.
 ]
 
 
@@ -252,16 +234,6 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         compactor_label = ""
 
     # ----- GPU vs CPU settings -----
-    # TODO(CVE-2026-31431): the AL2023 aliases / name globs below already track
-    # @latest, so node rotation picks up the fix automatically once AWS ships a
-    # kernel 6.12.85+ AMI. Once rolled out across all nodes, remove
-    # osdc/base/kubernetes/algif-mitigation.yaml.
-    # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
-    # TODO(CVE-2026-43284): the AL2023 aliases / name globs below already track
-    # @latest, so node rotation picks up the fix automatically once AWS ships a
-    # kernel with the DirtyFrag fix (6.1.170+ or 6.12.83+). Once rolled out
-    # across all nodes, remove osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
-    # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
     if is_gpu:
         ami_family_block = "  amiFamily: AL2023"
         ami_selector_block = """  amiSelectorTerms:
