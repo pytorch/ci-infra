@@ -34,6 +34,7 @@ MODULE = Path(__file__).resolve().parent.parent
 POLICY_PATH = MODULE / "kubernetes" / "base" / "admissionpolicy.yaml"
 DEPLOY_SH = MODULE / "deploy.sh"
 DISPATCHER_MANIFEST = MODULE / "kubernetes" / "base" / "dispatcher.yaml"
+KUSTOMIZATION = MODULE / "kubernetes" / "base" / "kustomization.yaml"
 
 
 def _deployed_image_repository() -> str:
@@ -338,6 +339,10 @@ def test_each_rule_rejects_its_own_violation(message):
         # broke: the scheduler has bound the pod, so nodeName is set on every subsequent
         # UPDATE the Pod binding sees.
         ({"nodeName": "ip-10-0-0-1"}, False, "UPDATE", True),
+        # The fourth quadrant, and the one that keeps the exemption honest: a Job template
+        # is never bound by the scheduler, so nothing sets nodeName there. Drop the
+        # `not is_job` guard from the mirror and only this case reddens.
+        ({"nodeName": "ip-10-0-0-1"}, True, "UPDATE", False),
     ],
 )
 def test_the_nodename_rule_admits_a_bound_pod_on_update(pod, is_job, operation, admitted):
@@ -359,8 +364,12 @@ def test_bindings_deny_rather_than_warn(policy, bindings):
 
 
 def _binding_for(bindings, resource):
+    # Membership rather than list equality: the ephemeral-container gap the policy file
+    # prescribes closing is spelled `resources: ["pods", "pods/ephemeralcontainers"]` on
+    # the existing rule, and an `==` here would then report the Pod binding as missing —
+    # sending whoever makes that change after a helper rather than after their change.
     matches = [
-        b for b in bindings if any(r["resources"] == [resource] for r in b["spec"]["matchResources"]["resourceRules"])
+        b for b in bindings if any(resource in r["resources"] for r in b["spec"]["matchResources"]["resourceRules"])
     ]
     assert len(matches) == 1, f"expected exactly one binding covering {resource}, found {len(matches)}"
     return matches[0]
@@ -384,27 +393,183 @@ def test_the_pod_pass_selects_the_label_the_job_template_stamps(bindings):
     )
 
 
+# A Job field reached through `object`/`oldObject` rather than through `variables.pod`.
+#
+# `\s*` around the dots because CEL allows it there, and that is where an evasion would sit
+# (`object.spec .parallelism`). `\b` rather than a hand-built lookbehind: three rounds of
+# review each found a new hole in a cleverer predecessor — collapsing whitespace globally
+# welded `'app' in object.spec…` into one token and hid the real rule at the bottom of the
+# policy; collapsing it around dots then hid `'app' in .object.spec…`. A lexer is the only
+# thing that ends that regress, and a lexer is far too much machinery for a spelling lint.
+#
+# So this errs deliberately toward MATCHING. `variables.object.spec.x` — a member access on a
+# variable named `object`, which does not exist — would be flagged, as would a dotted path
+# inside a string literal such as `'registry/object.spec.image'`. Both cost a spurious RED on
+# a safe rule, which a maintainer reads and dismisses; the failure this test exists to prevent
+# is the opposite one, and is not on that list. Known misses, unchanged: a parenthesised
+# `(object.spec).suspend`, an access split by a CEL comment, and a future `variables` alias.
+_JOB_FIELD_ACCESS = re.compile(r"""(?<!['"])\b(?:old)?[Oo]bject\s*\.\s*spec\s*\.""")
+
+
+def _reaches_a_job_field(expression: str) -> bool:
+    return bool(_JOB_FIELD_ACCESS.search(expression))
+
+
+def test_the_kustomization_does_not_rewrite_the_dispatcher_identity():
+    """Why reading the identity off the source manifest is sound TODAY.
+
+    The test above derives `system:serviceaccount:<ns>:<sa>` from dispatcher.yaml, which is
+    the deployed value only because the base applies the manifests as written. Add a
+    `namespace:` or a name prefix here and the cluster sees a subject the policy's
+    matchCondition does not name — the Job pass switches off silently, and deriving from
+    source would go on agreeing with itself.
+
+    Scope, stated rather than implied: this is a denylist of the directives that can rewrite
+    an identity, so it is a tripwire on the deployment path staying simple, NOT a proof that
+    no rendering can change it. The complete answer is to render the kustomization and compare
+    the rendered Deployment against the rendered policy condition, which needs a kustomize
+    binary this unit suite does not have.
+    """
+    kustomization = yaml.safe_load(KUSTOMIZATION.read_text())
+    # Case-insensitively: kustomize decodes through Go's JSON decoder, which matches field
+    # names without regard to case, so a `Namespace:` key would apply and an exact-match
+    # denylist would not see it.
+    declared = {k.lower(): v for k, v in kustomization.items()}
+    rewriters = sorted(
+        k
+        for k in (
+            "namespace",
+            "namePrefix",
+            "nameSuffix",
+            "patches",
+            "patchesStrategicMerge",
+            "patchesJson6902",
+            "replacements",
+            "components",
+            "transformers",
+            # `nameReference` is transformer CONFIG, not a top-level key — but
+            # `configurations` is what loads one, and a custom ConfigMap nameReference
+            # pointed at spec/template/spec/serviceAccountName rewrites the identity with
+            # every other directive here untouched. `vars` is the deprecated route to the same.
+            "configurations",
+            "vars",
+            # Deprecated, but still accepted, and it takes a DIRECTORY — the same nested
+            # route the resources check below closes.
+            "bases",
+        )
+        if declared.get(k.lower())
+    )
+    assert not rewriters, (
+        f"{KUSTOMIZATION.name} now applies {rewriters}, which can change the identity the "
+        "dispatcher presents — derive it from the rendered output instead of dispatcher.yaml"
+    )
+
+    # A directory entry is a NESTED kustomization, which carries its own transformers — it
+    # could apply `namespace:` to the Deployment while every check above passes and
+    # dispatcher.yaml still reads the old subject. Requiring a bare filename in THIS
+    # directory, not merely something `is_file()` resolves, is what keeps the manifest this
+    # test reads and the manifest that deploys as the same file: `sub/x.yaml`, an absolute
+    # path and a symlink out of the tree all satisfy `is_file()` and none of them would.
+    def is_local_manifest(entry: str) -> bool:
+        path = KUSTOMIZATION.parent / entry
+        return entry == Path(entry).name and path.is_file() and not path.is_symlink()
+
+    resources = declared.get("resources") or []
+    nested = sorted(e for e in resources if not is_local_manifest(e))
+    assert not nested, (
+        f"{KUSTOMIZATION.name} pulls in {nested}, which is not a plain manifest in this "
+        "directory — a nested kustomization can rewrite the identity out of this test's sight"
+    )
+    # The check above bounds what MAY be deployed; this one is what makes the two manifests
+    # the test reads the ones that ARE. Swap dispatcher.yaml for a same-directory
+    # dispatcher-v2.yaml carrying a different subject and everything above stays green while
+    # the identity test goes on reading a file nobody applies.
+    for manifest in (DISPATCHER_MANIFEST, POLICY_PATH):
+        assert manifest.name in resources, (
+            f"{manifest.name} is no longer in {KUSTOMIZATION.name}'s resources, so the file "
+            "the identity tests read is not the file this module deploys"
+        )
+
+
+def test_job_only_rules_are_guarded_for_the_pod_pass(policy):
+    """One policy matches two kinds, so a rule reaching `object.spec` needs a kind guard.
+
+    Five validations reach Job fields through `object.spec` rather than through
+    `variables.pod`, and all five carry the `!variables.isJob ||` prefix. Nothing else
+    requires it, so this enforces the SPELLING CONVENTION rather than proving each rule
+    unsafe without it. Before this test, a sixth Job-level bound written without the prefix
+    shipped a green unit suite. What that costs depends on the shape. A
+    `!has(object.spec.ttlSeconds...)`
+    rule is harmless — `has()` on an absent field of a dynamically typed object is simply
+    false. A rule that DEREFERENCES the field (`object.spec.ttlSecondsAfterFinished == 0`)
+    hits `no such key` on every task pod, and failurePolicy: Fail turns that evaluation
+    error into a denial: the Job controller can create no pod, and every /run hangs to its
+    deadline pointing at the Job controller rather than at the new rule.
+
+    Three things this does NOT prove, so nobody reads it as more than it is. It is textual,
+    so it sees neither an access through a future `variables` alias nor a parenthesised
+    spelling like `(object.spec).suspend`; a leading guard is not proof the whole expression
+    is protected, since a lower-precedence ternary later in the same expression can put a
+    dereference outside it; and the guard is not the only thing that can make a rule safe —
+    the `parallelism` and `completions` rules would also admit an absent field through their
+    own `!has(...)`. Splitting the Job bounds into a second policy whose matchConstraints
+    name only batch/jobs is what would make the guarantee structural instead.
+    """
+    unguarded = [
+        v["message"]
+        for v in policy["spec"]["validations"]
+        if _reaches_a_job_field(v["expression"]) and not v["expression"].lstrip().startswith("!variables.isJob ||")
+    ]
+    assert not unguarded, (
+        "these rules reach a Job field through object.spec without the `!variables.isJob ||` "
+        f"guard, so the Pod pass may deny every task pod: {unguarded}"
+    )
+
+
 def test_policy_fails_closed_and_covers_both_kinds(policy):
     assert policy["spec"]["failurePolicy"] == "Fail"
-    rules = {
-        (tuple(r["apiGroups"]), tuple(r["resources"]), frozenset(r["operations"]))
-        for r in policy["spec"]["matchConstraints"]["resourceRules"]
-    }
-    assert (("batch",), ("jobs",), frozenset({"CREATE", "UPDATE"})) in rules
-    assert (("",), ("pods",), frozenset({"CREATE", "UPDATE"})) in rules
+
+    # Membership, for the same reason _binding_for uses it: adding
+    # `pods/ephemeralcontainers` to the pods rule — the change this policy file prescribes
+    # — must not make this assertion claim the policy stopped covering pods.
+    # ONLY the resources list is relaxed to membership, and only so that adding
+    # `pods/ephemeralcontainers` — the change this policy file prescribes — does not make
+    # this assertion claim the Pod pass disappeared. apiGroups and operations stay exact:
+    # widening either is a change that should be read rather than absorbed here.
+    def covers(api_group: str, resource: str) -> bool:
+        return any(
+            r["apiGroups"] == [api_group]
+            and resource in r["resources"]
+            and set(r["operations"]) == {"CREATE", "UPDATE"}
+            for r in policy["spec"]["matchConstraints"]["resourceRules"]
+        )
+
+    assert covers("batch", "jobs"), "the Job pass matches nothing"
+    assert covers("", "pods"), "the Pod pass matches nothing"
 
 
 def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
     """Scoping it to the one process holding create-Job RBAC is what lets the namespace
-    also hold an ordinary maintenance Job (the JWKS refresher) without that Job having to
+    also hold an ordinary maintenance Job (none exists today) without that Job having to
     satisfy a contract written for untrusted agent workloads.
+
+    The username is DERIVED from the Deployment rather than restated here, for the same
+    reason the image repository is read out of deploy.sh: a hand-written copy would make
+    the one value that gates the whole Job pass the one value checked against this test's
+    own opinion. Its drift also fails open — rename the SA or the namespace everywhere but
+    admissionpolicy.yaml and no Job request satisfies the condition, so every Job the
+    dispatcher creates is admitted unchecked, silently and with this suite green.
 
     The Pod pass must stay unconditional: pods are created by the Job controller, so a
     blanket userInfo condition would switch the second pass off entirely."""
     conditions = policy["spec"]["matchConditions"]
     assert len(conditions) == 1
     expression = conditions[0]["expression"]
-    assert "system:serviceaccount:ai-sandbox:sandbox-dispatcher" in expression
+    assert f"'{_deployed_dispatcher_identity()}'" in expression, (
+        f"the condition names a subject the module does not deploy; the Deployment runs as "
+        f"{_deployed_dispatcher_identity()}, so no Job request would satisfy it and the Job "
+        f"pass would be off: {expression}"
+    )
     assert "request.kind.kind != 'Job'" in expression, (
         "the condition must exempt non-Job requests, or it disables the Pod pass"
     )
@@ -466,8 +631,8 @@ EXPRESSION_DIGESTS = {
 # The expressions every pod-level rule is READ THROUGH, and the one that decides whether
 # a request is evaluated at all. EXPRESSION_DIGESTS covers `validations` only, so before
 # this a rewrite of `variables.pod` — the ternary that keeps the Job pass and the Pod pass
-# looking at the same fields — silently changed the meaning of the twenty rules that read
-# it, with nothing in this file able to see the edit.
+# looking at the same fields — silently changed the meaning of every pod-level rule that
+# reads it, with nothing in this file able to see the edit.
 MATCH_CONDITION_DIGESTS = {
     "job-writes-come-from-the-dispatcher": "7946d5ff4d30",
 }
@@ -551,6 +716,28 @@ def test_the_deadline_ceiling_admits_the_deadline_the_dispatcher_deploys(policy)
     )
 
 
+def _dispatcher_deployment() -> dict:
+    return next(
+        d
+        for d in yaml.safe_load_all(DISPATCHER_MANIFEST.read_text())
+        if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "sandbox-dispatcher"
+    )
+
+
+def _deployed_dispatcher_identity() -> str:
+    """The API-server username the dispatcher actually presents, read off its Deployment.
+
+    Read from the source manifest rather than from a rendered kustomization, which is only
+    sound while the base applies no identity-changing transformer.
+    test_the_kustomization_does_not_rewrite_the_dispatcher_identity is a tripwire on the
+    directives that could — a denylist, not a proof that none can.
+    """
+    deployment = _dispatcher_deployment()
+    namespace = deployment["metadata"]["namespace"]
+    service_account = deployment["spec"]["template"]["spec"]["serviceAccountName"]
+    return f"system:serviceaccount:{namespace}:{service_account}"
+
+
 def _deployed_env(name: str) -> str | None:
     """The literal value dispatcher.yaml sets for an env var, or None if it sets none.
 
@@ -558,11 +745,7 @@ def _deployed_env(name: str) -> str | None:
     both would quietly turn the comparison below into a no-op — so an `envFrom` block, or
     a `valueFrom` on this variable, fails here instead.
     """
-    deployment = next(
-        d
-        for d in yaml.safe_load_all(DISPATCHER_MANIFEST.read_text())
-        if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "sandbox-dispatcher"
-    )
+    deployment = _dispatcher_deployment()
     for container in deployment["spec"]["template"]["spec"]["containers"]:
         assert not container.get("envFrom"), (
             f"{container['name']} pulls env from an envFrom source, which could set {name} out of this test's sight"

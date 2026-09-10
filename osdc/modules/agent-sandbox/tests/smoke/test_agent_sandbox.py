@@ -14,11 +14,12 @@ is the only place the admission policy's CEL is actually evaluated.
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import pytest
 import yaml
-from helpers import assert_deployment_ready, filter_deployments, filter_services, run_kubectl
+from helpers import DEFAULT_TIMEOUT, assert_deployment_ready, filter_deployments, filter_services, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
@@ -66,11 +67,12 @@ class TestTaskAdmissionPolicy:
     """The cluster-side copy of the task-pod isolation contract.
 
     The dispatcher's unit tests check that the two copies agree; only a live cluster can
-    check that the CEL compiles and that the API server actually denies. A policy whose
-    expressions fail to type-check is still created and reports the failure in
-    `.status.typeChecking` — under `failurePolicy: Fail` such a rule then denies every
-    matching request at runtime, so the symptom is an outage rather than a hole, and
-    `kubectl get` succeeding says nothing either way. The probes below are the assertion.
+    check that the CEL compiles and that the API server actually denies. `kubectl get`
+    succeeding says nothing either way — the object is accepted before any request has been
+    evaluated against it — and under `failurePolicy: Fail` an expression that errors at
+    evaluation time denies the request, so the symptom is an outage rather than a hole. The
+    dry-run probes below are what settle that. `.status.typeChecking` is a separate,
+    advisory, schema-level signal and is read with that distinction in mind.
 
     These are all CREATE probes. The nodeName rule's UPDATE branch cannot be reached from
     here — it needs a pod the scheduler has actually bound — and is covered by the
@@ -82,13 +84,19 @@ class TestTaskAdmissionPolicy:
 
     def _server_dry_run(self, manifest: str) -> subprocess.CompletedProcess:
         """Apply against the API server without persisting. Server-side dry-run runs the
-        full admission chain, this policy included."""
+        full admission chain, this policy included.
+
+        Bounded, like run_kubectl: kubectl's own request timeout defaults to unbounded, so
+        an API server that accepts the connection and never answers — or a kubeconfig exec
+        credential plugin waiting on input — would park an xdist worker forever and hang
+        `just smoke` rather than failing it."""
         return subprocess.run(
-            ["kubectl", "-n", NAMESPACE, "apply", "--dry-run=server", "-f", "-"],
+            ["kubectl", "-n", NAMESPACE, "apply", "--dry-run=server", "--request-timeout=60s", "-f", "-"],
             input=manifest,
             capture_output=True,
             text=True,
             check=False,
+            timeout=DEFAULT_TIMEOUT,
         )
 
     def _task_pod(self, name: str, **spec_overrides: object) -> str:
@@ -128,6 +136,32 @@ class TestTaskAdmissionPolicy:
             }
         )
 
+    # `<gvk>:` at the start of a line, one block per matched kind. Anchored and whole-token on
+    # purpose: a substring test for "v1, Kind=Pod" also swallows "example.com/v1, Kind=Pod"
+    # and "v1, Kind=PodTemplate". Leading indent tolerated, because an indented block would
+    # otherwise go unparsed and therefore unnoticed. `ERROR:` is deliberately NOT required:
+    # a Job block reporting something else ("expression must evaluate to bool") has to be
+    # seen too, and keying on the GVK rather than on the message keeps that true.
+    _GVK_HEADER = re.compile(r"^[ \t]*(\S+, Kind=\S+?):", re.MULTILINE)
+    EXPECTED_TYPE_CHECK_KIND = "v1, Kind=Pod"
+
+    @classmethod
+    def _is_expected_pod_diagnostic(cls, warning: str) -> bool:
+        """True only if every diagnostic BLOCK in this entry is against the Pod kind.
+
+        Attribution is by GVK block, not by counting `ERROR:` tokens. One GVK's compilation
+        can report several errors under a single header, and a CEL source line echoed into
+        the message can itself contain the token — a count would then reject an ordinary
+        Pod-only entry and restore the permanent red this whole predicate exists to remove.
+        What must not be ignored is text belonging to NO block, which is what the head check
+        below rejects: an entry whose text starts before any header this test recognises.
+        """
+        headers = cls._GVK_HEADER.findall(warning)
+        if not headers or set(headers) != {cls.EXPECTED_TYPE_CHECK_KIND}:
+            return False
+        head = warning[: cls._GVK_HEADER.search(warning).start()]
+        return not head.strip()
+
     def test_policy_and_both_bindings_are_deployed(self) -> None:
         policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
         assert policy["spec"]["failurePolicy"] == "Fail"
@@ -141,8 +175,33 @@ class TestTaskAdmissionPolicy:
         )
 
     def test_the_policy_type_checks(self) -> None:
-        """A type error does not stop the policy being created; it is reported here, and
-        at runtime it becomes a denial of every matching request."""
+        """Type checking is advisory, and against Pod it is EXPECTED to complain.
+
+        The API server type-checks every expression against every GVK matchConstraints
+        resolves to, and this policy names two. Job-level rules reach fields a PodSpec does
+        not have (`parallelism`, `completions`, `backoffLimit`, `template`) behind a
+        `!variables.isJob ||` guard the static checker cannot follow, so each produces a
+        `v1, Kind=Pod` diagnostic here, permanently, on a policy that is working correctly.
+        Runtime is unaffected: VAP compiles `object` as DynType for evaluation, which is why
+        type checking is warnings-only rather than a denial. Asserting the list is empty
+        would turn `just smoke` red on every cluster with this module enabled.
+
+        So SUPPRESS the one recognised shape rather than filter for the failing one: an entry
+        is expected only if every `<gvk>:` block it carries is against `v1, Kind=Pod`.
+        Everything else reddens — a Job-side diagnostic, an entry combining both kinds, an
+        entry with no warning text, an entry whose text starts before any header this test
+        recognises. Suppressing by substring instead would have swallowed
+        `example.com/v1, Kind=Pod` and `v1, Kind=PodTemplate`, and a payload-format change
+        would have turned the assertion permanently vacuous — worse than the red it removes.
+
+        Three limits stated rather than papered over. An empty warning list is legitimate, so
+        this cannot detect that suppression is over-broad. A rule wrong against Pod ALONE is
+        suppressed; `test_job_only_rules_are_guarded_for_the_pod_pass` covers the shapes of
+        that visible statically, and splitting this into a Jobs policy and a Pods policy is
+        what would recover the rest. And the header format below has not been observed on a
+        live cluster — if the real payload differs, this reddens with the raw entries in the
+        message, which is the signal needed to pin the format down.
+        """
         policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
         status = policy.get("status", {})
         assert status.get("observedGeneration") == policy["metadata"]["generation"], (
@@ -150,8 +209,12 @@ class TestTaskAdmissionPolicy:
             f"observedGeneration={status.get('observedGeneration')}, generation={policy['metadata']['generation']}."
         )
         assert "typeChecking" in status, "no typeChecking result on an observed policy generation"
-        failures = status["typeChecking"].get("expressionWarnings") or []
-        assert not failures, f"CEL type-check warnings on {self.POLICY}: {failures}"
+        warnings = status["typeChecking"].get("expressionWarnings") or []
+        failures = [w for w in warnings if not self._is_expected_pod_diagnostic(w.get("warning", ""))]
+        assert not failures, (
+            f"CEL type-check warnings on {self.POLICY} that are not the expected Pod-side "
+            f"diagnostics from the guarded Job-only rules: {failures}"
+        )
 
     def test_a_compliant_task_pod_is_admitted(self) -> None:
         """The positive half. Without it a policy that denies everything — a broken
