@@ -8,15 +8,18 @@ that task pods run as, and the NetworkPolicies. These check the security spine i
 
 There is no standing worker to assert on: the dispatcher creates one Job per request, so
 task pods exist only while a task runs. Their shape is asserted in the dispatcher's own
-unit tests, against the Job manifest it builds.
+unit tests, against the Job manifest it builds — and here against the API server, which
+is the only place the admission policy's CEL is actually evaluated.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import pytest
-from helpers import assert_deployment_ready, filter_deployments, filter_services, run_kubectl
+import yaml
+from helpers import DEFAULT_TIMEOUT, assert_deployment_ready, filter_deployments, filter_services, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
@@ -57,6 +60,222 @@ class TestAgentSandboxRuntimeClass:
         node_selector = rc.get("scheduling", {}).get("nodeSelector", {})
         assert node_selector.get("node-fleet") == "ai-sandbox", (
             f"gvisor RuntimeClass must pin node-fleet=ai-sandbox, got {node_selector!r}."
+        )
+
+
+class TestTaskAdmissionPolicy:
+    """The cluster-side copy of the task-pod isolation contract.
+
+    The dispatcher's unit tests check that the two copies agree; only a live cluster can
+    check that the CEL compiles and that the API server actually denies. `kubectl get`
+    succeeding says nothing either way — the object is accepted before any request has been
+    evaluated against it — and under `failurePolicy: Fail` an expression that errors at
+    evaluation time denies the request, so the symptom is an outage rather than a hole. The
+    dry-run probes below are what settle that. `.status.typeChecking` is a separate,
+    advisory, schema-level signal and is read with that distinction in mind.
+
+    These are all CREATE probes. The nodeName rule's UPDATE branch cannot be reached from
+    here — it needs a pod the scheduler has actually bound — and is covered by the
+    integration test, which dispatches a real task and would hang out its deadline if a
+    task pod could not be updated after binding.
+    """
+
+    POLICY = "agent-sandbox-task-jobs"
+
+    def _server_dry_run(self, manifest: str) -> subprocess.CompletedProcess:
+        """Apply against the API server without persisting. Server-side dry-run runs the
+        full admission chain, this policy included.
+
+        Bounded, like run_kubectl: kubectl's own request timeout defaults to unbounded, so
+        an API server that accepts the connection and never answers — or a kubeconfig exec
+        credential plugin waiting on input — would park an xdist worker forever and hang
+        `just smoke` rather than failing it."""
+        return subprocess.run(
+            ["kubectl", "-n", NAMESPACE, "apply", "--dry-run=server", "--request-timeout=60s", "-f", "-"],
+            input=manifest,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DEFAULT_TIMEOUT,
+        )
+
+    def _task_pod(self, name: str, **spec_overrides: object) -> str:
+        """A pod carrying the task label, so the Pod pass sees it. That pass is not
+        scoped to the dispatcher's service account — pods are created by the Job
+        controller — which is what lets this run under the smoke suite's own identity."""
+        spec: dict = {
+            "runtimeClassName": "gvisor",
+            "serviceAccountName": "sandbox-agent",
+            "automountServiceAccountToken": False,
+            "restartPolicy": "Never",
+            "containers": [
+                {
+                    "name": "task",
+                    "image": "harbor:30002/osdc/ci-agent-sandbox:admission-probe",
+                    "securityContext": {
+                        "allowPrivilegeEscalation": False,
+                        "runAsNonRoot": True,
+                    },
+                    "resources": {
+                        "requests": {"cpu": "1", "memory": "1Gi", "ephemeral-storage": "1Gi"},
+                        "limits": {"cpu": "1", "memory": "1Gi", "ephemeral-storage": "1Gi"},
+                    },
+                }
+            ],
+        }
+        spec.update(spec_overrides)
+        # None means "omit the field", not "set it to null" — the rules that matter here
+        # are `has(x) && ...`, and absence is the case they exist to reject.
+        spec = {k: v for k, v in spec.items() if v is not None}
+        return yaml.safe_dump(
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": name, "namespace": NAMESPACE, "labels": {"app": "sandbox-task"}},
+                "spec": spec,
+            }
+        )
+
+    # `<gvk>:` at the start of a line, one block per matched kind. Anchored and whole-token on
+    # purpose: a substring test for "v1, Kind=Pod" also swallows "example.com/v1, Kind=Pod"
+    # and "v1, Kind=PodTemplate". Leading indent tolerated, because an indented block would
+    # otherwise go unparsed and therefore unnoticed. `ERROR:` is deliberately NOT required:
+    # a Job block reporting something else ("expression must evaluate to bool") has to be
+    # seen too, and keying on the GVK rather than on the message keeps that true.
+    _GVK_HEADER = re.compile(r"^[ \t]*(\S+, Kind=\S+?):", re.MULTILINE)
+    EXPECTED_TYPE_CHECK_KIND = "v1, Kind=Pod"
+
+    @classmethod
+    def _is_expected_pod_diagnostic(cls, warning: str) -> bool:
+        """True only if every diagnostic BLOCK in this entry is against the Pod kind.
+
+        Attribution is by GVK block, not by counting `ERROR:` tokens. One GVK's compilation
+        can report several errors under a single header, and a CEL source line echoed into
+        the message can itself contain the token — a count would then reject an ordinary
+        Pod-only entry and restore the permanent red this whole predicate exists to remove.
+        What must not be ignored is text belonging to NO block, which is what the head check
+        below rejects: an entry whose text starts before any header this test recognises.
+        """
+        headers = cls._GVK_HEADER.findall(warning)
+        if not headers or set(headers) != {cls.EXPECTED_TYPE_CHECK_KIND}:
+            return False
+        head = warning[: cls._GVK_HEADER.search(warning).start()]
+        return not head.strip()
+
+    def test_policy_and_both_bindings_are_deployed(self) -> None:
+        policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
+        assert policy["spec"]["failurePolicy"] == "Fail"
+        bound = {
+            b["metadata"]["name"]
+            for b in run_kubectl(["get", "validatingadmissionpolicybinding"])["items"]
+            if b["spec"]["policyName"] == self.POLICY
+        }
+        assert bound == {"agent-sandbox-task-jobs", "agent-sandbox-task-pods"}, (
+            f"the policy needs both its bindings to be enforced on Jobs and on Pods; found {sorted(bound)}."
+        )
+
+    def test_the_policy_type_checks(self) -> None:
+        """Type checking is advisory, and against Pod it is EXPECTED to complain.
+
+        The API server type-checks every expression against every GVK matchConstraints
+        resolves to, and this policy names two. Job-level rules reach fields a PodSpec does
+        not have (`parallelism`, `completions`, `backoffLimit`, `template`) behind a
+        `!variables.isJob ||` guard the static checker cannot follow, so each produces a
+        `v1, Kind=Pod` diagnostic here, permanently, on a policy that is working correctly.
+        Runtime is unaffected: VAP compiles `object` as DynType for evaluation, which is why
+        type checking is warnings-only rather than a denial. Asserting the list is empty
+        would turn `just smoke` red on every cluster with this module enabled.
+
+        So SUPPRESS the one recognised shape rather than filter for the failing one: an entry
+        is expected only if every `<gvk>:` block it carries is against `v1, Kind=Pod`.
+        Everything else reddens — a Job-side diagnostic, an entry combining both kinds, an
+        entry with no warning text, an entry whose text starts before any header this test
+        recognises. Suppressing by substring instead would have swallowed
+        `example.com/v1, Kind=Pod` and `v1, Kind=PodTemplate`, and a payload-format change
+        would have turned the assertion permanently vacuous — worse than the red it removes.
+
+        Three limits stated rather than papered over. An empty warning list is legitimate, so
+        this cannot detect that suppression is over-broad. A rule wrong against Pod ALONE is
+        suppressed; `test_job_only_rules_are_guarded_for_the_pod_pass` covers the shapes of
+        that visible statically, and splitting this into a Jobs policy and a Pods policy is
+        what would recover the rest. And the header format below has not been observed on a
+        live cluster — if the real payload differs, this reddens with the raw entries in the
+        message, which is the signal needed to pin the format down.
+        """
+        policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
+        status = policy.get("status", {})
+        assert status.get("observedGeneration") == policy["metadata"]["generation"], (
+            "the API server has not finished type-checking this generation of the policy yet — "
+            f"observedGeneration={status.get('observedGeneration')}, generation={policy['metadata']['generation']}."
+        )
+        assert "typeChecking" in status, "no typeChecking result on an observed policy generation"
+        warnings = status["typeChecking"].get("expressionWarnings") or []
+        failures = [w for w in warnings if not self._is_expected_pod_diagnostic(w.get("warning", ""))]
+        assert not failures, (
+            f"CEL type-check warnings on {self.POLICY} that are not the expected Pod-side "
+            f"diagnostics from the guarded Job-only rules: {failures}"
+        )
+
+    def test_a_compliant_task_pod_is_admitted(self) -> None:
+        """The positive half. Without it a policy that denies everything — a broken
+        expression under failurePolicy: Fail — would look like a passing negative test."""
+        result = self._server_dry_run(self._task_pod("admission-probe-good"))
+        assert result.returncode == 0, f"a compliant task pod was rejected: {result.stderr.strip()}"
+
+    # Each violation is chosen so that NOTHING ELSE in the admission chain would reject
+    # it first: no `runtimeClassName: runc` (there is no runc RuntimeClass to resolve, so
+    # the RuntimeClass admission plugin would answer before this policy did), and an
+    # emptyDir rather than a hostPath (Pod Security would answer first). Dropping a
+    # required field, or adding a volume type nothing else objects to, leaves this policy
+    # as the only thing that can say no.
+    @pytest.mark.parametrize(
+        ("case", "overrides"),
+        [
+            ("no gvisor", {"runtimeClassName": None}),
+            ("a mounted token", {"automountServiceAccountToken": True}),
+            ("a volume", {"volumes": [{"name": "scratch", "emptyDir": {}}]}),
+            ("a pinned nodeName", {"nodeName": "ip-10-0-0-1.ec2.internal"}),
+            # The two rules whose CEL is not a shape already proven by the cases above: a
+            # map-keyed `all`, and a bound on a field the API server defaults. Both are
+            # unevaluated until something here denies with them.
+            (
+                "a device request",
+                {
+                    "containers": [
+                        {
+                            "name": "task",
+                            "image": "harbor:30002/osdc/ci-agent-sandbox:admission-probe",
+                            "securityContext": {"allowPrivilegeEscalation": False, "runAsNonRoot": True},
+                            # Equal on both sides on purpose: Kubernetes requires that of
+                            # an extended resource, so this satisfies the limits-present
+                            # and Guaranteed-QoS rules and only the allowlist can say no.
+                            "resources": {
+                                "requests": {
+                                    "cpu": "1",
+                                    "memory": "1Gi",
+                                    "ephemeral-storage": "1Gi",
+                                    "nvidia.com/gpu": "1",
+                                },
+                                "limits": {
+                                    "cpu": "1",
+                                    "memory": "1Gi",
+                                    "ephemeral-storage": "1Gi",
+                                    "nvidia.com/gpu": "1",
+                                },
+                            },
+                        }
+                    ]
+                },
+            ),
+            ("a long termination grace period", {"terminationGracePeriodSeconds": 3600}),
+        ],
+    )
+    def test_the_policy_denies_what_it_says_it_denies(self, case: str, overrides: dict) -> None:
+        name = "admission-probe-" + case.lower().replace(" ", "-")
+        result = self._server_dry_run(self._task_pod(name, **overrides))
+        assert result.returncode != 0, f"a task pod with {case} was ADMITTED — the policy is not enforcing."
+        assert "agent-sandbox-task-jobs" in result.stderr, (
+            f"a task pod with {case} was rejected, but not by this policy: {result.stderr.strip()}"
         )
 
 

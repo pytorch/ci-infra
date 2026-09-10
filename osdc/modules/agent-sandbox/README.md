@@ -180,6 +180,23 @@ doesn't match — worth having if this role ever gains other statements that gra
 foundation-model access, but it lives outside this repo.
 Background: [Securing Amazon Bedrock cross-Region inference](https://aws.amazon.com/blogs/machine-learning/securing-amazon-bedrock-cross-region-inference-geographic-and-global/).
 
+## The task-pod contract, and adding a volume
+
+`dispatcher.py::job_manifest()` builds every task pod, and
+`kubernetes/base/admissionpolicy.yaml` restates the same contract in CEL so the API
+server rejects a Job that does not match it. The two are deliberately redundant;
+`dispatcher/test_admissionpolicy.py` is what keeps them from drifting apart.
+
+**Task pods declare no volumes at all.** That is a rule, not an accident of the current
+manifest: a volume is how a Secret, a `hostPath` or a projected service-account token
+would get into the untrusted side. An allowlist of safe volume shapes is expressible in
+CEL, but it is a rule you can get subtly wrong; "none" is one you cannot. So a change
+that needs one — the planned
+`GITHUB_TOKEN` init container needs a shared `emptyDir` — is not a one-line edit to
+`job_manifest()`. It has to amend the volumes rule and the init-container rule in the
+policy, re-pin their expression digests, and say in review which volume types are now
+reachable from inside gVisor and why that is acceptable.
+
 ## Integration test
 
 Runs as part of the standard canary flow, gated by the `AGENT_SANDBOX` tag

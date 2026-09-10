@@ -7,7 +7,8 @@
 # There is no Deployment for the sandbox itself: the dispatcher creates one Job per
 # request, so task pods exist only while a task runs. The Job template lives in
 # dispatcher.py rather than here — it is built per request from the task image tag
-# deploy.sh substituted above.
+# deploy.sh substituted above. admissionpolicy.yaml is the cluster-side check on what
+# that template is allowed to contain.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -16,6 +17,7 @@ resources:
   - runtimeclass.yaml
   - serviceaccounts.yaml
   - rbac.yaml
+  - admissionpolicy.yaml
   - quota.yaml
   - sigv4-proxy.yaml
   - proxy-pdb.yaml
