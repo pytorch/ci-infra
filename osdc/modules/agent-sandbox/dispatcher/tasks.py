@@ -30,7 +30,7 @@ _TASKS: dict[str, dict] = {}
 _TASKS_LOCK = threading.Lock()
 
 
-def _run_to_completion(task_id: str, spec: dict) -> dict:
+def _run_to_completion(task_id: str, grant) -> dict:
     """Create the Job, wait for it, return the result. Never raises.
 
     Underscored because it does not release the slot start_task() reserved; going through
@@ -43,7 +43,7 @@ def _run_to_completion(task_id: str, spec: dict) -> dict:
     # Job's DeadlineExceeded, which at least names what was still running.
     deadline = time.monotonic() + kube.TASK_DEADLINE_S + POLL_INTERVAL_S * 3
     try:
-        kube.create_job(task_id, spec)
+        kube.create_job(task_id, grant)
     except (kube.ApiError, OSError) as exc:
         return {"errors": {"dispatch": str(exc)}}
 
@@ -88,7 +88,11 @@ def _prune_locked(now: float) -> None:
 
 def _finish(task_id: str, result: dict) -> None:
     with _TASKS_LOCK:
-        _TASKS[task_id] = {"state": "done", "result": result, "finished_at": time.monotonic()}
+        # The owner is carried across rather than dropped: this entry replaces the
+        # running one, and losing the field here would make every finished task
+        # readable by any caller.
+        owner = _TASKS.get(task_id, {}).get("owner", "")
+        _TASKS[task_id] = {"state": "done", "result": result, "finished_at": time.monotonic(), "owner": owner}
 
 
 def slots_in_use() -> int:
@@ -96,20 +100,36 @@ def slots_in_use() -> int:
         return _running_locked()
 
 
-def start_task() -> str | None:
-    """Reserve a slot and return its task id. None when at capacity."""
+def start_task(owner: str) -> str | None:
+    """Reserve a slot and return its task id. None when at capacity or unable to mint one.
+
+    `owner` is the Grant's caller. It is recorded now rather than derived later because
+    /status must be able to refuse a caller asking about somebody else's task, and after
+    the Job is deleted this table is the only place that answer exists.
+    """
     now = time.monotonic()
     with _TASKS_LOCK:
         _prune_locked(now)
         if _running_locked() >= MAX_CONCURRENT_TASKS:
             return None
-        task_id = uuid.uuid4().hex[:12]
-        _TASKS[task_id] = {"state": "running", "result": {}, "finished_at": 0.0}
-    return task_id
+        # Retried rather than assumed unique. 12 hex characters is 48 bits, which makes a
+        # collision vanishingly unlikely — but now that entries carry an owner, a reused
+        # id would attribute one caller's result to another, and "vanishingly unlikely"
+        # is a bad reason to leave that reachable at all.
+        for _ in range(8):
+            task_id = uuid.uuid4().hex[:12]
+            if task_id not in _TASKS:
+                _TASKS[task_id] = {"state": "running", "result": {}, "finished_at": 0.0, "owner": owner}
+                return task_id
+    return None
 
 
-def status(task_id: str) -> dict | None:
-    """The /status payload for a task, or None if this dispatcher never saw it.
+def status(task_id: str, owner: str) -> dict | None:
+    """The /status payload for a task, or None if this caller may not see it.
+
+    A task belonging to someone else is reported as absent, not as forbidden: telling a
+    caller that an id exists but is not theirs turns this endpoint into a way to confirm
+    that other callers are running tasks.
 
     The task table is private to this module so that the HTTP layer cannot read it
     without the lock — the reason this returns a finished snapshot rather than the
@@ -117,19 +137,45 @@ def status(task_id: str) -> dict | None:
     """
     with _TASKS_LOCK:
         task = _TASKS.get(task_id)
-        if task is None:
+        if task is None or task.get("owner") != owner:
             return None
         if task["state"] == "running":
             return {"state": "running", "task_id": task_id}
+        # KNOWN GAP (deferred, see README § Limitations "A task can overwrite the
+        # response fields the endpoints own"): task["result"] came from the task pod's
+        # log, and spreading it LAST lets it overwrite "state" and "task_id" — a task
+        # printing {"state": "running"} makes a finished task look unfinished to its own
+        # caller. Reordering alone trades the bug for silently dropping a task's own
+        # fields of those names, so this wants a response-schema decision (envelope vs
+        # server-fields-last plus a caller audit), not a one-line swap here.
         return {"state": "done", "task_id": task_id, **task["result"]}
 
 
-def run_and_record(task_id: str, spec: dict) -> dict:
-    """Run the task and store its result so /status can answer for it afterwards."""
-    result = _run_to_completion(task_id, spec)
+def run_and_record(task_id: str, grant) -> dict:
+    """Run the task and store its result so /status can answer for it afterwards.
+
+    KNOWN GAP (deferred, see README § Limitations "A slot can leak for the life of the
+    pod"): the slot start_task() reserved is released only by reaching _finish() below,
+    and nothing holds that if the runner raises. _run_to_completion() says it never
+    raises and catches (ApiError, OSError), but kube._k8s_api() and kube._read_token()
+    raise bare RuntimeError from OUTSIDE api_request()'s try block, so those escape —
+    from its `finally: kube.delete_job(...)` too, meaning a leaked slot does not imply
+    the Job was never created. The entry then stays "running" forever: _prune_locked()
+    only drops "done" ones and _running_locked() keeps counting it against
+    MAX_CONCURRENT_TASKS.
+
+    NOT simply a try/finally around _finish(): `result` is unbound on that path, so the
+    fix has to decide what a crashed task records and whether the exception still
+    propagates to the caller. Reachability is low, the loss is permanent.
+    """
+    result = _run_to_completion(task_id, grant)
     _finish(task_id, result)
     return result
 
 
-def run_in_background(task_id: str, spec: dict) -> None:
-    threading.Thread(target=run_and_record, args=(task_id, spec), daemon=True).start()
+def run_in_background(task_id: str, grant) -> None:
+    # KNOWN GAP, and a SEPARATE fix site from run_and_record()'s: if start() itself
+    # fails (thread exhaustion, interpreter shutdown) the slot start_task() reserved is
+    # already taken and no thread exists to release it. Cleanup has to live here or in
+    # the caller, not in the runner.
+    threading.Thread(target=run_and_record, args=(task_id, grant), daemon=True).start()

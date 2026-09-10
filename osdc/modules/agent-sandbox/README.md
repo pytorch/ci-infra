@@ -59,16 +59,126 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"repo","ref","task","model"?,"wait"?}` →
+- `POST /run` body `{"ref"?,"task"?,"wait"?}` →
   `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
 
   Waits for the task by default, so a caller sees the result on the same connection —
   budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
-  returns `202 {"task_id"}` instead.
+  returns `202 {"task_id"}` instead. `repo` and `model` are still *parsed* — a non-string
+  is a `400` — but neither reaches the Job: the Grant decides both. Supplying either is
+  checked rather than ignored, so a `repo` that matches policy is accepted and one that
+  does not is a `403`. **`model` is a `403` whatever you send**, because v1's policy model
+  is the empty string meaning "the dispatcher's configured default" — including `""`,
+  which is compared like any other value rather than skipped. Send neither. See *Who may
+  call* below.
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
 - `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
-  Results are kept in memory for an hour after the task finishes.
+  Results are kept in memory for an hour after the task finishes. A task belonging to
+  another caller answers `404`, not `403` — otherwise the endpoint would confirm that
+  other callers are running tasks.
+
+## Who may call, and what a call can do
+
+`/run` authenticates the caller with a **GitHub Actions OIDC token** in an
+`Authorization: Bearer` header, and authorizes it against a policy that lives in code —
+`dispatcher/authorize.py`, not an env var, because it is the answer to "who may spend our
+Bedrock budget" and belongs in git history and review.
+
+v1 admits two callers: a workflow in **`pytorch/ciforge`**, and one in
+**`pytorch/ci-infra`** (this module's own `test-agent-sandbox` integration job, the only
+thing that calls `/run` today). Either must be on a protected ref, on a **self-hosted**
+runner, on an event not in a denied set. The *repository* is matched on
+`repository_id`/`repository_owner_id` rather than on its name, because a repository can be
+renamed and its old name re-registered by someone else — the two workflow refs are still
+matched on a name prefix, so a rename breaks authorization even though the ids resolve.
+
+`self-hosted` is a **shape** check, not a trust boundary: `/run` is a ClusterIP reachable
+only from `arc-runners`, so that is simply what a caller who can connect reports. It is not
+a defence against untrusted code minting a token — **the client is untrusted by design**,
+any job with `id-token: write` can mint one on either kind of runner, and the dispatcher's
+job is to validate the token and bound what the validated identity may do. That bound is
+the Grant. One residual to keep in view: the event check is a **denylist**, so an event
+type GitHub adds later is allowed by default — again bounded by the Grant, not by the set.
+
+**The request decides less than it looks like it does.** Verification produces a frozen
+`Grant`, and the Job is built from the Grant alone — never from the request body. The
+repository to clone and the model are policy, so a caller cannot name either; passing a
+`repo` or a `model` that disagrees with policy is refused outright rather than quietly
+substituted. The caller contributes the prompt and the commit to read.
+
+Two residuals worth knowing:
+
+- **The prompt is caller-controlled**, and `workflow_run` is an allowed event, so a
+  workflow that reads pull-request content can shape what the agent is asked to do. The
+  Grant is what bounds the damage — same repo, same model, same limits.
+- **Tokens are replayable until they expire.** `jti` is neither required nor consumed, so
+  a stolen token can submit requests until `exp`. Consuming it needs state shared across
+  dispatcher replicas, which v1 does not have; the concurrency cap and the namespace quota
+  are what bound the damage in the meantime. PyPI's Warehouse solves this with a `jti`
+  table, which is the shape to copy if this matters later.
+
+### Enabling enforcement
+
+`REQUIRE_AUTH` still ships **`false`**, but the policy now admits a caller that can
+actually reach the endpoint, so flipping it is a real next step rather than an outage. Two
+things have to be true first, and neither is code in this repo's dispatcher:
+
+- The **`test-agent-sandbox`** job must send a token. It needs `id-token: write`, a token
+  minted for this dispatcher's audience, and an `Authorization: Bearer` header on its
+  `curl`. It sends none today, so it would get a `401` the moment the flag flips.
+- Any **`pytorch/ciforge`** caller must run on an `arc-runners` runner. Every workflow in
+  that repo is `ubuntu-latest`/`ubuntu-24.04` today, and a github-hosted runner cannot
+  route to a ClusterIP in this cluster at all.
+
+`test_an_admissible_caller_can_actually_reach_run` asserts the policy and the NetworkPolicy
+still describe an overlapping set, so the disjointness that made an earlier revision
+unsatisfiable cannot come back unnoticed.
+
+### What the flag does
+
+`REQUIRE_AUTH` in `kubernetes/base/dispatcher.yaml` ships **`false`**. It governs exactly one case: a
+request with no `Authorization` header at all. A token that *is* presented is always
+verified and always authorized, whatever the flag says, so a forged or denied token is
+rejected either way.
+
+Be clear about what that does and does not buy. **While the flag is false, authentication
+is optional**, and an unauthenticated caller can therefore do *more* than a caller whose
+real token was denied — it simply omits the header. This is a migration window, not a
+security posture. It is tolerable only because `/run` is already reachable
+unauthenticated by the whole `arc-runners` namespace today, so it is strictly no worse
+than the status quo and strictly better once flipped.
+
+Unrecognised values abort at startup rather than defaulting to off: `REQUIRE_AUTH=tru`
+under a `== "true"` comparison is a security control disabled by a typo, with no signal
+anywhere.
+
+### The signing keys
+
+The dispatcher holds create-Job RBAC, so it is the component that must not be able to
+reach the internet — its NetworkPolicy allows DNS and the Kubernetes API and nothing
+else. GitHub's signing keys therefore arrive as a mounted ConfigMap, refreshed every six
+hours by a CronJob (`kubernetes/base/oidc.yaml`) whose Role can patch that one named
+object and nothing more.
+
+The manifest declares that ConfigMap with **no `data`** — the content belongs to the
+refresher. That is load-bearing rather than tidy: seeding it in the manifest meant every
+`kubectl apply` put the seed back over live keys, so each deploy blanked them. `deploy.sh`
+runs a refresh immediately after applying, so the window with no keys is minutes rather
+than up to six hours, and the dispatcher fails closed throughout it. Minutes, not seconds,
+and not a bound anyone has measured: the Job has to be scheduled and pull an image, the
+kubelet then notices the ConfigMap changed on its own sync period, and the dispatcher
+re-reads the mount only every `JWKS_RELOAD_INTERVAL_S`.
+
+The refresher writes a `fetched_at` timestamp *into* the document. That is not
+decoration: a ConfigMap volume only updates when its content changes and GitHub rotates
+rarely, so judging freshness by file mtime would age out a perfectly healthy key set
+while a refresher dead for a month looked identical. The dispatcher refuses keys older
+than 24h, which is what turns a silently dead refresher into a loud failure.
+
+Task pods declare no volumes at all, and `kubernetes/base/admissionpolicy.yaml` enforces
+that in the API server. **Adding one is a policy change as well as a manifest change** —
+the `GITHUB_TOKEN` init-container work is the case this is waiting for.
 
 ## The two images
 
@@ -81,8 +191,11 @@ one image does not re-roll the other. Requires a local docker daemon.
 - `ci-agent-sandbox` (`agent/`) — the untrusted task: `task.py` runs one task and exits,
   `sandbox.py` is the clone + Bedrock library. Holds nothing.
 - `ci-agent-sandbox-dispatcher` (`dispatcher/`) — the trusted side: the HTTP surface and
-  the Job creation. Separate image so its dependencies never ship inside the sandbox;
-  both are stdlib-only today.
+  the Job creation. The task image is stdlib-only; this one is not, and the separate-image
+  split is what keeps that from mattering. It installs `python3-jwt` and
+  `python3-cryptography` **from apt, not pip**, because GitHub signs its OIDC tokens
+  RS256 and the standard library has no public-key crypto at all. None of that reaches
+  the sandbox: `agent/` is built from its own Dockerfile and gains nothing from the line.
 
 ## Deploy
 
@@ -97,17 +210,17 @@ just deploy-module meta-staging-aws-ue1 agent-sandbox             # IRSA + proxy
 # -m 900: the call waits for the task, and a cold fleet waits for a Karpenter node.
 curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -H 'Content-Type: application/json' \
-  -d '{"repo":"pytorch/pytorch","ref":"main","task":"Summarize the build layout",
-       "model":"us.anthropic.claude-haiku-4-5-20251001-v1:0"}'
+  -d '{"ref":"main","task":"Summarize the build layout"}'
 
 # Or don't hold the connection open:
 TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
-  -d '{"repo":"pytorch/pytorch","wait":false}' | jq -r .task_id)
+  -d '{"wait":false}' | jq -r .task_id)
 curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
 ```
-Any caller can pick the model per request. Omitting `model` falls back to
-`BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
-`agent_sandbox.default_model_id`.
+**The caller no longer picks the repository or the model.** Both come from the `Grant`,
+and sending either is a `403` rather than a value that is quietly accepted and dropped.
+The model is `BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
+`agent_sandbox.default_model_id`; per-caller models arrive with the capability manifest.
 
 ## Capacity
 
@@ -228,16 +341,49 @@ signing proxy, without the runner or worker holding a token.
   Job finishes regardless and the caller has to retry.
 - **Output is trusted as-is.** Nothing validates or gates what a task returns before a
   caller acts on it.
+- **A task can overwrite the response fields the endpoints own.** `kube.task_result()`
+  returns the last `{`-prefixed line the task pod printed that parses as JSON (within
+  `MAX_LOG_BYTES`), and both payloads spread it *last* — `{"task_id": task_id,
+  **result}` in `http_api.do_POST`, `{"state": "done", "task_id": task_id,
+  **task["result"]}` in `tasks.status`. A task printing
+  `{"task_id": "…", "state": "running"}` therefore replaces what the dispatcher minted:
+  a caller can be told the wrong id, or that a finished task is still running.
+  **This needs a schema decision, not a one-line reorder.** Spreading the result first
+  protects `task_id`/`state` but then silently drops a task's own fields of those
+  names — no merge order preserves both meanings. The two real options are a nested
+  envelope (`{"task_id":…, "state":…, "result": result}`, a breaking change for every
+  caller) or server-fields-last plus an audit of what callers read today. Deferred for
+  that reason; both call sites carry a `KNOWN GAP` comment pointing here.
+- **A slot can leak for the life of the pod.** `run_and_record()` releases the slot
+  `start_task()` reserved only by reaching `_finish()`, and nothing holds that if the
+  runner raises. `_run_to_completion()` catches `(ApiError, OSError)`, but
+  `kube._k8s_api()` and `kube._read_token()` raise bare `RuntimeError` from outside
+  `api_request()`'s try block, so those escape — including from the `finally:
+  kube.delete_job(...)`, which is why a leaked slot does not imply the Job was never
+  created. The entry then stays `"running"` forever: `_prune_locked()` only drops
+  `"done"` ones and `_running_locked()` keeps counting it against
+  `MAX_CONCURRENT_TASKS`. Symptoms are spread out — a waiting `/run` gets no response
+  at all and the handler logs a traceback, `/status` answers `"running"` forever,
+  `/healthz` shows `in_flight` that never drains, and enough leaks turn every later
+  call into a `429`. Reachability is low (an unset `KUBERNETES_SERVICE_HOST`, or the
+  projected token file missing at the moment it is read), but the loss is permanent.
+  **The fix is not simply a `try/finally` around `_finish()`** — `result` is unbound on
+  that path, so it needs a decision about what a crashed task records (a synthetic
+  error result, or dropping the reservation) and whether the exception still
+  propagates. `run_in_background()` needs its own cleanup rather than the same one: a
+  `Thread.start()` that fails leaves the slot reserved with no thread to release it.
 - **The proxy image floats** (`aws-sigv4-proxy:latest`) — digest-pin before
   non-prototype use.
-- **Callers are unauthenticated and unbounded.** `/run` has no notion of who is
-  asking: any pod in `arc-runners` can call it, and the NetworkPolicy is the only
-  gate. With one serial worker, a caller looping `/run` holds the single slot for up
-  to the clone plus invoke timeout and keeps every other consumer on `429` — visible
-  as a refusal rather than a hang, but still a denial of service. Fine while there
-  is one consumer. A caller identity and per-request ephemerality are the same piece
-  of work and neither exists — do it before a second consumer does.
-- **The clone reaches the internet directly.** `sandbox-agent-egress` allows TCP 443
+- **Callers are unauthenticated in practice, and unbounded either way.** Caller identity
+  now exists — `dispatcher/authorize.py`, OIDC-verified — but it is not enforced:
+  `REQUIRE_AUTH` ships `false` until the admitted callers actually send tokens (see
+  *Enabling enforcement*), so today any pod in `arc-runners` can still call `/run` with no
+  token and the NetworkPolicy remains the only real gate.
+  Quotas are a separate gap that authentication does not close: a caller looping `/run`
+  holds slots for up to the clone plus invoke timeout and keeps every other consumer on
+  `429` — a refusal rather than a hang, but still a denial of service. There is no
+  per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
+- **The clone reaches the internet directly.** `sandbox-task-egress` allows TCP 443
   to any address because `NetworkPolicy` selects on CIDR and GitHub's ranges move.
   Closing it means git behind a proxy the way Bedrock is, landing together with the
   no-NAT subnet — neither exists, and either alone breaks cloning.
