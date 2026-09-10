@@ -24,14 +24,19 @@ defaults:
   base_node_count: 6
   base_node_instance_type: m7i.12xlarge
   base_node_max_unavailable_percentage: 33
-  # TODO(CVE-2026-31431): when bumping to a kernel 6.12.85+ AL2023 AMI,
-  # remove osdc/base/kubernetes/algif-mitigation.yaml.
-  # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
-  # TODO(CVE-2026-43284): when bumping to a kernel with the DirtyFrag fix
-  # (6.1.170+ or 6.12.83+ on AL2023), remove
-  # osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
-  # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
-  base_node_ami_version: "v20260318"
+  # v20260903 ships kernel 6.12.103-127.188.amzn2023, which carries the KVM
+  # shadow-MMU use-after-free fix (CVE-2026-64561 "Zapscape", ALAS2023-2026-2057,
+  # first available in v20260818). Every Karpenter fleet had already picked this
+  # up on its own — those track `alias: al2023@latest` and rotate — so these
+  # pinned base node groups were the last nodes in any cluster still on 6.12.73.
+  #
+  # The same kernel clears both mitigation DaemonSets below. Remove them once the
+  # base nodes have actually rotated onto this AMI, not when this pin lands:
+  #   TODO(CVE-2026-31431): osdc/base/kubernetes/algif-mitigation.yaml, needs 6.12.85+
+  #   https://explore.alas.aws.amazon.com/CVE-2026-31431.html
+  #   TODO(CVE-2026-43284): osdc/base/kubernetes/dirtyfrag-mitigation.yaml, needs 6.12.83+
+  #   https://aws.amazon.com/security/security-bulletins/2026-027-aws/
+  base_node_ami_version: "v20260903"
   eks_version: "1.35"
   single_nat_gateway: false
 
