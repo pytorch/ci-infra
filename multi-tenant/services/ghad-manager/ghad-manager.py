@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import grp
 import logging
 import os
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 REQUIRED_CONTAINER_NAME = "ghad-main-shared-instance-container"
 DOCKER_REPOSITORY = "308535385114.dkr.ecr.us-east-1.amazonaws.com"
 DOCKER_TAG = "latest"
+MAX_RUNNER_CONTAINER_AGE = timedelta(hours=10)
 
 
 class UserSocketsPath:
@@ -141,6 +143,36 @@ def is_container_running(client: docker.DockerClient, container_name: str) -> bo
         return False
 
 
+def recycle_idle_runner(
+    client: docker.DockerClient,
+    container_name: str,
+    now: datetime | None = None,
+) -> None:
+    """Restart an idle runner before its copied ECR credential expires."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        containers = client.containers.list(filters={"name": container_name}, all=True)
+        for container in containers:
+            if container.name != container_name or container.status != "running":
+                continue
+
+            created_at = datetime.fromisoformat(
+                container.attrs["Created"].replace("Z", "+00:00")
+            )
+            if now - created_at < MAX_RUNNER_CONTAINER_AGE:
+                return
+
+            processes = container.top().get("Processes", [])
+            if any("Runner.Worker" in field for row in processes for field in row):
+                return
+
+            logger.info(f"Recycling idle runner container {container_name}")
+            container.stop()
+            return
+    except Exception as e:
+        logger.warning(f"Error recycling idle runner {container_name}: {str(e)}")
+
+
 def stop_all_containers(client: docker.DockerClient, uid: int) -> None:
     logger.info(f"Stopping all containers for user {uid}")
     try:
@@ -185,6 +217,7 @@ def start_container_if_not_running(
     user_name: str,
     docker_tag: str,
 ) -> None:
+    recycle_idle_runner(client, container_name)
     if not is_container_running(client, container_name):
         stop_all_containers(client, uid)
         prune_images(client, uid)
