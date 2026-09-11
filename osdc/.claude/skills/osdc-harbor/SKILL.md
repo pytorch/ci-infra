@@ -116,7 +116,7 @@ Three PDBs cover the multi-replica components only: `harbor-core`, `harbor-regis
 | `base/kubernetes/harbor/pdb.yaml.tpl` | PodDisruptionBudget template for core/registry/nginx (sed-substituted by `_deploy-harbor`, no native chart PDB support) |
 | `modules/eks/terraform/modules/harbor/main.tf` | S3 bucket + IAM role (IRSA) + IAM user (static-keys workaround) |
 | `modules/eks/images.yaml` | Bootstrap images to mirror to ECR |
-| `modules/harbor-cache-recovery/` | Scheduled CronJob: scans pod container statuses for `ImagePullBackOff`/`ErrImagePull` with cache-corruption indicator messages and purges the affected Harbor proxy-cache repositories. Defaults: `schedule: "*/5 * * * *"`, `concurrencyPolicy: Forbid`, `backoffLimit: 0`, `activeDeadlineSeconds: 300`, resources `requests: cpu 50m / memory 1Gi`, `limits: cpu 200m / memory 2Gi`. Per-cluster overrides via `harbor_cache_recovery.{enabled,schedule,min_pod_age_seconds,dry_run,harbor_url}` in `clusters.yaml` (default `harbor_url`: `http://harbor.harbor-system.svc.cluster.local:80`). Memory bumped to 1Gi/2Gi in PR #504; deadlines/scheduling tuned in PR #521 to fix `DeadlineExceeded` under cluster load. |
+| `modules/harbor-cache-recovery/` | Scheduled CronJob: scans pod container statuses for `ImagePullBackOff`/`ErrImagePull` whose message carries a containerd content-corruption string and deletes the affected artifact — a single tag or digest, never the whole repository — from the Harbor proxy-cache project. Defaults: `schedule: "*/5 * * * *"`, `concurrencyPolicy: Forbid`, `backoffLimit: 0`, `activeDeadlineSeconds: 300`, resources `requests: cpu 50m / memory 1Gi`, `limits: cpu 200m / memory 2Gi`. Per-cluster overrides via `harbor_cache_recovery.{enabled,schedule,min_pod_age_seconds,dry_run,harbor_url}` in `clusters.yaml` (default `harbor_url`: `http://harbor.harbor-system.svc.cluster.local:80`). Memory bumped to 1Gi/2Gi in PR #504; deadlines/scheduling tuned in PR #521 to fix `DeadlineExceeded` under cluster load. |
 | `scripts/python/configure_harbor_projects.py` | Harbor proxy cache project setup |
 | `scripts/helm-upgrade.sh` | `helm_upgrade_by_input_hash` helper used by the Harbor deploy |
 | `base/scripts/bootstrap/eks-base-bootstrap.sh` | Base infra node bootstrap: writes `<node IPv6> harbor` to /etc/hosts (IMDS lookup) and containerd mirror configs pointing at `harbor:30002` |
@@ -128,18 +128,22 @@ Three PDBs cover the multi-replica components only: `harbor-core`, `harbor-regis
 Harbor GC removes orphaned metadata from the database (e.g., artifact records pointing to S3 objects that no longer exist). Triggered via the Harbor API, not kubectl.
 
 **When to run GC:**
-- Image pull failures with `MANIFEST_UNKNOWN` or `manifest unknown` errors across multiple images/registries
+- Image pull failures across multiple images/registries where the kubelet message is `not found` — containerd renders every registry 404 that way (`<ref>: not found` while resolving, `content at <url> not found` while fetching)
 - Harbor registry logs show 404 for manifest digests that should exist
 - Harbor core logs show `manifestcache.go: failed to push manifest` errors
 - After S3 object loss (accidental deletion, storage corruption — note: lifecycle expiration is no longer a possible cause, see "S3 Storage" below)
 - `harbor-cache-recovery` CronJob OOMKilling (suggests large number of orphaned entries)
 
 **Diagnosis pattern** — Harbor proxy cache storage corruption looks like:
-1. Pods stuck in `ImagePullBackOff` / `ErrImagePull` cluster-wide (not just one image)
-2. Harbor registry returns `manifest unknown` for digest-based manifest GETs
-3. Harbor core shows `"failed to push manifest referencing digest, tag: , digest: sha256:..."` with `MANIFEST_UNKNOWN`
+1. Pods stuck in `ImagePullBackOff` / `ErrImagePull` cluster-wide (not just one image), message `not found`
+2. Harbor-side, via curl against the registry API: `manifest unknown` for digest-based manifest GETs
+3. Harbor core logs show `"failed to push manifest referencing digest, tag: , digest: sha256:..."` with `MANIFEST_UNKNOWN`
 4. Harbor DB has artifact metadata but S3 is missing the backing blob
 5. Multiple registries affected (ghcr-cache, dockerhub-cache, quay-cache — not just one)
+
+**Uppercase `MANIFEST_UNKNOWN` never reaches a kubelet message** — it exists only Harbor-side, in the registry's JSON error body and Harbor's own logs. Containerd (v2.3.5) handles HTTP 404 before it renders registry error codes (`core/remotes/docker/resolver.go`), so a missing manifest surfaces as `not found`. On the rare non-404 path `unexpectedResponseErr` (`core/remotes/docker/errcode.go`) lowercases the code and replaces underscores with spaces, and containerd registers only UNKNOWN / UNSUPPORTED / UNAUTHORIZED / DENIED / UNAVAILABLE / TOOMANYREQUESTS — an unregistered `MANIFEST_UNKNOWN` therefore collapses to `unknown: manifest unknown`. Grep pods and node logs for those forms, not the uppercase code.
+
+**Pull failures that GC does not fix**: content-corruption messages (`failed size validation`, `unexpected commit digest`, `unexpected commit size`, `unexpected digest`, `short read: expected`, `failed to extract layer`) are what `harbor-cache-recovery` deletes per artifact. `unexpected media type` is neither a GC nor a purge case — Harbor rejects unregistered media types before caching, so nothing is cached to remove; it points at a Harbor front-door routing problem (a `/v2/` request reaching something that serves HTML) and is a separate open investigation.
 
 **Procedure (order matters):**
 
@@ -190,7 +194,7 @@ kubectl rollout status deployment/harbor-registry -n harbor-system --watch
 
 ## S3 Storage — No Lifecycle Expiration (DO NOT REINTRODUCE)
 
-Harbor's S3 bucket (`${cluster_name}-harbor-registry`) stores cached manifests and blobs. The bucket MUST NOT have an object expiration lifecycle policy — Harbor manages its own cache via GC and proxy cache TTLs. An S3 lifecycle policy deleting objects behind Harbor's back causes DB-storage mismatches (DB has metadata, S3 has no data), which presents as cluster-wide `MANIFEST_UNKNOWN` pull failures.
+Harbor's S3 bucket (`${cluster_name}-harbor-registry`) stores cached manifests and blobs. The bucket MUST NOT have an object expiration lifecycle policy — Harbor manages its own cache via GC and proxy cache TTLs. An S3 lifecycle policy deleting objects behind Harbor's back causes DB-storage mismatches (DB has metadata, S3 has no data), which presents as cluster-wide `not found` pull failures on the node side and `MANIFEST_UNKNOWN` in Harbor's own API responses and logs.
 
 **The lifecycle resource was REMOVED in PR #504 (commit 4ff8401, "Fix Harbor erratic behavior caused by S3 lifecycle expiration"). It is no longer present in `modules/eks/terraform/modules/harbor/main.tf` — the file now contains only the bucket, encryption, public-access block, IAM role, and IAM user. DO NOT reintroduce any `aws_s3_bucket_lifecycle_configuration` resource.** If you grep for one and don't find it, that is correct.
 
