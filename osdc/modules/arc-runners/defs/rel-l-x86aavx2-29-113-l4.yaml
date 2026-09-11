@@ -1,0 +1,25 @@
+# ARC runner definition: rel-l-x86aavx2-29-113-l4
+# Release wheel-build runner (x86, GPU) — dedicated runner group + node isolation.
+# Instance type: g6.8xlarge — 1-GPU L4, 32c/128Gi node (pool: g6-8xlarge-release).
+# Sized like the CI l-x86aavx2-29-113-l4 runner on the same instance: actual K8s
+# capacity ~118.4Gi, max job memory after overhead 113Gi. One GPU per node means
+# one runner per node without needing bare-metal sizing.
+#
+# Exists for the CUDA x86_64 wheel rows, whose smoke test exports a model through
+# the CUDA partitioner and runs it, so unlike the CPU release runners this one
+# needs a device. L4 is sm_89, which the x86_64 rows already compile for
+# (.ci/scripts/wheel/cuda_arch_list.sh: 8.0 8.6 8.9 9.0 10.0 12.0).
+runner:
+  name: rel-l-x86aavx2-29-113-l4
+  instance_type: g6.8xlarge
+  disk_size: 600
+  vcpu: 29
+  memory: 113Gi
+  gpu: 1
+  runner_class: release
+  # No runner_group here: release-class runners always land in the per-region
+  # group {cluster_group}-release-runners, derived by generate_runners.py from
+  # the cluster config (a def-level runner_group would be ignored for them).
+  proactive_capacity: 0
+  hud_failure_base_capacity: 0    # release builds aren't in the HUD queue; scale on demand
+  max_burst_capacity: 10
