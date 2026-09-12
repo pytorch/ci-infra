@@ -73,25 +73,43 @@ spec:
             - -c
             - |
               set -eu
-              exec /proc/1/root/usr/bin/nsenter -t 1 -m -- /bin/sh -c '
-                mkdir -p /mnt/hf_cache /mnt/hf-cache-vfs
-                # A crashed rclone leaves a dead FUSE at /mnt/hf_cache that fails to stat,
-                # wedging every pod on the node in CreateContainerError. rclone self-heals
-                # on in-place restart (it Bidirectional-mounts the parent /mnt, always a
-                # live dir), but a pod recreation only runs this init — so clear the dead
-                # endpoint here. fusermount3 is the FUSE3 binary on AL2023 hosts (fusermount
-                # is not installed); umount -l is the last-resort peel. Both leave the bind
-                # under /mnt intact.
-                while ! stat /mnt/hf_cache >/dev/null 2>&1; do
-                  fusermount3 -uz /mnt/hf_cache 2>/dev/null || umount -l /mnt/hf_cache 2>/dev/null || break
+              # Runs in the host (PID 1) mount namespace. Every guard below tests the
+              # LIVE path with mountpoint(1) — never a raw `grep /proc/mounts` scan. A
+              # table scan also matches a mount that has been shadowed by a later bind
+              # of a parent dir (an orphaned /mnt/hf_cache hidden under the /mnt bind).
+              # Acting on such a mount by path fails ("not a mountpoint"), and under
+              # set -e that turned this init into an unrecoverable CrashLoopBackOff while
+              # the node's startup taint was already cleared — so jobs kept landing on a
+              # node whose cache mount was silently absent (cf. #876 self-heal regression).
+              exec /proc/1/root/usr/bin/nsenter -t 1 -m -- /bin/sh -euc '
+                HF=/mnt/hf_cache
+                mkdir -p "$HF" /mnt/hf-cache-vfs
+
+                # rclone Bidirectional-mounts the parent /mnt, so /mnt must be an rshared
+                # mountpoint for the FUSE to reach job pods. Bind only if it is not already
+                # a mountpoint, and use rbind so an existing submount under /mnt is carried
+                # into the new bind instead of being shadowed — a plain non-recursive bind
+                # is what orphaned the old /mnt/hf_cache mount and wedged this init.
+                mountpoint -q /mnt || mount --rbind /mnt /mnt
+                mount --make-rshared /mnt || true
+
+                # Clear whatever occupies the live /mnt/hf_cache. A crashed rclone leaves a
+                # dead FUSE (fails to stat); a prior run of this init can leave an xfs
+                # self-bind (stats fine — a stat-gated loop would miss it). Peel a FUSE via
+                # fusermount3 (the FUSE3 binary on AL2023 hosts; fusermount is not installed)
+                # and anything else via umount -l, until the live path is no longer a
+                # mountpoint. Bounded so it can never spin forever.
+                i=0
+                while mountpoint -q "$HF" && [ "$i" -lt 10 ]; do
+                  fusermount3 -uz "$HF" 2>/dev/null || umount -l "$HF" 2>/dev/null || break
+                  i=$((i + 1))
                 done
-                # rclone Bidirectional-mounts the parent /mnt, so /mnt must be a shared
-                # mountpoint: bind it first, then keep /mnt/hf_cache a shared submount so
-                # the FUSE still propagates to job pods.
-                grep -q " /mnt " /proc/mounts || mount --bind /mnt /mnt
-                mount --make-rshared /mnt
-                grep -q " /mnt/hf_cache " /proc/mounts || mount --bind /mnt/hf_cache /mnt/hf_cache
-                mount --make-rshared /mnt/hf_cache
+
+                # Re-establish /mnt/hf_cache as its own rshared submount. Guard on the live
+                # path so a shadowed orphan in the mount table cannot make us skip the bind
+                # (which left make-rshared to fail on a non-mountpoint and crash-loop).
+                mountpoint -q "$HF" || mount --bind "$HF" "$HF"
+                mount --make-rshared "$HF" || true
               '
 
       containers:
