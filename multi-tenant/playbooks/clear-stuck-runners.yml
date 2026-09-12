@@ -1,0 +1,236 @@
+---
+# Stop runner containers that are Up but not healthily connected to GitHub, so
+# ghad-manager can respawn a correct one. Two cases: orphaned (expected
+# "<hostname>-<uid>" runner offline) or misregistered (connected under the hex
+# container hostname with wrong labels, so it never gets a job). Either way an
+# ephemeral runner never exits and the container wedges the GPU slot.
+#
+# Only stops a container that is NOT busy (under its expected or actual name)
+# AND up longer than min_uptime_hours (default 2h). Dry-run unless -e apply=true;
+# aborts before stopping anything if the GitHub API check fails.
+#
+# Run via: just clear-stuck-runners [host/group] [apply]
+
+- name: Clear orphaned runner containers not connected to GitHub
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    # Fixed tenant-user ordering; sliced to the group's num_users (inventory var).
+    user_names:
+      - alice
+      - bob
+      - charlie
+      - david
+      - eve
+      - frank
+      - grace
+      - henry
+      - isaac
+      - julia
+      - kevin
+      - lisa
+    ansible_host_key_checking: false
+    org: pytorch
+    container_name: ghad-main-shared-instance-container
+    min_uptime_hours: 2        # safeguard: never stop a container younger than this
+    apply: false               # override with -e apply=true to actually stop
+  vars_prompt:
+    - name: github_token
+      prompt: "GitHub token (org admin / manage_runners:org) — used to check runner status"
+      private: yes
+  module_defaults:
+    shell:
+      executable: /bin/bash
+
+  tasks:
+    - name: Require a GitHub token
+      ansible.builtin.assert:
+        that: github_token | length > 0
+        fail_msg: "A GitHub token is required to verify runner connectivity."
+
+    - name: Announce mode
+      ansible.builtin.debug:
+        msg: >-
+          Host {{ ansible_hostname }} — {{ 'APPLY (will stop stuck containers)'
+          if apply | bool else 'DRY-RUN (report only)' }},
+          min_uptime={{ min_uptime_hours }}h, num_users={{ num_users }}
+
+    - name: Resolve tenant uids
+      ansible.builtin.getent:
+        database: passwd
+
+    - name: Build tenant (name + uid) list
+      ansible.builtin.set_fact:
+        tenants: "{{ tenants | default([]) + [ {'name': item, 'uid': getent_passwd[item][1]} ] }}"
+      loop: "{{ user_names[:(num_users | int)] }}"
+
+    # -- Ask GitHub which of this org's self-hosted runners are online/busy -----
+    - name: List org runners (first page, for total_count)
+      ansible.builtin.uri:
+        url: "https://api.github.com/orgs/{{ org }}/actions/runners?per_page=100&page=1"
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        return_content: yes
+        status_code: 200
+      register: gh_first
+      no_log: true
+
+    - name: Compute number of runner pages
+      ansible.builtin.set_fact:
+        gh_pages: "{{ ((gh_first.json.total_count | int) / 100) | round(0, 'ceil') | int }}"
+
+    - name: List org runners (remaining pages)
+      ansible.builtin.uri:
+        url: "https://api.github.com/orgs/{{ org }}/actions/runners?per_page=100&page={{ item }}"
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        return_content: yes
+        status_code: 200
+      register: gh_rest
+      no_log: true
+      loop: "{{ range(2, (gh_pages | int) + 1) | list }}"
+      when: (gh_pages | int) > 1
+
+    - name: Assemble the org runner list
+      ansible.builtin.set_fact:
+        all_runners: >-
+          {{ gh_first.json.runners
+             + (gh_rest.results | default([]) | map(attribute='json.runners') | flatten) }}
+
+    - name: Report GitHub visibility for this host
+      ansible.builtin.debug:
+        msg: >-
+          GitHub: {{ all_runners | length }} org runners total;
+          {{ all_runners | selectattr('name', 'match', '^' ~ ansible_hostname ~ '-')
+             | list | length }} match this host prefix
+
+    # -- Inspect each tenant's runner container ---------------------------------
+    # Emits "running;up_seconds;agentName". agentName is what the runner actually
+    # registered with GitHub as (read from the in-container ~/.runner). A healthy
+    # runner registers as "<hostname>-<uid>"; a broken one falls back to the
+    # container's hex hostname with default labels (see config.sh --unattended
+    # fix). Comparing the two is the direct signal that a slot is misregistered.
+    - name: Inspect the runner container for each tenant
+      become: true
+      become_user: "{{ item.name }}"
+      ansible.builtin.shell: |
+        set -o pipefail
+        NAME="{{ container_name }}"
+        uid="{{ item.uid }}"
+        # become_user runs a non-login shell that never sources ~/.bashrc, so we
+        # must point the CLI at the per-tenant rootless dockerd ourselves.
+        export DOCKER_HOST="unix:///run/user/${uid}/docker.sock"
+        export XDG_RUNTIME_DIR="/run/user/${uid}"
+        export PATH="$HOME/bin:$PATH"
+        [ -S "/run/user/${uid}/docker.sock" ] || { echo "NOSOCK"; exit 0; }
+        RUNNER_CFG="/home/{{ item.name }}/.runner"
+        info=$(docker inspect -f '{% raw %}{{.State.Running}};{{.State.StartedAt}}{% endraw %}' "$NAME" 2>/dev/null) \
+          || { echo "ABSENT"; exit 0; }
+        running="${info%%;*}"; started="${info#*;}"
+        up=$(( $(date +%s) - $(date -d "$started" +%s) ))
+        agent=$(docker exec "$NAME" cat "$RUNNER_CFG" 2>/dev/null \
+          | sed -n 's/.*"agentName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        echo "${running};${up};${agent}"
+      register: inspected
+      changed_when: false
+      loop: "{{ tenants }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Classify each tenant slot
+      ansible.builtin.set_fact:
+        slots: "{{ slots | default([]) + [ slot ] }}"
+      vars:
+        rname: "{{ ansible_hostname }}-{{ item.item.uid }}"
+        out: "{{ item.stdout | trim }}"
+        fields: "{{ out.split(';') if (out not in ['ABSENT', 'NOSOCK']) else [] }}"
+        running: "{{ (fields | length > 0) and ((fields[0] | lower) == 'true') }}"
+        up_sec: "{{ (fields[1] | int) if (fields | length > 1) else 0 }}"
+        # What the runner actually registered as (empty if we couldn't read it).
+        agent: "{{ fields[2] if (fields | length > 2) else '' }}"
+        # Expected-name entry in the org list (the healthy identity).
+        ghmatch: "{{ all_runners | selectattr('name', 'equalto', rname) | list }}"
+        online: "{{ (ghmatch | length > 0) and (ghmatch[0].status == 'online') }}"
+        # The actual registered runner's entry (by its real agentName), if any.
+        agentmatch: "{{ (all_runners | selectattr('name', 'equalto', agent) | list) if agent else [] }}"
+        # Never stop a runner that is actually running a job, under either name.
+        busy: >-
+          {{ ((ghmatch | length > 0) and (ghmatch[0].busy | default(false)))
+             or ((agentmatch | length > 0) and (agentmatch[0].busy | default(false))) }}
+        # Registered under the wrong name => misregistered (wrong labels, jobless).
+        name_drift: "{{ (running | bool) and (agent | length > 0) and (agent != rname) }}"
+        # Healthy = connected under the expected name and not drifted.
+        healthy: "{{ (online | bool) and (not (name_drift | bool)) }}"
+        old_enough: "{{ (up_sec | int) >= (min_uptime_hours | float) * 3600 }}"
+        stuck: "{{ (running | bool) and (not (busy | bool)) and (not (healthy | bool)) and (old_enough | bool) }}"
+        status: >-
+          {{ 'rootless docker not running — run: just restart-services' if (out == 'NOSOCK')
+             else 'no container (ghad-manager will spawn)' if not (running | bool)
+             else 'keep: CONNECTED, busy (job running)' if (busy | bool)
+             else 'keep: CONNECTED, idle (listening)' if (healthy | bool)
+             else ('STUCK: misregistered as ' ~ agent ~ ' (wrong name/labels, jobless), up > ' ~ min_uptime_hours ~ 'h'
+                   if (name_drift | bool) else 'STUCK: not connected, up > ' ~ min_uptime_hours ~ 'h') if (stuck | bool)
+             else ('misregistered as ' ~ agent ~ ' but up < ' if (name_drift | bool) else 'not connected but up < ')
+                   ~ min_uptime_hours ~ 'h — SKIP (safeguard)' }}
+        slot:
+          user: "{{ item.item.name }}"
+          uid: "{{ item.item.uid }}"
+          runner: "{{ rname }}"
+          agent: "{{ agent }}"
+          up_min: "{{ (up_sec | int) // 60 }}"
+          stuck: "{{ stuck }}"
+          status: "{{ status | trim }}"
+      loop: "{{ inspected.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Classification report
+      ansible.builtin.debug:
+        msg: >-
+          {{ '%-8s' | format(item.user) }} uid={{ item.uid }}
+          {{ '%-16s' | format(item.runner) }}
+          as={{ '%-16s' | format(item.agent | default('?') if item.agent else '(none)') }}
+          up={{ (item.up_min | int) // 60 }}h{{ '%02d' | format((item.up_min | int) % 60) }}m
+          -> {{ item.status }}
+      loop: "{{ slots }}"
+      loop_control:
+        label: "{{ item.user }}"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ (slots | selectattr('stuck', 'equalto', true) | list | length) }} stuck container(s):
+          {{ slots | selectattr('stuck', 'equalto', true) | map(attribute='runner') | list | default([]) }}.
+          {{ 'Stopping them now.' if apply | bool
+             else 'DRY-RUN: re-run with apply=true (or -e apply=true) to stop them.' }}
+
+    # -- Stop only the orphaned containers, only when apply=true -----------------
+    - name: Stop orphaned containers
+      become: true
+      become_user: "{{ item.user }}"
+      ansible.builtin.shell: |
+        NAME="{{ container_name }}"
+        uid="{{ item.uid }}"
+        export DOCKER_HOST="unix:///run/user/${uid}/docker.sock"
+        export XDG_RUNTIME_DIR="/run/user/${uid}"
+        export PATH="$HOME/bin:$PATH"
+        docker stop "$NAME"
+      loop: "{{ slots }}"
+      loop_control:
+        label: "{{ item.user }} ({{ item.runner }})"
+      when:
+        - apply | bool
+        - item.stuck | bool
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Stopped stuck containers; ghad-manager will respawn & reconnect within ~20s.
+              Verify with: journalctl -u ghad-manager -f'
+             if apply | bool
+             else 'No changes made (dry-run).' }}

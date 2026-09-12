@@ -21,6 +21,8 @@
 #   just setup-host dgxb200-03    # provision a single host / group
 #   just restart-services         # restart docker + ghad-manager
 #   just restart-ghad             # restart only the ghad-manager service
+#   just clear-stuck-runners dgxb200-04       # report orphaned runner containers
+#   just clear-stuck-runners dgxb200-04 true  # stop the orphaned ones
 
 set dotenv-load
 set dotenv-filename := "secrets.env"
@@ -72,6 +74,13 @@ restart-services limit=LIMIT: setup
 # Restart only the ghad-manager service on B200 host(s)
 restart-ghad limit=LIMIT: setup
     uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/restart-ghad-service.yml -vv
+
+# Find (apply=true also stops) orphaned runner containers not connected to GitHub.
+# Prompts for the GitHub token, then the SSH + sudo password. Dry-run unless apply=true.
+#   just clear-stuck-runners dgxb200-04           # report only
+#   just clear-stuck-runners dgxb200-04 true       # stop the stuck ones
+clear-stuck-runners limit=LIMIT apply="false": setup
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/clear-stuck-runners.yml -e apply={{ apply }} -vv
 
 # Build and push the multi-tenant-gpu runner image to ECR
 docker-build:
