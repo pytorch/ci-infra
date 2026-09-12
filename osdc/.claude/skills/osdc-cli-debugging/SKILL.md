@@ -74,7 +74,7 @@ The shipped recipes (`just kubeconfig`, `just deploy-*`, `scripts/destroy-cluste
 | `monitoring` | Alloy metrics + kube-prometheus-stack (default; overridable via `monitoring.namespace` in `clusters.yaml`) |
 | `logging` | Alloy logging + Alloy events (default; overridable via `logging.namespace` in `clusters.yaml`) |
 | `pypi-cache` | PyPI wheel cache pods |
-| `kube-system` | node-compactor, cache-enforcer, NVIDIA device plugin, registry mirror config, algif mitigation, dirtyfrag mitigation, node-performance-tuning, image-cache-janitor, node-local-dns DaemonSet (see `base/kubernetes/` for the full list) |
+| `kube-system` | node-compactor, cache-enforcer, NVIDIA device plugin, registry mirror config, node-performance-tuning, image-cache-janitor, node-local-dns DaemonSet (see `base/kubernetes/` for the full list) |
 | `osdc-system` | Deploy-audit ConfigMaps (labeled `app.kubernetes.io/managed-by=osdc-deploy-log`) read by `just deploy-status` and `just deploy-history` |
 
 ## kubectl (Kubernetes)

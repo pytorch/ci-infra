@@ -86,12 +86,10 @@ Current registry:
 | `node-init.osdc.io/cache-enforcer` | `cache-enforcer` | `cache-enforcer` DaemonSet |
 | `node-init.osdc.io/registry-mirror` | base (`None`) | `registry-mirror-config` DaemonSet |
 | `node-init.osdc.io/perf-tuning` | base (`None`) | `node-performance-tuning` DaemonSet |
-| `node-init.osdc.io/algif-mitigation` | base (`None`) | `algif-mitigation` DaemonSet |
-| `node-init.osdc.io/dirtyfrag-mitigation` | base (`None`) | `dirtyfrag-mitigation` DaemonSet |
 
 The taint-remover library (`base/kubernetes/node-taint-remover/lib/taint_remover.py`) is mounted into each consuming DaemonSet's init container as a ConfigMap, runs after the per-DS init script, and uses RFC 6902 JSON Patch (test-then-remove by index) with retry on HTTP 409/422 to be race-safe against concurrent taint mutations by other init DaemonSets and Karpenter.
 
-When removing a CVE-mitigation DaemonSet because its kernel patch has rolled out (see `clusters.yaml` AMI-version gates), the corresponding registry entry MUST be removed in the same change. Leaving the registry entry without the DaemonSet would taint every new node with a taint nothing removes, blocking workload scheduling indefinitely.
+A startup-taint registry entry and the DaemonSet that clears it MUST be added and removed in the same change. A registry entry without its DaemonSet taints every new node with a taint nothing removes, blocking workload scheduling indefinitely.
 
 ## Non-Gating DaemonSets
 
@@ -141,24 +139,6 @@ Runs a privileged init container (`tune-node`) that configures:
 
 Runs on nodes with `workload-type` in `[github-runner, buildkit]`.
 
-### algif_aead Module Blacklist (TEMPORARY — CVE-2026-31431)
-
-**File**: `base/kubernetes/algif-mitigation.yaml`
-
-Writes `/etc/modprobe.d/disable-algif.conf` (`install algif_aead /bin/false`) and defensively `modprobe -r algif_aead` on every node. Mitigates CVE-2026-31431 ("Copy Fail" — Linux kernel `algif_aead` LPE that crosses container boundaries via the shared page cache). Privileged init container `nsenter`'s into PID 1's namespaces to operate on the host kernel.
-
-Runs on ALL nodes (no nodeSelector, tolerates everything). Idempotent via `/var/lib/algif-mitigation/.configured` marker.
-
-**TODO — REMOVE this DaemonSet** once all nodes are running an AL2023 AMI with kernel 6.12.85+. Watch https://explore.alas.aws.amazon.com/CVE-2026-31431.html and the AMI pinnings tagged with the same TODO marker (`clusters.yaml`, `modules/nodepools/scripts/python/generate_nodepools.py`, `modules/buildkit/scripts/python/generate_buildkit.py`, `modules/pypi-cache/kubernetes/ec2nodeclass.yaml.tpl`).
-
-### DirtyFrag Mitigation (TEMPORARY — CVE-2026-43284 + CVE-2026-43500)
-
-**File**: `base/kubernetes/dirtyfrag-mitigation.yaml`
-
-Sibling DaemonSet to `algif-mitigation`, same shape (privileged `nsenter` into PID 1's namespaces, modprobe.d blacklist, marker file at `/var/lib/dirtyfrag-mitigation/.configured`, runs on EVERY node). Writes `/etc/modprobe.d/disable-dirtyfrag.conf` blacklisting three modules — `esp4`, `esp6`, `rxrpc` — then defensively `modprobe -r`'s any that have already loaded, then drops the page cache (`echo 3 > /proc/sys/vm/drop_caches`) to evict DirtyFrag-poisoned pages of read-only files. Mitigates two related Linux kernel write-LPEs in the IPv4/IPv6 datagram zero-copy path (xfrm-ESP and RxRPC variants) — both cross container boundaries via the shared page cache.
-
-**TODO — REMOVE this DaemonSet** once all nodes are running an AL2023 AMI with kernel 6.1.170+ or 6.12.83+ (separate kernel-version gate from algif-mitigation's 6.12.85+). Watch AWS Security Bulletin 2026-027-AWS, ALAS2023-2026-1694, and ALAS2023-2026-1695.
-
 ## Taint Summary
 
 | Taint Key | Type | Effect | Scope | Removed By |
@@ -172,8 +152,6 @@ Sibling DaemonSet to `algif-mitigation`, same shape (privileged `nsenter` into P
 | `node-init.osdc.io/cache-enforcer=true` | Startup | `NoSchedule` | Karpenter NodePools on clusters that enable the `cache-enforcer` module | `cache-enforcer` DaemonSet via taint-remover at end-of-init |
 | `node-init.osdc.io/registry-mirror=true` | Startup | `NoSchedule` | All Karpenter NodePools | `registry-mirror-config` DaemonSet via taint-remover at end-of-init |
 | `node-init.osdc.io/perf-tuning=true` | Startup | `NoSchedule` | All Karpenter NodePools | `node-performance-tuning` DaemonSet via taint-remover at end-of-init |
-| `node-init.osdc.io/algif-mitigation=true` | Startup | `NoSchedule` | All Karpenter NodePools (until AL2023 kernel 6.12.85+ is rolled out, then this entry and the DaemonSet are deleted in lockstep) | `algif-mitigation` DaemonSet via taint-remover at end-of-init |
-| `node-init.osdc.io/dirtyfrag-mitigation=true` | Startup | `NoSchedule` | All Karpenter NodePools (until AL2023 kernel 6.1.170+ or 6.12.83+ is rolled out, then this entry and the DaemonSet are deleted in lockstep) | `dirtyfrag-mitigation` DaemonSet via taint-remover at end-of-init |
 
 ## Toleration Pattern
 
@@ -217,6 +195,4 @@ This ensures DaemonSet pods schedule on nodes immediately at provisioning time, 
 | `modules/arc-runners/templates/runner.yaml.tpl` | Runner pod template with `wait-for-hooks` init container |
 | `base/kubernetes/registry-mirror-config.yaml` | Containerd registry mirror DaemonSet |
 | `base/kubernetes/node-performance-tuning.yaml` | CPU/GPU tuning DaemonSet |
-| `base/kubernetes/algif-mitigation.yaml` | TEMPORARY: blacklists algif_aead module to mitigate CVE-2026-31431 (remove when AL2023 AMI has kernel 6.12.85+) |
-| `base/kubernetes/dirtyfrag-mitigation.yaml` | TEMPORARY: blacklists esp4/esp6/rxrpc + drops page cache to mitigate CVE-2026-43284 + CVE-2026-43500 (remove when AL2023 AMI has kernel 6.1.170+ or 6.12.83+) |
 | `modules/arc-runners/scripts/python/validate_runner_qos.py` | Deploy-time validation (checks hooks init container exists) |
