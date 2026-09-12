@@ -238,9 +238,11 @@ Build-node tuning (NVMe RAID0, registry mirrors, CPU tuning) is not a separate s
 
 ### harbor-cache-recovery
 
-Automated recovery from Harbor proxy cache corruption (stale manifests, size mismatches). CronJob scans all pods for ImagePullBackOff errors with cache corruption indicators and purges the corrupted repository from Harbor so the next pull re-fetches from upstream. Never deletes pods.
+Automated recovery from Harbor proxy cache content corruption. CronJob scans all pods for `ImagePullBackOff` / `ErrImagePull` whose kubelet message carries a containerd content-corruption string (`failed size validation`, `unexpected commit digest`, `unexpected commit size`, `unexpected digest`, `short read: expected`, `failed to extract layer`) and deletes the single affected artifact — one tag or digest — from the Harbor proxy cache project, so the next pull re-fetches it from upstream. Never deletes pods, and never deletes a whole repository.
 
-- **scripts/python/harbor_cache_recovery.py**: Core logic — scan pods, parse image references, map to Harbor proxy cache projects, purge via Harbor API
+`unexpected media type` pull failures are excluded by design. For a tag reference containerd has no expected digest, so it computes one from the response body; an HTML error page therefore commits as a self-consistent artifact on the node, while Harbor rejects unregistered media types before caching anything. There is nothing cached to purge, and a purge would only evict the repository's good artifacts. Those failures point at a Harbor front-door routing problem — a `/v2/` request reaching something that serves HTML — which is a separate open investigation.
+
+- **scripts/python/harbor_cache_recovery.py**: Core logic — scan pods, parse image references, map to Harbor proxy cache projects, delete the affected artifact via the Harbor API
 - **docker/**: Container image (Python 3.12 alpine, lightkube + requests)
 - **kubernetes/**: RBAC (ClusterRole for pod list) and CronJob with config placeholders. Note: no `kustomization.yaml` — `deploy.sh` applies the manifests imperatively after `sed` placeholder substitution.
 - **deploy.sh**: Content-addressed image build, push to Harbor via port-forward, manifest apply with config substitution

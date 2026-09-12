@@ -9,10 +9,11 @@ spec:
   groups:
     - name: harbor-cache-recovery
       rules:
-        # The recovery CronJob runs every 5 minutes and purges corrupted entries
-        # from Harbor's pull-through proxy caches. When it stops working, poisoned
-        # cache entries persist and cause fleet-wide ImagePullBackOff failures
-        # (see osdc/modules/harbor-cache-recovery for context).
+        # The recovery CronJob runs every 5 minutes and deletes individual
+        # artifacts whose cached content is corrupt from Harbor's pull-through
+        # proxy caches. That class is a small minority of image pull failures —
+        # when the job stops working, only pods hitting a corrupt artifact stay
+        # in ImagePullBackOff (see osdc/modules/harbor-cache-recovery).
         #
         # Each scheduled run produces a fresh Job object — we cannot watch a
         # long-lived pod, so all alerts target the Job objects (kept by KSM via
@@ -31,12 +32,16 @@ spec:
             summary: "harbor-cache-recovery cronjob is failing"
             description: >-
               The harbor-cache-recovery CronJob has had failing runs for at least
-              15 minutes (≥3 consecutive runs at the */5 schedule). Poisoned
-              Harbor proxy-cache entries will not be auto-purged, which surfaces
-              as fleet-wide ImagePullBackOff against ghcr.io / docker.io / etc.
-              Inspect with:
-              kubectl -n harbor-system get jobs.batch,pods -l app.kubernetes.io/name=harbor-cache-recovery;
-              kubectl -n harbor-system describe pod <last failed pod>.
+              15 minutes (≥3 consecutive runs at the */5 schedule). Containerd
+              content-corruption pull failures ("failed size validation",
+              "unexpected commit digest" and similar) are no longer auto-purged
+              from the Harbor proxy caches, so pods hitting one stay in
+              ImagePullBackOff until that artifact is deleted by hand. Those are a
+              small minority of pull failures — most are "unexpected media type",
+              which this job never purges — so the alert does not by itself mean
+              the fleet cannot pull images. Triage:
+              kubectl -n harbor-system describe cronjob harbor-cache-recovery;
+              kubectl -n harbor-system logs -l app.kubernetes.io/name=harbor-cache-recovery --tail=50
 
         - alert: HarborCacheRecoveryOOM
           # Faster-firing companion alert — surfaces the most common root cause
@@ -63,10 +68,14 @@ spec:
           annotations:
             summary: "harbor-cache-recovery pod was OOMKilled"
             description: >-
-              The harbor-cache-recovery pod hit its memory limit. Bump the limits
-              in osdc/modules/harbor-cache-recovery/kubernetes/cronjob.yaml. Until
-              that ships, manually purge corrupted Harbor entries via the API
-              (see harbor_cache_recovery.py:purge_cached_repo).
+              The harbor-cache-recovery pod hit its memory limit while listing
+              pods cluster-wide. Bump the limits in
+              osdc/modules/harbor-cache-recovery/kubernetes/cronjob.yaml. Until
+              that ships, delete a corrupt artifact by hand against the Harbor
+              API (repo path slashes double-encoded as %252F):
+              DELETE /api/v2.0/projects/<project>/repositories/<repo>/artifacts/<tag or digest>.
+              Delete the single artifact, never the repository — a repository
+              delete also evicts every good tag in it.
 
         - alert: HarborCacheRecoveryStale
           # Catches the case where the CronJob isn't running at all — suspended,
@@ -87,7 +96,9 @@ spec:
           annotations:
             summary: "harbor-cache-recovery has not completed successfully in >30m"
             description: >-
-              No successful run of harbor-cache-recovery has been observed in
-              the last 30 minutes. Auto-purge of corrupted Harbor cache entries
-              is silently disabled. Check the CronJob status and recent Job
-              objects in the harbor-system namespace.
+              No successful run of harbor-cache-recovery has been observed in the
+              last 30 minutes, so corrupt Harbor proxy-cache artifacts are no
+              longer auto-deleted. Only pods already stuck on such an artifact are
+              affected; pull failures with any other cause neither improve nor
+              worsen. Confirm the CronJob is not suspended and is still creating
+              Jobs: kubectl -n harbor-system get cronjob,jobs.batch
