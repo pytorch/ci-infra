@@ -2255,30 +2255,14 @@ build-agent-sandbox-ami cluster *args:
 # amazon-eks-node-al2023-x86_64-nvidia-* glob (driver 580). Building it is safe
 # and changes no running fleet; adopting it is a separate one-line def change.
 # See modules/nodepools/packer/README.md and docs/nvidia-driver-615-ami.md.
-build-gpu-driver-ami cluster *args:
+build-gpu-driver-ami cluster:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
-    CLUSTER="{{cluster}}"
-    REGION=$(uv run {{CFG}} "$CLUSTER" region)
-    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
-    K8S_VERSION=$(uv run {{CFG}} "$CLUSTER" eks_version)
-    PACKER_DIR="{{UPSTREAM}}/modules/nodepools/packer"
-
-    echo "Building GPU driver AMI for $CLUSTER ($REGION, k8s $K8S_VERSION)..."
-    cd "$PACKER_DIR"
-    packer init .
-    packer build \
-        -var "aws_region=${REGION}" \
-        -var "cluster_name=${CNAME}" \
-        -var "k8s_version=${K8S_VERSION}" \
-        {{args}} .
-
-    echo ""
-    echo "Built, and unused until a nodepool def opts in with:"
-    echo "    ami_selector_tags:"
-    echo "      osdc.io/ami: gpu-nvidia-615"
+    # The script clones upstream's AMI build, applies patches/ and runs their
+    # make. Override UPSTREAM_REF or NVIDIA_DRIVER_MAJOR_VERSION in the env.
+    CLUSTER="{{cluster}}" exec "{{UPSTREAM}}/modules/nodepools/packer/build-gpu-ami.sh"
 
 # Run full integration test against a cluster
 integration-test cluster *args:

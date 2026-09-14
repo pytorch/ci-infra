@@ -1,0 +1,38 @@
+diff --git a/templates/al2023/runtime/gpu/nvidia-kmod-load.sh b/templates/al2023/runtime/gpu/nvidia-kmod-load.sh
+index f336cfc..bdb0498 100755
+--- a/templates/al2023/runtime/gpu/nvidia-kmod-load.sh
++++ b/templates/al2023/runtime/gpu/nvidia-kmod-load.sh
+@@ -26,7 +26,14 @@ INSTANCE_TYPE=$(imds /latest/meta-data/instance-type)
+ # fail if the expected file doesn't exist
+ function nvidia-open-supported-devices-file() {
+   local KMOD_MAJOR_VERSION
+-  KMOD_MAJOR_VERSION=$(rpmquery kmod-nvidia-latest-dkms --queryformat '%{VERSION}' | cut -d. -f1)
++  # kmod-nvidia-latest-dkms is the proprietary package. It is absent from 615
++  # onward, and absent on any image built with only the open flavor, so prefer
++  # the version the build recorded and keep the RPM probe as the fallback.
++  if [ -s /etc/eks/nvidia-driver-major ]; then
++    KMOD_MAJOR_VERSION=$(cat /etc/eks/nvidia-driver-major)
++  else
++    KMOD_MAJOR_VERSION=$(rpmquery kmod-nvidia-latest-dkms --queryformat '%{VERSION}' | cut -d. -f1)
++  fi
+   local SUPPORTED_DEVICE_FILE="/etc/eks/nvidia-open-supported-devices-${KMOD_MAJOR_VERSION}.txt"
+   if ! test -f "${SUPPORTED_DEVICE_FILE}"; then
+     echo >&2 "Supported device file not found for ${KMOD_MAJOR_VERSION}: ${SUPPORTED_DEVICE_FILE}"
+@@ -124,6 +131,17 @@ esac
+ # https://nvdam.widen.net/s/gpqp6wmz7s/cuda-whitepaper--cdmm-pdf
+ echo "options nvidia NVreg_CoherentGPUMemoryMode=driver" > /etc/modprobe.d/40-eks-nvidia-openrm.conf
+ 
++# An image may carry only the open flavor: 615+ has no proprietary kmod, and a
++# GRID runfile is not published for every branch. Redirect instead of failing,
++# so a GPU outside the image's intended scope still boots with a driver.
++if [ ! -d "/var/lib/dkms-archive/${MODULE_NAME}" ]; then
++  echo "No ${MODULE_NAME} archive on this AMI; falling back to nvidia-open"
++  MODULE_NAME="nvidia-open"
++  # NVreg_EnableGpuFirmware=0 is a proprietary-only workaround, and the open
++  # kmod requires GSP firmware, so it must not outlive the flavor that set it.
++  rm -f /etc/modprobe.d/nvidia-disable-gsp.conf
++fi
++
+ kmod-util load "${MODULE_NAME}"
+ 
+ if [ "${MODULE_NAME}" = "nvidia-open" ]; then

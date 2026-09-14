@@ -74,20 +74,35 @@ Three doors, all closed:
 recently, but 595 is not the published default, and there is no 610 or 615 work
 in `awslabs/amazon-eks-ami` at all.
 
-**2. Build the EKS AMI from source with `=615`.** Two hard blockers:
+**2. Build the EKS AMI from source with `=615`.** Fails unpatched — but for one
+reason, not the two originally recorded here.
 
-- The build resolves the full version as `min(kmod-nvidia-open-dkms, AWS GRID
-  runfile)`. AWS's public `s3://ec2-linux-nvidia-drivers` bucket tops out at
-  `595.91.07` — no 610, no 615. `archive-grid-kmod` hard-errors when no runfile
-  matches, and the `min()` would pin back to 595 regardless.
-- `archive-proprietary-kmod` installs `kmod-nvidia-latest-dkms-<version>`.
-  **R615 ships no proprietary kernel module.** The NVIDIA AL2023 repo's
-  `kmod-nvidia-latest-dkms` stops at 610; from 615 the RPMs obsolete
-  `cuda-drivers` in favour of `nvidia-open`.
+*Not* the GRID runfile. The build resolves the full version as
+`min(kmod-nvidia-open-dkms, AWS GRID runfile)` and AWS's
+`s3://ec2-linux-nvidia-drivers` bucket tops out at `595.91.07`, which reads like
+a wall. It isn't: `nvidia_grid_runfile_bucket_name` is an ordinary Packer
+variable, so mirroring the bucket ourselves is supported configuration. (And the
+lookup greps for the *requested* major, so at 615 it returns empty and the build
+exits 1 — it never silently pins back to 595.)
 
-  This is also why AWS cannot trivially ship 615 themselves: their boot-time
-  flavor selector hardcodes `g4dn`/`g5`/`g5g` to the proprietary module for a
-  GSP workaround.
+The real blocker is `archive-proprietary-kmod`, which runs unconditionally and
+installs `kmod-nvidia-latest-dkms-<version>`. **R615 ships no proprietary kernel
+module:**
+
+| | present in the NVIDIA AL2023 repo |
+|---|---|
+| `kmod-nvidia-open-dkms` | …595.91.07, 610.43.02, 610.57.04, **615.71.09** |
+| `kmod-nvidia-latest-dkms` | …595.91.07, 610.43.02, 610.57.04 — **none at 615** |
+
+No bucket helps — it is a dnf package, not an S3 object. And it has a
+second-order effect: that same function is what leaves the
+`kmod-nvidia-latest-dkms` *RPM* installed on the finished image, and
+`nvidia-kmod-load.sh` reads the driver's major version from exactly that RPM at
+boot. Skip the step and the node boots with no driver loaded at all.
+
+This is also why AWS cannot trivially ship 615 themselves: their boot-time
+flavor selector hardcodes `g4dn`/`g5`/`g5g` to the proprietary module for a GSP
+workaround.
 
 **3. NVIDIA GPU Operator managing the driver.** Not supported on Amazon Linux —
 AWS's own guidance is to run the operator with `driver.enabled=false` on the
@@ -99,17 +114,27 @@ set — `kmod-nvidia-open-dkms`, `nvidia-driver*`, `nvidia-fabricmanager`,
 `nvidia-imex`, `nvidia-persistenced`, and `cuda-compat-13-4`. So the packages
 exist; only AWS's packaging of them does not.
 
-## The fourth door, which is what got built
+## What got built: patch upstream, don't mutate the image
 
-Take the finished EKS GPU AMI and swap the driver in place with Packer. Keeps us
-on AWS's image, confines the delta to one reviewable script, and reuses the
-`ami_selector_tags` escape hatch and Packer pattern the repo already has from
-`nodepools-agent-sandbox`.
+`modules/nodepools/packer/` runs **upstream's own AMI build** at a pinned tag
+with two patches applied, rather than swapping the driver on a finished image.
 
-`modules/nodepools/packer/` — see its README for the mechanics (DKMS archives,
-the supported-devices list, and the two patches to
-`/etc/eks/nvidia-kmod-load.sh` that are required because upstream's flavor
-selection assumes a proprietary kmod exists).
+An earlier revision did the swap — take AWS's published GPU AMI, rip out the 580
+DKMS archives, rebuild at 615, sed-patch the shipped `nvidia-kmod-load.sh`. It
+worked on paper and it is in this branch's history, but it fights the image
+instead of building the one we want, and it needs the same
+`nvidia-kmod-load.sh` fix anyway. Patching upstream is the same fix in a place
+where it reads as a bug report:
+
+- `0001` — build only the open kmod on branches that ship only the open kmod.
+  Drops the GRID lookup out of version resolution, which is what removes the
+  runfile-mirror question entirely.
+- `0002` — stop the boot-time selector depending on the proprietary kmod's RPM,
+  and never select a flavor the image does not carry.
+
+Both are gated on `NVIDIA_DRIVER_MAJOR_VERSION >= 615`, so they are no-ops on
+every branch AWS currently builds — they are written to be upstreamable, and
+`0002` also fixes the g7 bug in awslabs/amazon-eks-ami#2768 as a side effect.
 
 ```bash
 just build-gpu-driver-ami meta-prod-aws-ue2
