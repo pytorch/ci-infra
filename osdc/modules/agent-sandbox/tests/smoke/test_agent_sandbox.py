@@ -143,7 +143,11 @@ class TestTaskAdmissionPolicy:
     # a Job block reporting something else ("expression must evaluate to bool") has to be
     # seen too, and keying on the GVK rather than on the message keeps that true.
     _GVK_HEADER = re.compile(r"^[ \t]*(\S+, Kind=\S+?):", re.MULTILINE)
-    EXPECTED_TYPE_CHECK_KIND = "v1, Kind=Pod"
+    # Both spellings of the core group. A core GVK renders `<group>/<version>, Kind=<kind>` with
+    # group empty, so the API server emits `/v1, Kind=Pod`; accept the unslashed form too rather
+    # than depend on that leading slash surviving a Kubernetes upgrade. Still whole-token, so
+    # `example.com/v1, Kind=Pod` remains a failure rather than being swallowed.
+    EXPECTED_TYPE_CHECK_KINDS = frozenset({"/v1, Kind=Pod", "v1, Kind=Pod"})
 
     @classmethod
     def _is_expected_pod_diagnostic(cls, warning: str) -> bool:
@@ -157,7 +161,7 @@ class TestTaskAdmissionPolicy:
         below rejects: an entry whose text starts before any header this test recognises.
         """
         headers = cls._GVK_HEADER.findall(warning)
-        if not headers or set(headers) != {cls.EXPECTED_TYPE_CHECK_KIND}:
+        if not headers or not set(headers) <= cls.EXPECTED_TYPE_CHECK_KINDS:
             return False
         head = warning[: cls._GVK_HEADER.search(warning).start()]
         return not head.strip()
@@ -198,9 +202,9 @@ class TestTaskAdmissionPolicy:
         this cannot detect that suppression is over-broad. A rule wrong against Pod ALONE is
         suppressed; `test_job_only_rules_are_guarded_for_the_pod_pass` covers the shapes of
         that visible statically, and splitting this into a Jobs policy and a Pods policy is
-        what would recover the rest. And the header format below has not been observed on a
-        live cluster — if the real payload differs, this reddens with the raw entries in the
-        message, which is the signal needed to pin the format down.
+        what would recover the rest. And only the two core-group header spellings are
+        recognised — any other payload format reddens with the raw entries in the message,
+        which is the signal needed to pin the new format down.
         """
         policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
         status = policy.get("status", {})
