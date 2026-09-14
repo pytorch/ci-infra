@@ -94,21 +94,38 @@ does exactly this shape for gVisor, and the nodepool generator already supports
 `docs/nvidia-driver-615-ami.md`. Building it turned up two things that are not
 obvious from the outside and that rule out the simpler variants:
 
-- **Building the EKS AMI from source with `nvidia_driver_major_version=615` does
-  not work.** The upstream build resolves the version as
-  `min(kmod-nvidia-open-dkms, AWS GRID runfile)`, and AWS's public
-  `s3://ec2-linux-nvidia-drivers` bucket stops at `595.91.07`. There is no 610 or
-  615 runfile, so the build either hard-errors or silently pins back to 595. A
-  swap on the finished AMI is the only route that reaches 615.
+- **`nvidia_driver_major_version=615` alone does not build.** Not because of
+  the GRID runfile — `nvidia_grid_runfile_bucket_name` is an ordinary Packer
+  input (`template.pkr.hcl:133`), so self-hosting a mirror is supported
+  configuration. The blocker is `archive-proprietary-kmod`, which runs
+  unconditionally and installs `kmod-nvidia-latest-dkms-<version>`. NVIDIA
+  stopped building that package at 610:
+
+  | | present in the NVIDIA AL2023 repo |
+  |---|---|
+  | `kmod-nvidia-open-dkms` | …595.91.07, 610.43.02, 610.57.04, **615.71.09** |
+  | `kmod-nvidia-latest-dkms` | …595.91.07, 610.43.02, 610.57.04 — **none at 615** |
+
+  No bucket helps: it is a dnf package, not an S3 object. Reaching 615 from
+  source means skipping that step, which is a patch to the upstream template.
 - **R615 dropping the proprietary kmod breaks node boot, not just packaging.**
+  `archive-proprietary-kmod` is also what leaves the `kmod-nvidia-latest-dkms`
+  *RPM* installed on the finished image — it archives the module and
+  `kmod-util remove`s it, but never `dnf remove`s the package. And
   `/etc/eks/nvidia-kmod-load.sh` probes the driver's major version with
-  `rpmquery kmod-nvidia-latest-dkms` — the proprietary package, absent at 615 —
-  so the probe fails, the open-kmod check returns false, and selection falls
-  through to a flavor that does not exist. The node comes up with no driver
-  loaded at all. Same shape as
+  `rpmquery kmod-nvidia-latest-dkms` at boot. So with that step skipped the
+  probe fails, the open-kmod check returns false, and selection falls through to
+  a flavor that does not exist — the node comes up with no driver loaded at all.
+  Same shape as
   [awslabs/amazon-eks-ami#2768](https://github.com/awslabs/amazon-eks-ami/issues/2768).
-  It also means `g4dn`/`g5`/`g5g` cannot use a 615 AMI without further patching:
-  upstream hardcodes them to the proprietary module for a GSP workaround.
+  This patch is unavoidable on any route to 615; building from source relocates
+  it into a fork rather than removing it. It also means `g4dn`/`g5`/`g5g` cannot
+  use a 615 AMI without further work: upstream hardcodes them to the proprietary
+  module for a GSP workaround.
+
+  Skipping `archive-grid-kmod` too — which a compute-only image does not need —
+  removes the GRID lookup from version resolution, so the runfile mirror stops
+  being a question at all. That is the shape #1068 builds.
 
 What we take on:
 
@@ -158,8 +175,13 @@ baked into the EKS NVIDIA AMI, which is the awkward part. Heaviest of the three.
   ([#2747](https://github.com/awslabs/amazon-eks-ami/pull/2747)) but has not made
   it the published default, and AWS's own guidance for the G7 family — which
   needs 595 — is to build a custom AMI rather than wait. There is no 610 or 615
-  work upstream at all, and their GRID runfile bucket would gate it regardless.
-  Read that as: not soon.
+  work upstream at all. Read that as: not soon.
+- Is a genuine GRID 615 runfile obtainable? Only matters if we ever want a vGPU
+  image; a compute-only build drops the GRID path entirely. AWS's `-grid-aws`
+  filenames track standard upstream versions (their `595.91.07` is the same
+  version as the Tesla build), but the GRID/vGPU line has its own licensing, and
+  renaming a Tesla runfile would leave an archive labelled `nvidia-open-grid`
+  holding a non-GRID driver.
 
 ## Separate bug found while investigating: GPU kubelet version skew
 
