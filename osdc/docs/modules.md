@@ -238,7 +238,7 @@ Build-node tuning (NVMe RAID0, registry mirrors, CPU tuning) is not a separate s
 
 ### harbor-cache-recovery
 
-Automated recovery from Harbor proxy cache content corruption. CronJob scans all pods for `ImagePullBackOff` / `ErrImagePull` whose kubelet message carries a containerd content-corruption string (`failed size validation`, `unexpected commit digest`, `unexpected commit size`, `unexpected digest`, `short read: expected`, `failed to extract layer`) and deletes the single affected artifact — one tag or digest — from the Harbor proxy cache project, so the next pull re-fetches it from upstream. Never deletes pods, and never deletes a whole repository.
+Automated recovery from Harbor proxy cache content corruption. CronJob scans all pods for `ImagePullBackOff` / `ErrImagePull` whose kubelet message carries a containerd content-corruption string (`failed size validation`, `unexpected commit digest`, `unexpected commit size`, `unexpected digest`, `short read: expected`) and deletes the single affected artifact — one tag or digest — from the Harbor proxy cache project, so the next pull re-fetches it from upstream. Never deletes pods, and never deletes a whole repository.
 
 `unexpected media type` pull failures are excluded by design. For a tag reference containerd has no expected digest, so it computes one from the response body; an HTML error page therefore commits as a self-consistent artifact on the node, while Harbor rejects unregistered media types before caching anything. There is nothing cached to purge, and a purge would only evict the repository's good artifacts. Those failures point at a Harbor front-door routing problem — a `/v2/` request reaching something that serves HTML — which is a separate open investigation.
 
