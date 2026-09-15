@@ -91,9 +91,16 @@ defaults:
     # sizes the pod; a later one must hold at least its stated count of that
     # pod or generation fails. m6id.12xlarge is half a 24xlarge, so it takes
     # one of the same pods the 24xlarge takes two of.
+    #
+    # Both m6id sizes draw on the same host fleet, so a family-wide shortage
+    # m8id is the cross-family escape for an m6id-wide shortage: gen-7 x86 has
+    # no instance-store variant, so gen-8 is the nearest family that still
+    # satisfies instanceStorePolicy: RAID0.
     amd64_instance_types:
       m6id.24xlarge: 2
       m6id.12xlarge: 1
+      m8id.24xlarge: 2
+      m8id.12xlarge: 1
     arm64_instance_types:
       m7gd.16xlarge: 4
     autoscaling:
