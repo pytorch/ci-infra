@@ -1,12 +1,20 @@
 # ARC runner definition: rel-l-x86aavx2-29-113-l4
 # Release wheel-build runner (x86, GPU) — dedicated runner group + node isolation.
 # Instance type: g6.8xlarge — 1-GPU L4, 32c/128Gi node (pool: g6-8xlarge-release).
-# Sized like the CI l-x86aavx2-29-113-l4 runner on the same instance: actual K8s
-# capacity ~118.4Gi, max job memory after overhead 113Gi, and the same 150Gi of
-# ephemeral storage that runner and the linux.g5.4xlarge.nvidia.gpu EC2 runner
-# this replaces both use. Requesting the node's full 600 would never schedule:
-# allocatable is below that once the AMI, images and kubelet reserves are taken.
+# Same 150Gi of ephemeral storage as the CI l-x86aavx2-29-113-l4 runner and the
+# linux.g5.4xlarge.nvidia.gpu EC2 runner this replaces. Requesting the node's
+# full 600 would never schedule: allocatable is below that once the AMI, images
+# and kubelet reserves are taken.
 # One GPU per node means one runner per node without needing bare-metal sizing.
+#
+# 104Gi, not the 113Gi the label says: instance_specs.py puts g6.8xlarge
+# allocatable at 121241Mi, and Karpenter schedules the job plus its sidecars and
+# the node's daemonsets -- ~9.8Gi more, so 113Gi demands 125790Mi and overshoots
+# by 4.4Gi. The CI runners survive the same mistake because their fleet offers
+# five sizes to fall through to; this one's fleet generates a single release
+# nodepool (g6-8xlarge-release), so there is nothing below it and the pod simply
+# stays Pending. 104Gi leaves 4.6Gi of margin. The label keeps -113- because
+# renaming is a cross-repo contract change; Karpenter reads the request below.
 #
 # Exists for the CUDA x86_64 wheel rows, whose smoke test exports a model through
 # the CUDA partitioner and runs it, so unlike the CPU release runners this one
@@ -17,7 +25,7 @@ runner:
   instance_type: g6.8xlarge
   disk_size: 150
   vcpu: 29
-  memory: 113Gi
+  memory: 104Gi
   gpu: 1
   runner_class: release
   # No runner_group here: release-class runners always land in the per-region
