@@ -1,0 +1,74 @@
+diff --git a/templates/al2023/provisioners/install-nvidia-driver.sh b/templates/al2023/provisioners/install-nvidia-driver.sh
+index 7140694..ea6ba39 100755
+--- a/templates/al2023/provisioners/install-nvidia-driver.sh
++++ b/templates/al2023/provisioners/install-nvidia-driver.sh
+@@ -56,13 +56,25 @@ fi
+ 
+ echo "Resolving full driver version for ${NVIDIA_DRIVER_MAJOR_VERSION} drivers..."
+ 
+-LATEST_GRID_DRIVER_VERSION=$(aws s3 ls --recursive s3://${EC2_GRID_DRIVER_S3_BUCKET}/ \
+-  | grep -Eo "(NVIDIA-Linux-x86_64-)${NVIDIA_DRIVER_MAJOR_VERSION}\.[0-9]+\.[0-9]+(-grid-aws\.run)" \
+-  | cut -d'-' -f4 \
+-  | sort -V \
+-  | tail -1)
++# From 615 NVIDIA ships no proprietary kernel module, and AWS publishes no
++# matching GRID runfile, so those two flavors cannot be built at all. Skip their
++# lookups rather than resolving a version against sources that stop at 610/595.
++NVIDIA_OPEN_KMOD_ONLY="false"
++if [[ "${NVIDIA_DRIVER_MAJOR_VERSION}" -ge 615 ]]; then
++  NVIDIA_OPEN_KMOD_ONLY="true"
++fi
++readonly NVIDIA_OPEN_KMOD_ONLY
++
++LATEST_GRID_DRIVER_VERSION=""
++if [[ "${NVIDIA_OPEN_KMOD_ONLY}" == "false" ]]; then
++  LATEST_GRID_DRIVER_VERSION=$(aws s3 ls --recursive s3://${EC2_GRID_DRIVER_S3_BUCKET}/ \
++    | grep -Eo "(NVIDIA-Linux-x86_64-)${NVIDIA_DRIVER_MAJOR_VERSION}\.[0-9]+\.[0-9]+(-grid-aws\.run)" \
++    | cut -d'-' -f4 \
++    | sort -V \
++    | tail -1)
++fi
+ 
+-echo "Latest available Nvidia GRID driver runfile version: ${LATEST_GRID_DRIVER_VERSION}"
++echo "Latest available Nvidia GRID driver runfile version: ${LATEST_GRID_DRIVER_VERSION:-<skipped>}"
+ 
+ LATEST_OPEN_MODULE_VERSION=$(dnf repoquery --setopt=*.module_hotfixes=true --latest=1 --queryformat "%{version}" "kmod-nvidia-open-dkms-${NVIDIA_DRIVER_MAJOR_VERSION}*")
+ 
+@@ -74,7 +86,9 @@ echo "Latest available Nvidia open module version: ${LATEST_OPEN_MODULE_VERSION}
+ # userspace components. If one of the open module or the grid driver runfile version are older, we
+ # use that version for all installations. Assumes that the open and proprietary module will always be
+ # available at the same version, and that each source will always eventually have the same versions.
+-if vercmp "$LATEST_OPEN_MODULE_VERSION" lteq "$LATEST_GRID_DRIVER_VERSION"; then
++if [[ "${NVIDIA_OPEN_KMOD_ONLY}" == "true" ]]; then
++  readonly NVIDIA_DRIVER_FULL_VERSION="$LATEST_OPEN_MODULE_VERSION"
++elif vercmp "$LATEST_OPEN_MODULE_VERSION" lteq "$LATEST_GRID_DRIVER_VERSION"; then
+   readonly NVIDIA_DRIVER_FULL_VERSION="$LATEST_OPEN_MODULE_VERSION"
+ else
+   readonly NVIDIA_DRIVER_FULL_VERSION="$LATEST_GRID_DRIVER_VERSION"
+@@ -238,9 +252,13 @@ function archive-gdrdrv-kmod() {
+   sudo dnf -y remove --all gdrcopy-kmod-${NVIDIA_GDRCOPY_DRIVER_VERSION}
+ }
+ 
+-archive-grid-kmod
++if [[ "${NVIDIA_OPEN_KMOD_ONLY}" == "false" ]]; then
++  archive-grid-kmod
++fi
+ archive-open-kmods
+-archive-proprietary-kmod
++if [[ "${NVIDIA_OPEN_KMOD_ONLY}" == "false" ]]; then
++  archive-proprietary-kmod
++fi
+ 
+ ################################################################################
+ ### Install NVLSM ##############################################################
+@@ -257,6 +275,10 @@ sudo dnf -y install \
+ ### Prepare for nvidia init ####################################################
+ ################################################################################
+ 
++# nvidia-kmod-load.sh reads this instead of probing the proprietary kmod's RPM,
++# which is not installed when only the open flavor is built.
++echo "${NVIDIA_DRIVER_MAJOR_VERSION}" | sudo tee /etc/eks/nvidia-driver-major > /dev/null
++
+ sudo mv ${WORKING_DIR}/gpu/nvidia-kmod-load.sh /etc/eks/
+ sudo mv ${WORKING_DIR}/gpu/nvidia-kmod-load.service /etc/systemd/system/nvidia-kmod-load.service
+ sudo mv ${WORKING_DIR}/gpu/set-nvidia-clocks.service /etc/systemd/system/set-nvidia-clocks.service
