@@ -2,8 +2,11 @@
 # Release wheel-build runner (x86, GPU) — dedicated runner group + node isolation.
 # Instance type: g6.8xlarge — 1-GPU L4, 32c/128Gi node (pool: g6-8xlarge-release).
 # Sized like the CI l-x86aavx2-29-113-l4 runner on the same instance: actual K8s
-# capacity ~118.4Gi, max job memory after overhead 113Gi. One GPU per node means
-# one runner per node without needing bare-metal sizing.
+# capacity ~118.4Gi, max job memory after overhead 113Gi, and the same 150Gi of
+# ephemeral storage that runner and the linux.g5.4xlarge.nvidia.gpu EC2 runner
+# this replaces both use. Requesting the node's full 600 would never schedule:
+# allocatable is below that once the AMI, images and kubelet reserves are taken.
+# One GPU per node means one runner per node without needing bare-metal sizing.
 #
 # Exists for the CUDA x86_64 wheel rows, whose smoke test exports a model through
 # the CUDA partitioner and runs it, so unlike the CPU release runners this one
@@ -12,7 +15,7 @@
 runner:
   name: rel-l-x86aavx2-29-113-l4
   instance_type: g6.8xlarge
-  disk_size: 600
+  disk_size: 150
   vcpu: 29
   memory: 113Gi
   gpu: 1
