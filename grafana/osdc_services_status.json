@@ -57,7 +57,7 @@
         "description": "Ready replicas of the ARC controller (`arc-gha-rs-controller`) Deployment. Down when none ready — operator is offline, runner-scale-set CRs stop reconciling.",
         "id": 101,
         "links": [],
-        "title": "ARC Controller",
+        "title": "ARC Controller [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -161,7 +161,7 @@
         "description": "Karpenter is reporting nodepool usage metrics (proxy for `controller running`). Down = no node autoscaling.",
         "id": 102,
         "links": [],
-        "title": "Karpenter",
+        "title": "Karpenter [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -249,7 +249,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(min(count by (proxy) (haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\", state=\"UP\"} == 1)) > bool 0) or on() vector(0)",
+                      "expr": "(((count(group by (proxy) (haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\"}) unless group by (proxy) (haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\", state=\"UP\"} == 1)) or on() vector(0)) == bool 0) and on() (count(haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\"}) > 0)) or on() (0 - (count(kube_namespace_status_phase{cluster=~\"$cluster\", namespace=\"buildkit\", phase=\"Active\"} == 1) >= bool 1))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -262,10 +262,10 @@
             "transformations": []
           }
         },
-        "description": "HAProxy has at least one backend marked UP for each `bk_*` proxy. Down = builds can't be dispatched.",
+        "description": "HAProxy has at least one backend marked UP for each `bk_*` proxy. Down = builds can't be dispatched. NOT DEPLOYED = no `buildkit` namespace on this cluster; NO DATA — DEPLOYED = the namespace exists but HAProxy metrics are missing.",
         "id": 104,
         "links": [],
-        "title": "BuildKit LB",
+        "title": "BuildKit LB [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -293,12 +293,27 @@
                       }
                     },
                     "type": "value"
+                  },
+                  {
+                    "options": {
+                      "from": -1.5,
+                      "to": -0.5,
+                      "result": {
+                        "color": "purple",
+                        "text": "NO DATA — DEPLOYED"
+                      }
+                    },
+                    "type": "range"
                   }
                 ],
-                "noValue": "DOWN",
+                "noValue": "NOT DEPLOYED",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    },
                     {
                       "color": "red",
                       "value": 0
@@ -353,7 +368,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(sum(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\", status=\"success\"}[5m])) > bool 0) or on() vector(0)",
+                      "expr": "((sum(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\", status=\"success\"}[5m])) > bool 0) * (1 + ((100 * (sum(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\", status=\"error\"}[15m])) or vector(0)) / sum(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\"}[15m]))) < bool 10)) * ((100 * (sum(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\", status=\"error\"}[15m])) or vector(0)) / sum(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\"}[15m]))) < bool 25)) or on() vector(0)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -366,10 +381,10 @@
             "transformations": []
           }
         },
-        "description": "Compactor reconcile loop has produced successful cycles in the last 5 min. Down = no node consolidation, EKS spend rises.",
+        "description": "Compactor reconcile loop health. UP = successful cycles in the last 5 min and under 10% of cycles erroring over 15 min. DEGRADED = 10-25% of cycles erroring. DOWN = no successful cycles, or 25% or more erroring — node consolidation stops and EKS spend rises.",
         "id": 105,
         "links": [],
-        "title": "Node Compactor",
+        "title": "Node Compactor [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -392,6 +407,15 @@
                   {
                     "options": {
                       "1": {
+                        "color": "#EAB839",
+                        "text": "DEGRADED"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "2": {
                         "color": "green",
                         "text": "UP"
                       }
@@ -408,8 +432,12 @@
                       "value": 0
                     },
                     {
-                      "color": "green",
+                      "color": "#EAB839",
                       "value": 1
+                    },
+                    {
+                      "color": "green",
+                      "value": 2
                     }
                   ]
                 },
@@ -457,7 +485,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "100 * (count(up{cluster=~\"$cluster\", job=\"monitoring/coredns\"} == 1) / clamp_min(count(up{cluster=~\"$cluster\", job=\"monitoring/coredns\"}), 1))",
+                      "expr": "100 * ((count(up{cluster=~\"$cluster\", job=\"monitoring/coredns\"} == 1) or on() vector(0)) / count(up{cluster=~\"$cluster\", job=\"monitoring/coredns\"}))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -470,10 +498,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of in-cluster CoreDNS scrape targets up. Yellow below 80%, red below 50%. Cluster DNS resolution at risk.",
+        "description": "Percent of in-cluster CoreDNS scrape targets up. Yellow below 95%, red below 90%. Cluster DNS resolution at risk.",
         "id": 107,
         "links": [],
-        "title": "CoreDNS (in-cluster)",
+        "title": "CoreDNS (in-cluster) [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -494,15 +522,16 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": 50
+                      "value": 90
                     },
                     {
                       "color": "green",
-                      "value": 80
+                      "value": 95
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "percent",
+                "noValue": "NO TARGETS"
               },
               "overrides": []
             },
@@ -559,10 +588,10 @@
             "transformations": []
           }
         },
-        "description": "5xx error rate on the EKS Kubernetes API server, last 5 min. Yellow at >=2%, red at >=5%. High values mean control-plane instability — kubectl, operators, and webhooks will be flaky.",
+        "description": "5xx error rate on the EKS Kubernetes API server, last 5 min. Yellow at >=0.05%, red at >=0.10%. The lines sit just above the benign floor: routine fleet 5xx are exec/attach proxy errors against runner pods that vanish mid-session, and across 90 days x 5 clusters exactly one 5-minute sample outside an incident reaches 0.05%. Calibration reference: the sustained control-plane fault on meta-prod-aws-ue1 in July 2026 (34.5k 5xx over 8 days, dominated by `500 LIST pods`) peaked at 0.164% and would read yellow for 22.3 h and red for 6.6 h at these lines. High values mean control-plane instability - kubectl, operators, and webhooks will be flaky.",
         "id": 108,
         "links": [],
-        "title": "API Server",
+        "title": "API Server [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -572,7 +601,7 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 10,
+                "max": 0.25,
                 "min": 0,
                 "thresholds": {
                   "mode": "absolute",
@@ -583,11 +612,11 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": 2
+                      "value": 0.05
                     },
                     {
                       "color": "red",
-                      "value": 5
+                      "value": 0.1
                     }
                   ]
                 },
@@ -651,7 +680,7 @@
         "description": "Aggregate `harbor_health` gauge from harbor-exporter. UP = all components healthy; DOWN = any Harbor component failing (Trivy/registry/core/portal).",
         "id": 109,
         "links": [],
-        "title": "Harbor Health",
+        "title": "Harbor Health [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -739,7 +768,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "time() - max(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\"})",
+                      "expr": "time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\"})",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -752,10 +781,10 @@
             "transformations": []
           }
         },
-        "description": "Seconds since the last harbor-cache-recovery cron job completed. Yellow at 10 min, red at 20 min (job schedule is every 5 min).",
+        "description": "Seconds since the last harbor-cache-recovery cron job completed; the schedule is every 5 min. Yellow at 30 min, red at 60 min. 30 min is 6x the schedule and is the same line the `HarborCacheRecoveryStale` alert uses, so the tile reacts to sustained absence of the job rather than to one late or failed run - individual run failures are normal here and are covered by the per-run alerts in the same rule group.",
         "id": 112,
         "links": [],
-        "title": "Harbor Cache Recovery",
+        "title": "Harbor Cache Recovery [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -765,7 +794,7 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 1200,
+                "max": 3600,
                 "min": 0,
                 "thresholds": {
                   "mode": "absolute",
@@ -776,11 +805,11 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": 600
+                      "value": 1800
                     },
                     {
                       "color": "red",
-                      "value": 1200
+                      "value": 3600
                     }
                   ]
                 },
@@ -828,7 +857,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "100 * (count(up{cluster=~\"$cluster\", job=\"monitoring/nodelocaldns\"} == 1) / clamp_min(count(up{cluster=~\"$cluster\", job=\"monitoring/nodelocaldns\"}), 1))",
+                      "expr": "100 * ((count(up{cluster=~\"$cluster\", job=\"monitoring/nodelocaldns\"} == 1) or on() vector(0)) / count(up{cluster=~\"$cluster\", job=\"monitoring/nodelocaldns\"}))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -844,7 +873,7 @@
         "description": "Percent of NodeLocal DNS DaemonSet pods up. Yellow below 95%, red below 90%. Per-node DNS cache; degradation hurts runner DNS latency.",
         "id": 113,
         "links": [],
-        "title": "NodeLocal DNS",
+        "title": "NodeLocal DNS [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -855,7 +884,7 @@
                   "mode": "thresholds"
                 },
                 "max": 100,
-                "min": 80,
+                "min": 0,
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
@@ -873,7 +902,8 @@
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "percent",
+                "noValue": "NO TARGETS"
               },
               "overrides": []
             },
@@ -917,7 +947,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"buildkit\", deployment=~\"buildkitd-(amd64|arm64)\"}) >= bool 1) or on() vector(0)",
+                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"buildkit\", deployment=~\"buildkitd-(amd64|arm64)\"}) >= bool 1) or on() (0 - (count(kube_namespace_status_phase{cluster=~\"$cluster\", namespace=\"buildkit\", phase=\"Active\"} == 1) >= bool 1))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -930,10 +960,10 @@
             "transformations": []
           }
         },
-        "description": "Min ready replicas across `buildkitd-amd64` and `buildkitd-arm64` Deployments. Down = builds stall on one or both architectures.",
+        "description": "Min ready replicas across `buildkitd-amd64` and `buildkitd-arm64` Deployments. Down = builds stall on one or both architectures. NOT DEPLOYED = no `buildkit` namespace on this cluster; NO DATA — DEPLOYED = the namespace exists but the Deployment metrics are missing.",
         "id": 114,
         "links": [],
-        "title": "BuildKit Workers",
+        "title": "BuildKit Workers [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -961,12 +991,27 @@
                       }
                     },
                     "type": "value"
+                  },
+                  {
+                    "options": {
+                      "from": -1.5,
+                      "to": -0.5,
+                      "result": {
+                        "color": "purple",
+                        "text": "NO DATA — DEPLOYED"
+                      }
+                    },
+                    "type": "range"
                   }
                 ],
-                "noValue": "DOWN",
+                "noValue": "NOT DEPLOYED",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    },
                     {
                       "color": "red",
                       "value": 0
@@ -1021,7 +1066,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "100 * (count(up{cluster=~\"$cluster\", job=\"monitoring/arc-listeners\"} == 1) / clamp_min(count(up{cluster=~\"$cluster\", job=\"monitoring/arc-listeners\"}), 1))",
+                      "expr": "100 * ((count(up{cluster=~\"$cluster\", job=\"monitoring/arc-listeners\"} == 1) or on() vector(0)) / count(up{cluster=~\"$cluster\", job=\"monitoring/arc-listeners\"}))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1037,7 +1082,7 @@
         "description": "Percent of ARC listener pods (`monitoring/arc-listeners`) up. Yellow below 95%, red below 90%. Each listener handles one scale set; individual failures silently break that scale set's dispatch.",
         "id": 115,
         "links": [],
-        "title": "ARC Listeners",
+        "title": "ARC Listeners [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1048,7 +1093,7 @@
                   "mode": "thresholds"
                 },
                 "max": 100,
-                "min": 80,
+                "min": 0,
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
@@ -1066,7 +1111,8 @@
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "percent",
+                "noValue": "NO TARGETS"
               },
               "overrides": []
             },
@@ -1110,7 +1156,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "time() - max(gha_capacity_reconcile_last_success_timestamp_seconds{cluster=~\"$cluster\"})",
+                      "expr": "max by (cluster)(time() - gha_capacity_reconcile_last_success_timestamp_seconds{cluster=~\"$cluster\"})",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1123,10 +1169,10 @@
             "transformations": []
           }
         },
-        "description": "Seconds since the ARC capacity monitor last completed a reconcile loop. Yellow at 10 min, red at 20 min. If stale, capacity dashboards and the `ARCListenerStall` alert go blind.",
+        "description": "Seconds since the *worst* ARC capacity-monitor listener last completed a reconcile loop - the max across listeners, so one wedged listener is visible. Yellow at 15 min, red at 30 min. The floor is the 180 s scrape interval of the monitoring/arc-listeners job, so the tile idles near 200 s. A listener whose pod dies has its series dropped after Prometheus's 5 min staleness horizon, which caps pod churn near 480 s; a listener that stays up with a wedged loop climbs without bound, and that is the case this tile exists to catch. It remains structurally quiet: the 90-day maximum is 592 s, so it has never been yellow, and total loss of every listener pod blanks the tile rather than reddening it - panel-115 and the `ARCListenerStall` alert cover that case. If stale, capacity dashboards and `ARCListenerStall` go blind.",
         "id": 116,
         "links": [],
-        "title": "ARC Capacity Monitor",
+        "title": "ARC Capacity Monitor [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1136,7 +1182,7 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 1200,
+                "max": 1800,
                 "min": 0,
                 "thresholds": {
                   "mode": "absolute",
@@ -1147,11 +1193,11 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": 600
+                      "value": 900
                     },
                     {
                       "color": "red",
-                      "value": 1200
+                      "value": 1800
                     }
                   ]
                 },
@@ -1199,7 +1245,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"aws-node\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"aws-node\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"aws-node\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"aws-node\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"aws-node\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"aws-node\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1212,10 +1258,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of `aws-node` DaemonSet pods healthy (1 per node). Yellow below 93%, red below 85%. Pods on affected nodes can't get IPs.",
+        "description": "Stuck-pod severity for `aws-node`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Pods on affected nodes can't get IPs.",
         "id": 117,
         "links": [],
-        "title": "VPC CNI (aws-node) (% healthy)",
+        "title": "VPC CNI (aws-node) stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1225,26 +1271,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -1288,7 +1364,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"kube-proxy\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"kube-proxy\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"kube-proxy\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"kube-proxy\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"kube-proxy\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"kube-proxy\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1301,10 +1377,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of `kube-proxy` DaemonSet pods healthy. Yellow below 93%, red below 85%. Affected nodes lose Service VIP routing.",
+        "description": "Stuck-pod severity for `kube-proxy`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Affected nodes lose Service VIP routing.",
         "id": 118,
         "links": [],
-        "title": "kube-proxy (% healthy)",
+        "title": "kube-proxy stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1314,26 +1390,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -1390,10 +1496,10 @@
             "transformations": []
           }
         },
-        "description": "Max conntrack table utilization across all nodes. Yellow at >=60%, red at >=80%. Saturation drops new connections (IPv6 SNAT side effect).",
+        "description": "Max conntrack table utilization across all nodes. Yellow at >=10%, red at >=25%. These are engineering judgement, not an observed failure: no saturation event exists anywhere in 90 days of fleet data - the 14-day fleet peak is 4.54% and none of ~237k node lifetimes ever exceeded 5%. Read the value as an anomaly indicator rather than a saturation gauge, because the ratio is dominated by `nf_conntrack_max` heterogeneity rather than by connection load: the worst-reading node is not the busiest node. The 4.54% peak was 23,782 entries on a 524,288-limit node, while the fleet's busiest node at 39,669 entries read only 2.52% behind a 1,572,864 limit. Saturation drops new connections (IPv6 SNAT side effect).",
         "id": 119,
         "links": [],
-        "title": "Conntrack Pressure",
+        "title": "Conntrack Pressure [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1403,7 +1509,7 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
+                "max": 30,
                 "min": 0,
                 "thresholds": {
                   "mode": "absolute",
@@ -1414,11 +1520,11 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": 60
+                      "value": 10
                     },
                     {
                       "color": "red",
-                      "value": 80
+                      "value": 25
                     }
                   ]
                 },
@@ -1482,7 +1588,7 @@
         "description": "Ready replicas of the EBS CSI controller Deployment. Down = new EBS volumes can't be provisioned (slow-burn; existing PVs keep working).",
         "id": 121,
         "links": [],
-        "title": "EBS CSI Driver",
+        "title": "EBS CSI Driver [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1586,7 +1692,7 @@
         "description": "Sum of unhealthy Harbor Deployments + StatefulSets (replicas - ready). Green at 0, yellow >=1, red >=2.",
         "id": 122,
         "links": [],
-        "title": "Harbor Components",
+        "title": "Harbor Components [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1659,7 +1765,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"image-cache-janitor\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"image-cache-janitor\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"image-cache-janitor\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"image-cache-janitor\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"image-cache-janitor\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"image-cache-janitor\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1672,10 +1778,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of image-cache-janitor DaemonSet pods healthy. Yellow below 93%, red below 85%. Stops node disk eviction.",
+        "description": "Stuck-pod severity for `image-cache-janitor`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Stops node disk eviction.",
         "id": 123,
         "links": [],
-        "title": "Image Cache Janitor (% healthy)",
+        "title": "Image Cache Janitor stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1685,26 +1791,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -1748,7 +1884,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"arc-runners\", daemonset=\"runner-hooks-warmer\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"arc-runners\", daemonset=\"runner-hooks-warmer\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"arc-runners\", daemonset=\"runner-hooks-warmer\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"arc-runners\", daemonset=\"runner-hooks-warmer\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"arc-runners\", daemonset=\"runner-hooks-warmer\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"arc-runners\", daemonset=\"runner-hooks-warmer\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1761,10 +1897,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of runner-hooks-warmer DaemonSet pods healthy. Yellow below 93%, red below 85%. Down = runner pods can't mount patched container hooks and fail to start.",
+        "description": "Stuck-pod severity for `runner-hooks-warmer`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Down = runner pods can't mount patched container hooks and fail to start.",
         "id": 126,
         "links": [],
-        "title": "Runner Hooks Warmer (% healthy)",
+        "title": "Runner Hooks Warmer stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1774,26 +1910,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -1837,7 +2003,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "time() - max(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"arc-runners\", job_name=~\"zombie-cleanup-.*\"})",
+                      "expr": "time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"arc-runners\", job_name=~\"zombie-cleanup-.*\"})",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1850,10 +2016,10 @@
             "transformations": []
           }
         },
-        "description": "Seconds since the zombie-cleanup CronJob last completed. Yellow at 2 h, red at 4 h. Stale = zombie runner pods can pile up and squat capacity.",
+        "description": "Seconds since the zombie-cleanup CronJob last completed; the schedule is hourly. Yellow at 75 min means one run missed or badly late, red at 125 min means two runs missed. Staleness cannot structurally exceed one period plus scrape lag - the 90-day maximum is 3,655 s - so anything past yellow means a scheduled run did not land. Stale = zombie runner pods can pile up and squat capacity.",
         "id": 127,
         "links": [],
-        "title": "Zombie Cleanup",
+        "title": "Zombie Cleanup [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1863,7 +2029,7 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 14400,
+                "max": 7500,
                 "min": 0,
                 "thresholds": {
                   "mode": "absolute",
@@ -1874,11 +2040,11 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": 7200
+                      "value": 4500
                     },
                     {
                       "color": "red",
-                      "value": 14400
+                      "value": 7500
                     }
                   ]
                 },
@@ -1926,7 +2092,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"nvidia-device-plugin-daemonset\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"nvidia-device-plugin-daemonset\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"nvidia-device-plugin-daemonset\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"nvidia-device-plugin-daemonset\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"nvidia-device-plugin-daemonset\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"nvidia-device-plugin-daemonset\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -1939,10 +2105,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of NVIDIA device plugin DaemonSet pods healthy on GPU nodes. Yellow below 93%, red below 85%. Down = `nvidia.com/gpu` resource zeroes out, GPU runners can't schedule.",
+        "description": "Stuck-pod severity for `nvidia-device-plugin-daemonset`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Down = `nvidia.com/gpu` resource zeroes out, GPU runners can't schedule.",
         "id": 128,
         "links": [],
-        "title": "NVIDIA Device Plugin (% healthy)",
+        "title": "NVIDIA Device Plugin stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -1952,26 +2118,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -2015,7 +2211,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "100 * (count(up{cluster=~\"$cluster\", job=\"dcgm-exporter\"} == 1) / clamp_min(count(up{cluster=~\"$cluster\", job=\"dcgm-exporter\"}), 1))",
+                      "expr": "100 * ((count(up{cluster=~\"$cluster\", job=\"dcgm-exporter\"} == 1) or on() vector(0)) / count(up{cluster=~\"$cluster\", job=\"dcgm-exporter\"})) or on() (0 - (count(kube_node_status_capacity{cluster=~\"$cluster\", resource=\"nvidia_com_gpu\"} > 0) >= bool 1))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -2031,7 +2227,7 @@
         "description": "Percent of DCGM exporter scrape targets up on GPU nodes. Yellow below 95%, red below 90%. Powers all GPU alerts (ECC, XID, temp, row-remap).",
         "id": 129,
         "links": [],
-        "title": "DCGM Exporter",
+        "title": "DCGM Exporter [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2042,10 +2238,14 @@
                   "mode": "thresholds"
                 },
                 "max": 100,
-                "min": 80,
+                "min": null,
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    },
                     {
                       "color": "red",
                       "value": 0
@@ -2060,7 +2260,21 @@
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "percent",
+                "noValue": "NO GPU NODES",
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -1.5,
+                      "to": -0.5,
+                      "result": {
+                        "color": "purple",
+                        "text": "NO DATA — DEPLOYED"
+                      }
+                    },
+                    "type": "range"
+                  }
+                ]
               },
               "overrides": []
             },
@@ -2120,7 +2334,7 @@
         "description": "Ready replicas of the Alloy metrics pipeline Deployment. Down = no metrics flow to Grafana Cloud Mimir, this dashboard goes blank.",
         "id": 130,
         "links": [],
-        "title": "Alloy Metrics",
+        "title": "Alloy Metrics [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2208,7 +2422,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"logging\", daemonset=\"alloy-logging\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"logging\", daemonset=\"alloy-logging\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"logging\", daemonset=\"alloy-logging\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"logging\", daemonset=\"alloy-logging\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"logging\", daemonset=\"alloy-logging\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"logging\", daemonset=\"alloy-logging\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -2221,10 +2435,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of alloy-logging DaemonSet pods healthy. Yellow below 93%, red below 85%. Affected nodes stop shipping logs to Grafana Cloud Loki.",
+        "description": "Stuck-pod severity for `alloy-logging`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Affected nodes stop shipping logs to Grafana Cloud Loki.",
         "id": 131,
         "links": [],
-        "title": "Alloy Logging (% healthy)",
+        "title": "Alloy Logging stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2234,26 +2448,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -2313,7 +2557,7 @@
         "description": "Ready replicas of kube-state-metrics. Down = roughly half of this dashboard's cards (any using `kube_*` metrics) go red.",
         "id": 132,
         "links": [],
-        "title": "kube-state-metrics",
+        "title": "kube-state-metrics [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2417,7 +2661,7 @@
         "description": "Ready replicas of `kube-prometheus-stack-operator`. Down = new ServiceMonitors/PodMonitors stop being reconciled (slow-burn; existing scrapes keep working).",
         "id": 133,
         "links": [],
-        "title": "Prometheus Operator",
+        "title": "Prometheus Operator [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2505,7 +2749,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}) / clamp_min(sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}), 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -2518,10 +2762,10 @@
             "transformations": []
           }
         },
-        "description": "Ready fraction of the hf-cache rclone FUSE mount DaemonSets (all GPU tiers). Grey = not deployed on this cluster.",
+        "description": "Stuck-pod severity for `hf-cache-mount*`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Covers every GPU tier of the hf-cache rclone FUSE mount. `NOT DEPLOYED` = no hf-cache on this cluster.",
         "id": 134,
         "links": [],
-        "title": "HF Cache Mount (% healthy)",
+        "title": "HF Cache Mount stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2531,26 +2775,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NOT DEPLOYED",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -2594,7 +2868,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"keda\", deployment=\"keda-operator\"}) >= bool 1)",
+                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"keda\", deployment=\"keda-operator\"}) >= bool 1) or on() (0 - (count(kube_namespace_status_phase{cluster=~\"$cluster\", namespace=\"keda\", phase=\"Active\"} == 1) >= bool 1))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -2607,10 +2881,10 @@
             "transformations": []
           }
         },
-        "description": "KEDA operator Deployment readiness. Grey = KEDA not deployed on this cluster; DOWN = operator not ready.",
+        "description": "KEDA operator Deployment readiness. DOWN = operator not ready. NOT DEPLOYED = no `keda` namespace on this cluster; NO DATA — DEPLOYED = the namespace exists but the Deployment metrics are missing.",
         "id": 135,
         "links": [],
-        "title": "KEDA Operator",
+        "title": "KEDA Operator [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2638,12 +2912,27 @@
                       }
                     },
                     "type": "value"
+                  },
+                  {
+                    "options": {
+                      "from": -1.5,
+                      "to": -0.5,
+                      "result": {
+                        "color": "purple",
+                        "text": "NO DATA — DEPLOYED"
+                      }
+                    },
+                    "type": "range"
                   }
                 ],
-                "noValue": null,
+                "noValue": "NOT DEPLOYED",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    },
                     {
                       "color": "red",
                       "value": 0
@@ -2698,7 +2987,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_max(sum(increase(keda_scaler_detail_errors_total{cluster=~\"$cluster\"}[10m])), 1)",
+                      "expr": "clamp_max(sum(increase(keda_scaler_detail_errors_total{cluster=~\"$cluster\"}[10m])), 1) or on() (0 - (count(kube_namespace_status_phase{cluster=~\"$cluster\", namespace=\"keda\", phase=\"Active\"} == 1) >= bool 1))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -2711,10 +3000,10 @@
             "transformations": []
           }
         },
-        "description": "Recent KEDA scaler errors (10m window). ERRORING = a build-node autoscaler trigger is failing / falling back to the fixed pool. Grey = no scalers on this cluster.",
+        "description": "Recent KEDA scaler errors (10m window). ERRORING = a build-node autoscaler trigger is failing / falling back to the fixed pool. NOT DEPLOYED = no `keda` namespace on this cluster; NO DATA — DEPLOYED = KEDA is running here but exports no scaler metrics.",
         "id": 136,
         "links": [],
-        "title": "KEDA Scalers",
+        "title": "KEDA Scalers [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2737,15 +3026,30 @@
                       }
                     },
                     "type": "value"
+                  },
+                  {
+                    "options": {
+                      "from": -1.5,
+                      "to": -0.5,
+                      "result": {
+                        "color": "purple",
+                        "text": "NO DATA — DEPLOYED"
+                      }
+                    },
+                    "type": "range"
                   }
                 ],
-                "noValue": null,
+                "noValue": "NOT DEPLOYED",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "green",
+                      "color": "transparent",
                       "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
                     },
                     {
                       "color": "red",
@@ -2813,7 +3117,7 @@
         "description": "bin-pack-scheduler Deployment readiness (secondary kube-scheduler). DOWN = not ready / crashlooping.",
         "id": 137,
         "links": [],
-        "title": "Bin-Pack Scheduler",
+        "title": "Bin-Pack Scheduler [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2901,7 +3205,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}) / clamp_min(sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}), 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"monitoring\", daemonset=~\".*prometheus-node-exporter\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -2914,10 +3218,10 @@
             "transformations": []
           }
         },
-        "description": "Ready fraction of the prometheus-node-exporter DaemonSet (source of node memory/conntrack metrics).",
+        "description": "Stuck-pod severity for `*prometheus-node-exporter`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Source of node memory/conntrack metrics.",
         "id": 138,
         "links": [],
-        "title": "Node Exporter (% healthy)",
+        "title": "Node Exporter stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -2927,26 +3231,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -3006,7 +3340,7 @@
         "description": "prometheus-pushgateway Deployment readiness (relays zombie-cleanup metrics).",
         "id": 139,
         "links": [],
-        "title": "Prometheus Pushgateway",
+        "title": "Prometheus Pushgateway [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3094,7 +3428,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"ebs-csi-node\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -3107,10 +3441,10 @@
             "transformations": []
           }
         },
-        "description": "Ready fraction of the ebs-csi-node DaemonSet (per-node EBS volume attach).",
+        "description": "Stuck-pod severity for `ebs-csi-node`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Per-node EBS volume attach.",
         "id": 140,
         "links": [],
-        "title": "EBS CSI Node (% healthy)",
+        "title": "EBS CSI Node stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3120,26 +3454,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -3183,7 +3547,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"algif-mitigation\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -3196,10 +3560,10 @@
             "transformations": []
           }
         },
-        "description": "Ready fraction of the algif-mitigation DaemonSet (kernel CVE mitigation).",
+        "description": "Stuck-pod severity for `algif-mitigation`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Kernel CVE mitigation.",
         "id": 141,
         "links": [],
-        "title": "Algif Mitigation (% healthy)",
+        "title": "Algif Mitigation stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3209,26 +3573,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -3272,7 +3666,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"dirtyfrag-mitigation\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -3285,10 +3679,10 @@
             "transformations": []
           }
         },
-        "description": "Ready fraction of the dirtyfrag-mitigation DaemonSet (kernel CVE mitigation).",
+        "description": "Stuck-pod severity for `dirtyfrag-mitigation`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes. Kernel CVE mitigation.",
         "id": 142,
         "links": [],
-        "title": "DirtyFrag Mitigation (% healthy)",
+        "title": "DirtyFrag Mitigation stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3298,26 +3692,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -3361,7 +3785,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "clamp_min(100 * (1 - (kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"}, 1))), 0)",
+                      "expr": "((min_over_time((clamp_min(sum(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"}) - (count(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0) or vector(0)), 0))[15m:1m]) / clamp_min(0.005 * min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"}))[15m:1m]), 1.5)) and (min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"}))[15m:1m]) > 0)) or ((min_over_time((sum(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"kube-system\", daemonset=\"node-performance-tuning\"}))[15m:1m]) == 0) - 2)",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -3374,10 +3798,10 @@
             "transformations": []
           }
         },
-        "description": "Ready fraction of the node-performance-tuning DaemonSet.",
+        "description": "Stuck-pod severity for `node-performance-tuning`: pods unavailable for 15 continuous minutes beyond the cluster's NotReady node count, over a tolerated budget of 0.5% of desired pods (floor 1.5). 0 = OK, yellow at 1, red at 2 — two and three stuck pods on a small fleet, scaling with fleet size. Fires after 15 minutes, clears in one. `NO ELIGIBLE NODES` = this DaemonSet currently targets no nodes.",
         "id": 143,
         "links": [],
-        "title": "Node Performance Tuning (% healthy)",
+        "title": "Node Performance Tuning stuck-pod severity [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3387,26 +3811,56 @@
                 "color": {
                   "mode": "thresholds"
                 },
-                "max": 100,
-                "min": 80,
+                "decimals": 1,
+                "mappings": [
+                  {
+                    "options": {
+                      "from": -2.5,
+                      "to": -1.5,
+                      "result": {
+                        "color": "text",
+                        "text": "NO ELIGIBLE NODES",
+                        "index": 0
+                      }
+                    },
+                    "type": "range"
+                  },
+                  {
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "green",
+                        "text": "OK",
+                        "index": 1
+                      }
+                    },
+                    "type": "range"
+                  }
+                ],
+                "noValue": "NO DATA",
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
                       "value": 0
                     },
                     {
                       "color": "#EAB839",
-                      "value": 85
+                      "value": 1
                     },
                     {
-                      "color": "green",
-                      "value": 93
+                      "color": "red",
+                      "value": 2
                     }
                   ]
                 },
-                "unit": "percent"
+                "unit": "none"
               },
               "overrides": []
             },
@@ -3450,7 +3904,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "sum(kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or vector(0)",
+                      "expr": "(count(kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} unless kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} offset 1h) or vector(0)) and on() (count(kube_namespace_status_phase{cluster=~\"$cluster\", namespace=\"hf-cache\", phase=\"Active\"} == 1) > 0)",
                       "instant": false,
                       "legendFormat": "",
                       "queryType": "range",
@@ -3466,10 +3920,10 @@
             "transformations": []
           }
         },
-        "description": "hf-cache rclone mounts whose last termination was OOMKilled, reduced as MAX over the selected time window — RED if any OOM occurred in the window, green if none. Sticky signal (a mount stays flagged until its pod is replaced), so it includes already-recovered mounts; the restart counter isn’t retained for the hf-cache namespace, so this reason gauge is used.",
+        "description": "hf-cache rclone mounts whose OOMKilled flag first appeared within the last hour - OOM events in the window, not mounts still carrying a stale flag. Blank where the hf-cache namespace does not exist (lf-prod-aws-ue1, lf-prod-aws-ue2), so a cluster without the module is not reported as healthy. `kube_pod_container_status_last_terminated_reason` is a sticky gauge that only ever takes the value 1, so a new OOM is observable only as a new series appearing; a pod that OOMs twice inside the hour is therefore counted once. Closing that gap needs the restart counter, which the metrics cost filter does not retain for the hf-cache namespace.",
         "id": 144,
         "links": [],
-        "title": "hf-cache Mounts OOM-killed",
+        "title": "hf-cache Mounts OOM-killed (1h) [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3485,18 +3939,22 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "value": null,
-                      "color": "green"
+                      "color": "transparent",
+                      "value": null
                     },
                     {
-                      "value": 1,
-                      "color": "red"
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
                     }
                   ]
                 },
                 "unit": "short",
                 "decimals": 0,
-                "noValue": null
+                "noValue": "NOT DEPLOYED"
               },
               "overrides": []
             },
@@ -3508,7 +3966,7 @@
               "percentChangeColorMode": "standard",
               "reduceOptions": {
                 "calcs": [
-                  "max"
+                  "lastNotNull"
                 ],
                 "fields": "",
                 "values": false
@@ -3540,7 +3998,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "sum(increase(kube_pod_container_status_restarts_total{cluster=~\"$cluster\"}[1h]))",
+                      "expr": "max(increase(kube_pod_container_status_restarts_total{cluster=~\"$cluster\"}[1h]))",
                       "legendFormat": ""
                     },
                     "version": "v0"
@@ -3553,10 +4011,10 @@
             "transformations": []
           }
         },
-        "description": "Container restarts in the last hour (per cluster). NOTE: the metrics cost filter retains kube_pod_container_status_restarts_total only for namespaces arc-systems, karpenter, harbor-system, monitoring, logging, buildkit (plus bin-pack-scheduler) — restarts in kube-system, hf-cache, arc-runners, keda and others are NOT counted, so this is a core-services pulse, not a true cluster-wide total.",
+        "description": "Highest restart count reached by any single container in the last hour - the worst container, not a cluster-wide sum. A sum multiplies breadth by depth, so 20 pods restarting once and one pod restarting 20 times render identically; those are different incidents and this tile shows the second. Yellow at 3, red at 10. Both lines sit inside the empty valley of the observed distribution - only 0.21% of samples fall anywhere between 2 and 15 - so routine single restarts stay green and a crashloop reads red. NOTE: the metrics cost filter retains kube_pod_container_status_restarts_total only for namespaces arc-systems, karpenter, harbor-system, monitoring, logging, buildkit (plus bin-pack-scheduler) - restarts in kube-system, hf-cache, arc-runners, keda and others are NOT counted, so this is a core-services pulse, not a true cluster-wide worst case.",
         "id": 145,
         "links": [],
-        "title": "Container Restarts (1h)",
+        "title": "Worst Container Restart Rate (1h, core services) [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3576,7 +4034,7 @@
                       "color": "green"
                     },
                     {
-                      "value": 1,
+                      "value": 3,
                       "color": "#EAB839"
                     },
                     {
@@ -3586,7 +4044,7 @@
                   ]
                 },
                 "unit": "short",
-                "decimals": 0,
+                "decimals": 1,
                 "noValue": null
               },
               "overrides": []
@@ -3631,7 +4089,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "sum by (cluster) (kube_deployment_status_replicas_unavailable{cluster=~\"$cluster\"} or clamp_min(kube_statefulset_replicas{cluster=~\"$cluster\"} - kube_statefulset_status_replicas_ready{cluster=~\"$cluster\"}, 0)) + (count by (cluster) ((kube_daemonset_status_number_unavailable{cluster=~\"$cluster\"} / clamp_min(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\"}, 1)) > 0.1) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "expr": "(count by (cluster) ((group by (cluster, namespace, deployment) ((kube_deployment_status_replicas_available{cluster=~\"$cluster\"} == 0) and (kube_deployment_spec_replicas{cluster=~\"$cluster\"} > 0))) or (group by (cluster, namespace, deployment) (kube_deployment_status_condition{cluster=~\"$cluster\", condition=\"Progressing\", status=\"false\"} == 1))) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) ((kube_statefulset_status_replicas_ready{cluster=~\"$cluster\"} == 0) and (kube_statefulset_replicas{cluster=~\"$cluster\"} > 0)) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) (min_over_time(((clamp_min(max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\"}) - on(cluster) group_left() ((count by (cluster)(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0)) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)), 0) / clamp_min(0.005 * max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\"}), 1.5)) > bool 1)[1h:1m]) == 1) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + clamp_min(1 - ((count by (cluster)(kube_deployment_spec_replicas{cluster=~\"$cluster\"})) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)), 0)",
                       "legendFormat": "{{cluster}}",
                       "range": true,
                       "instant": false
@@ -3646,10 +4104,10 @@
             "transformations": []
           }
         },
-        "description": "Per-cluster workload health: count of unavailable Deployment/StatefulSet replicas, plus DaemonSets that are >10% unavailable (churn-tolerant, so routine node scale-up/down does not trip it). Green=0, yellow=1, red>=2.",
+        "description": "Per-cluster count of broken workloads, not replicas: Deployments with no available replicas or a rollout Kubernetes has abandoned (Progressing=false), StatefulSets with no ready replicas, DaemonSets over their unavailability budget for a sustained hour, and kube-state-metrics being down or emitting no Deployment metrics. The DaemonSet budget is clamp_min(0.5% of desired, 1.5) pods in excess of the cluster's NotReady node count - the same budget the per-service DaemonSet tiles use, so this tile cannot go red beside a green detail tile. An autoscaling Deployment stays available while it scales, so BuildKit scale-up never registers. Green=0, red>=1: every unit is one broken workload. An empty result renders red. If a cluster loses its metrics pipeline entirely its tile disappears instead - that case needs an absent_over_time alert rule, not this panel.",
         "id": 146,
         "links": [],
-        "title": "Workloads",
+        "title": "Workloads [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3666,21 +4124,21 @@
                   "steps": [
                     {
                       "value": null,
+                      "color": "red"
+                    },
+                    {
+                      "value": 0,
                       "color": "green"
                     },
                     {
                       "value": 1,
-                      "color": "#EAB839"
-                    },
-                    {
-                      "value": 2,
                       "color": "red"
                     }
                   ]
                 },
                 "unit": "short",
                 "decimals": 0,
-                "noValue": null
+                "noValue": "NO DATA - MONITORING BROKEN"
               },
               "overrides": []
             },
@@ -3723,7 +4181,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(count by (cluster) (up{cluster=~\"$cluster\", job=~\"monitoring/coredns|monitoring/nodelocaldns|monitoring/arc-listeners|dcgm-exporter\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (harbor_health{cluster=~\"$cluster\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (group by (cluster, proxy)(haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\"}) unless group by (cluster, proxy)(haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\", state=\"UP\"} == 1)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((100 * sum by (cluster)(rate(apiserver_request_total{cluster=~\"$cluster\", code=~\"5..\"}[5m])) / clamp_min(sum by (cluster)(rate(apiserver_request_total{cluster=~\"$cluster\"}[5m])), 1)) >= 2) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((100 * max by (cluster)(node_nf_conntrack_entries{cluster=~\"$cluster\"} / node_nf_conntrack_entries_limit{cluster=~\"$cluster\"})) >= 60) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "expr": "(count by (cluster) ((100 - 100 * avg by (cluster, job) (up{cluster=~\"$cluster\", job=~\"monitoring/coredns|monitoring/nodelocaldns|monitoring/arc-listeners|dcgm-exporter\"})) >= 5) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) ((100 - 100 * avg by (cluster, job) (up{cluster=~\"$cluster\", job=~\"monitoring/coredns|monitoring/nodelocaldns|monitoring/arc-listeners|dcgm-exporter\"})) >= 10) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) (harbor_health{cluster=~\"$cluster\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) (group by (cluster, proxy)(haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\"}) unless group by (cluster, proxy)(haproxy_server_status{cluster=~\"$cluster\", proxy=~\"bk_.*\", state=\"UP\"} == 1)) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) ((100 * sum by (cluster)(rate(apiserver_request_total{cluster=~\"$cluster\", code=~\"5..\"}[5m])) / clamp_min(sum by (cluster)(rate(apiserver_request_total{cluster=~\"$cluster\"}[5m])), 1)) >= 0.05) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) ((100 * max by (cluster)(node_nf_conntrack_entries{cluster=~\"$cluster\"} / node_nf_conntrack_entries_limit{cluster=~\"$cluster\"})) >= 10) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0))",
                       "legendFormat": "{{cluster}}",
                       "range": true,
                       "instant": false
@@ -3738,10 +4196,10 @@
             "transformations": []
           }
         },
-        "description": "Per-cluster count of unreachable/unhealthy services: scrape targets down (CoreDNS, NodeLocal DNS, ARC Listeners, DCGM), Harbor unhealthy, BuildKit LB backends down, API Server 5xx>=2%, conntrack>=60%. Green=0, yellow=1, red>=2. Fires on ANY down scrape target, so it can be slightly more eager than the per-service %-healthy panels (never falsely green).",
+        "description": "Per-cluster count of degraded services, normalised per service. Each scrape job (CoreDNS, NodeLocal DNS, ARC Listeners, DCGM) counts once when more than 5% of its own targets are down and twice when more than 10% are - the same 95%/90% lines all four matching per-service tiles use - so node churn on a large fleet does not register and a total outage of a small one does. Also counts Harbor unhealthy, BuildKit LB backends down, API Server 5xx>=0.05%, conntrack>=10%. Green=0, yellow=1, red>=2. An empty result renders red.",
         "id": 147,
         "links": [],
-        "title": "Liveness",
+        "title": "Liveness [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3758,6 +4216,10 @@
                   "steps": [
                     {
                       "value": null,
+                      "color": "red"
+                    },
+                    {
+                      "value": 0,
                       "color": "green"
                     },
                     {
@@ -3772,7 +4234,7 @@
                 },
                 "unit": "short",
                 "decimals": 0,
-                "noValue": null
+                "noValue": "NO DATA - MONITORING BROKEN"
               },
               "overrides": []
             },
@@ -3815,7 +4277,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(count by (cluster) ((time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\"})) >= 600) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((time() - max by (cluster)(gha_capacity_reconcile_last_success_timestamp_seconds{cluster=~\"$cluster\"})) >= 600) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"arc-runners\", job_name=~\"zombie-cleanup-.*\"})) >= 7200) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (sum by (cluster)(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\", status=\"success\"}[5m])) == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "expr": "(count by (cluster) ((time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\"})) >= 600) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) (max by (cluster)(time() - gha_capacity_reconcile_last_success_timestamp_seconds{cluster=~\"$cluster\"}) >= 900) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) ((time() - max by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\", namespace=\"arc-runners\", job_name=~\"zombie-cleanup-.*\"})) >= 4500) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) (sum by (cluster)(rate(node_compactor_reconcile_cycles_total{cluster=~\"$cluster\", status=\"success\"}[5m])) == 0) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + clamp_min(1 - ((count by (cluster)(kube_job_status_completion_time{cluster=~\"$cluster\"})) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)), 0)",
                       "legendFormat": "{{cluster}}",
                       "range": true,
                       "instant": false
@@ -3830,10 +4292,10 @@
             "transformations": []
           }
         },
-        "description": "Per-cluster count of stale scheduled jobs / reconcile loops: Harbor Cache Recovery (>10m), ARC Capacity reconcile (>10m), Zombie Cleanup (>2h), Node Compactor (no successful cycle in 5m). Green=0, yellow=1, red>=2.",
+        "description": "Per-cluster count of stale scheduled jobs and reconcile loops: Harbor Cache Recovery (>10m), ARC Capacity reconcile (>15m), Zombie Cleanup (>75m, i.e. one missed hourly run), Node Compactor (no successful cycle in 5m). The ARC Capacity term measures the stalest listener rather than the freshest, so a single wedged reconcile loop is visible among 45-114 emitters. Two further terms count kube-state-metrics being down or emitting no Job metrics, because the Harbor and Zombie Cleanup terms read its data and would otherwise report green about jobs they can no longer see - so a non-green tile can mean \"we cannot tell\" rather than \"a job is late\". Green=0, yellow=1, red>=2. An empty result renders red.",
         "id": 148,
         "links": [],
-        "title": "Freshness",
+        "title": "Freshness [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3850,6 +4312,10 @@
                   "steps": [
                     {
                       "value": null,
+                      "color": "red"
+                    },
+                    {
+                      "value": 0,
                       "color": "green"
                     },
                     {
@@ -3864,7 +4330,7 @@
                 },
                 "unit": "short",
                 "decimals": 0,
-                "noValue": null
+                "noValue": "NO DATA - MONITORING BROKEN"
               },
               "overrides": []
             },
@@ -3907,7 +4373,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(count by (cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) (sum by (cluster)(increase(kube_pod_container_status_restarts_total{cluster=~\"$cluster\"}[1h])) >= 20) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0))",
+                      "expr": "(clamp_max(count by (cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} unless kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} offset 1h), 1) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster) (max by (cluster)(increase(kube_pod_container_status_restarts_total{cluster=~\"$cluster\"}[1h])) >= 10) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + (count by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)) + clamp_min(1 - ((count by (cluster)(kube_pod_container_status_restarts_total{cluster=~\"$cluster\"})) or (group by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"}) * 0)), 0)",
                       "legendFormat": "{{cluster}}",
                       "range": true,
                       "instant": false
@@ -3922,10 +4388,10 @@
             "transformations": []
           }
         },
-        "description": "Per-cluster: hf-cache rclone OOM-kills (any in window) + a restart storm (>=20 container restarts in 1h; the baseline is ~10/h so this flags genuine storms, not routine churn). Green=0, yellow=1, red>=2. Restart coverage limited to namespaces where the restart counter is retained (see Container Restarts tile).",
+        "description": "Per-cluster count of diverging restart/OOM signals, each contributing 0 or 1: an hf-cache rclone container OOM-killed within the last hour, and any single container at >=10 restarts in the last hour. The OOM gauge is sticky - it stays set until the pod is replaced - so it is differenced against itself an hour ago to report OOMs in the window rather than pods carrying a stale flag. The restart term measures depth, not breadth: 20 containers restarting once reads 0, one container restarting 20 times reads 1. Two further terms count kube-state-metrics being down or emitting no restart metrics, because both other terms read its data and would otherwise report green about containers they can no longer see - so a non-green tile can mean \"we cannot tell\" rather than \"something restarted\". Green=0, yellow=1, red>=2. Restart coverage is limited to the namespaces where the restart counter is retained (see the Container Restarts tile); hf-cache is not deployed on the lf clusters, where the OOM term reads 0. An empty result renders red.",
         "id": 149,
         "links": [],
-        "title": "OOM / Restarts",
+        "title": "OOM / Restarts [cluster]",
         "vizConfig": {
           "group": "stat",
           "kind": "VizConfig",
@@ -3942,6 +4408,10 @@
                   "steps": [
                     {
                       "value": null,
+                      "color": "red"
+                    },
+                    {
+                      "value": 0,
                       "color": "green"
                     },
                     {
@@ -3956,7 +4426,7 @@
                 },
                 "unit": "short",
                 "decimals": 0,
-                "noValue": null
+                "noValue": "NO DATA - MONITORING BROKEN"
               },
               "overrides": []
             },

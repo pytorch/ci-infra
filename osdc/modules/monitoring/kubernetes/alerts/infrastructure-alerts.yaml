@@ -20,9 +20,44 @@ spec:
             summary: "Node {{ $labels.node }} is NotReady"
             description: "Node {{ $labels.node }} has been in NotReady state for more than 5 minutes."
 
-        - alert: ControlPlaneCrashLoop
+        - alert: NodeInitTaintStuck
+          # Each node-init DaemonSet removes its own startup taint as its last
+          # step, so a surviving taint means that step never finished. A node in
+          # this state still reports Ready, so NodeNotReady above never sees it,
+          # and Karpenter will not reclaim it ("Node isn't initialized").
+          #
+          # node-init.osdc.io/hf-cache is excluded because it is not a warmup
+          # signal: the hf-cache mount DaemonSets are a per-GPU-count tier
+          # partition, and a node that no tier matches keeps that taint for its
+          # whole life while staying Ready and carrying work. Including the key
+          # would make this alert permanently firing.
           expr: |
-            increase(kube_pod_container_status_restarts_total{namespace=~"arc-systems|karpenter|harbor-system|monitoring|logging|buildkit"}[1h]) > 5
+            kube_node_spec_taint{key=~"node-init\\.osdc\\.io/.*", key!="node-init.osdc.io/hf-cache"} == 1
+          for: 15m
+          labels:
+            severity: critical
+            team: pytorch-dev-infra
+            priority: P3
+          annotations:
+            summary: "Node {{ $labels.node }} stuck in node-init ({{ $labels.key }})"
+            description: >-
+              Node {{ $labels.node }} has carried the {{ $labels.key }} startup
+              taint for over 15 minutes, so the node-init DaemonSet that owns that
+              taint never completed. The taint keeps the scheduler off the node
+              while Karpenter refuses to disrupt it, so the instance bills
+              indefinitely and does no work. Capture diagnostics before reclaiming
+              it: kubectl describe node {{ $labels.node }};
+              kubectl get pods -A --field-selector spec.nodeName={{ $labels.node }}
+              -o wide. Reclaim by deleting the backing NodeClaim.
+
+        - alert: ControlPlaneCrashLoop
+          # Deliberately unaggregated: the quantity is restarts per hour for a
+          # single container, which is the same unit the "Container Restarts (1h)"
+          # dashboard tile reads, and 10 is that tile's red line. Summing across
+          # containers would multiply breadth by depth and lose the pod/container
+          # labels the description below renders.
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace=~"arc-systems|karpenter|harbor-system|monitoring|logging|buildkit"}[1h]) > 10
           for: 15m
           labels:
             severity: critical
