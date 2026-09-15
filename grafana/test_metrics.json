@@ -174,7 +174,7 @@
            },
            "pluginVersion": "4.17.0",
            "queryType": "table",
-           "rawSql": "WITH runs AS (\n    SELECT id\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\njobs AS (\n    SELECT j.id AS job_id,\n           replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)') AS bc\n    FROM default.workflow_job j\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n)\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- All workflow attempts count. uniqExact folds repeated reports while retaining\n-- tests that only appear on a rerun.\nSELECT uniqExactIf(cityHash64(a.invoking_file, a.classname, a.name),\n                   a.skipped_count = 0\n                   OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail') AS \"Unique tests run\"\nFROM tests.all_test_runs a\nWHERE a.job_id IN (SELECT job_id FROM jobs)"
+           "rawSql": "WITH runs AS (\n    SELECT id\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\njobs AS (\n    SELECT j.id AS job_id\n    FROM default.workflow_job j\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n)\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- All workflow attempts count. uniqExact folds repeated reports while retaining\n-- tests that only appear on a rerun.\nSELECT uniqExactIf(cityHash64(a.invoking_file, a.classname, a.name),\n                   a.skipped_count = 0\n                   OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail') AS \"Unique tests run\"\nFROM tests.all_test_runs a\nWHERE a.job_id IN (SELECT job_id FROM jobs)"
           },
           "version": "v0"
          },
@@ -200,6 +200,100 @@
          "mode": "fixed"
         },
         "decimals": 0,
+        "mappings": [],
+        "unit": "short",
+        "thresholds": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "text",
+           "value": 0
+          }
+         ]
+        }
+       },
+       "overrides": []
+      },
+      "options": {
+       "colorMode": "value",
+       "graphMode": "none",
+       "justifyMode": "auto",
+       "orientation": "vertical",
+       "percentChangeColorMode": "standard",
+       "reduceOptions": {
+        "calcs": [
+         "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+       },
+       "showPercentChange": false,
+       "textMode": "auto",
+       "wideLayout": true
+      }
+     },
+     "version": "13.1.0-25668120414"
+    }
+   }
+  },
+  "panel-6": {
+   "kind": "Panel",
+   "spec": {
+    "data": {
+     "kind": "QueryGroup",
+     "spec": {
+      "queries": [
+       {
+        "kind": "PanelQuery",
+        "spec": {
+         "hidden": false,
+         "query": {
+          "datasource": {
+           "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+           "editorType": "sql",
+           "format": 1,
+           "meta": {
+            "builderOptions": {
+             "columns": [],
+             "database": "",
+             "limit": 1000,
+             "mode": "list",
+             "queryType": "table",
+             "table": ""
+            }
+           },
+           "pluginVersion": "4.17.0",
+           "queryType": "table",
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n)\n-- This is the weighted sum of the config-multiplicity distribution: each\n-- executed test x configuration pair counts once. Duplicate reports, shards,\n-- workflow attempts, and reruns do not inflate it. Expected xfails ran to\n-- completion; true skips did not run and are excluded.\nSELECT uniqExact(cityHash64(a.invoking_file, a.classname, a.name), jobs.bc) AS \"Total tests run\"\nFROM tests.all_test_runs a\nINNER JOIN jobs ON jobs.job_id = a.job_id\nWHERE a.job_id IN (SELECT job_id FROM jobs)\n  AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')"
+          },
+          "version": "v0"
+         },
+         "refId": "A"
+        }
+       }
+      ],
+      "queryOptions": {},
+      "transformations": []
+     }
+    },
+    "description": "Distinct test x configuration executions across all workflow attempts, where a configuration is workflow x build x test-config. This is exactly the weighted sum of the config-multiplicity distribution. Shards of one configuration, duplicate reports, and reruns count once; expected xfails count as executed, while true skips do not.",
+    "id": 6,
+    "links": [],
+    "title": "Total tests run [repository, head_sha, wf_scope]",
+    "vizConfig": {
+     "group": "stat",
+     "kind": "VizConfig",
+     "spec": {
+      "fieldConfig": {
+       "defaults": {
+        "color": {
+         "mode": "fixed"
+        },
+        "decimals": 2,
         "mappings": [],
         "unit": "short",
         "thresholds": {
@@ -268,7 +362,7 @@
            },
            "pluginVersion": "4.17.0",
            "queryType": "table",
-           "rawSql": "WITH runs AS (\n    SELECT id\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\njobs AS (\n    SELECT j.id AS job_id,\n           replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)') AS bc\n    FROM default.workflow_job j\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT quantileExact(0.25)(n_configs) AS \"P25\",\n       quantileExact(0.50)(n_configs) AS \"P50\",\n       quantileExact(0.75)(n_configs) AS \"P75\"\nFROM t"
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT quantileExact(0.25)(n_configs) AS \"P25\",\n       quantileExact(0.50)(n_configs) AS \"P50\",\n       quantileExact(0.75)(n_configs) AS \"P75\"\nFROM t"
           },
           "version": "v0"
          },
@@ -280,7 +374,7 @@
       "transformations": []
      }
     },
-    "description": "Distinct build x config combinations that execute the same test across all workflow attempts. Repeated reports and shards of one configuration count once, so this measures coverage breadth, not job count.",
+    "description": "Distinct workflow x build x config combinations that execute the same test across all workflow attempts. Repeated reports and shards of one configuration count once, so this measures coverage breadth, not job count.",
     "id": 3,
     "links": [],
     "title": "Config multiplicity percentiles [repository, head_sha, wf_scope]",
@@ -362,7 +456,7 @@
            },
            "pluginVersion": "4.17.0",
            "queryType": "table",
-           "rawSql": "WITH runs AS (\n    SELECT id\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\njobs AS (\n    SELECT j.id AS job_id,\n           replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)') AS bc\n    FROM default.workflow_job j\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT n_configs AS \"Config multiplicity\",\n       count() AS \"Unique tests\"\nFROM t\nGROUP BY n_configs\nORDER BY n_configs"
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT n_configs AS \"Config multiplicity\",\n       count() AS \"Unique tests\"\nFROM t\nGROUP BY n_configs\nORDER BY n_configs"
           },
           "version": "v0"
          },
@@ -374,7 +468,7 @@
       "transformations": []
      }
     },
-    "description": "Tests bucketed by how many build x config combinations execute them across all workflow attempts. Repeated reports count once. A bucket is a set of configurations that gate alike, so peaks reflect the CI matrix, not individual tests.",
+    "description": "Tests bucketed by how many workflow x build x config combinations execute them across all workflow attempts. Repeated reports count once. A bucket groups tests by configuration count, not by which configurations, so one bucket can span unrelated configuration sets.",
     "id": 4,
     "links": [],
     "title": "Config multiplicity distribution [repository, head_sha, wf_scope]",
@@ -496,7 +590,7 @@
            },
            "pluginVersion": "4.17.0",
            "queryType": "table",
-           "rawSql": "WITH runs AS (\n    SELECT id\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\njobs AS (\n    SELECT j.id AS job_id,\n           replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)') AS bc\n    FROM default.workflow_job j\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT n_configs AS \"Config multiplicity\",\n       count() AS \"Unique tests\",\n       round(100.0 * sum(count()) OVER (ORDER BY n_configs) / sum(count()) OVER (), 1) AS \"Cumulative %\"\nFROM t\nGROUP BY n_configs\nORDER BY n_configs"
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT n_configs AS \"Config multiplicity\",\n       count() AS \"Unique tests\",\n       round(100.0 * sum(count()) OVER (ORDER BY n_configs) / sum(count()) OVER (), 1) AS \"Cumulative %\"\nFROM t\nGROUP BY n_configs\nORDER BY n_configs"
           },
           "version": "v0"
          },
@@ -599,7 +693,7 @@
        "name": "panel-1"
       },
       "height": 5,
-      "width": 9,
+      "width": 8,
       "x": 0,
       "y": 0
      }
@@ -612,8 +706,21 @@
        "name": "panel-2"
       },
       "height": 5,
-      "width": 6,
-      "x": 9,
+      "width": 5,
+      "x": 8,
+      "y": 0
+     }
+    },
+    {
+     "kind": "GridLayoutItem",
+     "spec": {
+      "element": {
+       "kind": "ElementReference",
+       "name": "panel-6"
+      },
+      "height": 5,
+      "width": 5,
+      "x": 13,
       "y": 0
      }
     },
@@ -625,8 +732,8 @@
        "name": "panel-3"
       },
       "height": 5,
-      "width": 9,
-      "x": 15,
+      "width": 6,
+      "x": 18,
       "y": 0
      }
     },
