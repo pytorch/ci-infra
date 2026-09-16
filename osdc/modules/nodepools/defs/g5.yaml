@@ -8,8 +8,16 @@ fleet:
   exclude_regions:
     - us-west-1
   instances:
-    - type: g5.48xlarge
+    # Highest weight so 1-GPU pods that fit a 4xlarge land there instead of
+    # taking a GPU slot on a larger node. Pods too big for it (the 29-vCPU
+    # a10g runner, every 4-GPU runner) simply fall through to the sizes below,
+    # whose relative order is unchanged.
+    - type: g5.4xlarge
       weight: 100
+      node_disk_size: 600
+      has_nvme: true
+    - type: g5.48xlarge
+      weight: 95
       node_disk_size: 600
       has_nvme: true
     - type: g5.12xlarge
