@@ -26,6 +26,7 @@ SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
+GPU_QUERY_TIMEOUT_S = 30
 # The proxy's response is caller-influenced (the prompt is), so bound it.
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BODY_BYTES = 8 * 1024
@@ -159,6 +160,32 @@ def invoke_bedrock(model: str, prompt: str) -> str:
     return content[0]["text"] if content else ""
 
 
+def gpu_info() -> dict:
+    """What the sandbox can see of the GPU, or an error saying why it cannot see one.
+
+    This is the end-to-end check for nvproxy: reaching nvidia-smi from inside a gVisor
+    sandbox means the device nodes were injected, the ioctls were forwarded and the host
+    driver answered. A GPU task whose result carries no `gpu` block ran without one.
+    """
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=GPU_QUERY_TIMEOUT_S,
+        )
+    except FileNotFoundError:
+        # No nvidia-smi means the container hooks staged nothing — the usual symptom of a
+        # GPU pod that landed without device injection.
+        return {"error": "nvidia-smi not found in the sandbox"}
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        return {"error": (getattr(exc, "stderr", None) or str(exc)).strip()}
+
+    devices = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return {"devices": devices, "count": len(devices)}
+
+
 def build_prompt(repo: str, ref: str, task: str, file_count: int, entries: list[str]) -> str:
     """Prompt the model with what the agent actually observed in the clone, and
     tell it not to fill gaps — an ungrounded answer looks identical to a correct
@@ -200,6 +227,11 @@ def run_task(spec: dict) -> dict:
     task = _str_field(spec, "task", "Summarize this repository.")
     model = _str_field(spec, "model", DEFAULT_MODEL)
     result: dict = {"cloned": False, "file_count": 0, "top_level": [], "report": "", "errors": {}}
+
+    # Only when the Job asked for a GPU: on a CPU task nvidia-smi is legitimately absent,
+    # and reporting that as an error would make every ordinary result look broken.
+    if os.environ.get("SANDBOX_GPU"):
+        result["gpu"] = gpu_info()
 
     with tempfile.TemporaryDirectory() as workdir:
         try:

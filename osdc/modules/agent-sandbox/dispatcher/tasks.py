@@ -22,6 +22,9 @@ import kube
 # Per replica. The namespace ResourceQuota is the cluster-wide bound — this exists so a
 # caller gets a clean 429 instead of a wall of Jobs the quota then rejects one by one.
 MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", "6"))
+# Counted separately from CPU tasks and deliberately tiny: a GPU node is one task, costs
+# real money, and the fleet is the blast radius for a driver escape.
+MAX_CONCURRENT_GPU_TASKS = int(os.environ.get("MAX_CONCURRENT_GPU_TASKS", "1"))
 # How long /status can still answer for a finished task before its result is dropped.
 RESULT_RETENTION_S = int(os.environ.get("RESULT_RETENTION_S", "3600"))
 POLL_INTERVAL_S = 2
@@ -68,10 +71,14 @@ def _run_to_completion(task_id: str, grant) -> dict:
         kube.delete_job(task_id)
 
 
-def _running_locked() -> int:
-    """Tasks in flight. Callers hold _TASKS_LOCK, which is not reentrant, so this cannot
-    go through slots_in_use()."""
-    return sum(1 for t in _TASKS.values() if t["state"] == "running")
+def _running_locked(gpu: bool | None = None) -> int:
+    """Tasks in flight, optionally of one kind. Callers hold _TASKS_LOCK, which is not
+    reentrant, so this cannot go through slots_in_use().
+
+    CPU and GPU tasks are counted separately: a GPU node is one task and costs real money,
+    so its cap is much lower and must not be consumed by CPU work.
+    """
+    return sum(1 for t in _TASKS.values() if t["state"] == "running" and (gpu is None or t["gpu"] == gpu))
 
 
 def _prune_locked(now: float) -> None:
@@ -88,29 +95,40 @@ def _prune_locked(now: float) -> None:
 
 def _finish(task_id: str, result: dict) -> None:
     with _TASKS_LOCK:
-        # The owner is carried across rather than dropped: this entry replaces the
-        # running one, and losing the field here would make every finished task
-        # readable by any caller.
-        owner = _TASKS.get(task_id, {}).get("owner", "")
-        _TASKS[task_id] = {"state": "done", "result": result, "finished_at": time.monotonic(), "owner": owner}
+        # Both fields are carried across rather than dropped: this entry replaces the
+        # running one. Losing `owner` would make every finished task readable by any
+        # caller; losing `gpu` would miscount the finished task against the CPU cap,
+        # which _prune_locked only forgives once the retention window expires.
+        running = _TASKS.get(task_id, {})
+        _TASKS[task_id] = {
+            "state": "done",
+            "result": result,
+            "finished_at": time.monotonic(),
+            "owner": running.get("owner", ""),
+            "gpu": running.get("gpu", False),
+        }
 
 
-def slots_in_use() -> int:
+def slots_in_use(gpu: bool | None = None) -> int:
     with _TASKS_LOCK:
-        return _running_locked()
+        return _running_locked(gpu)
 
 
-def start_task(owner: str) -> str | None:
-    """Reserve a slot and return its task id. None when at capacity or unable to mint one.
+def start_task(owner: str, gpu: bool = False) -> str | None:
+    """Reserve a slot of the requested kind. None when at capacity or unable to mint an id.
 
     `owner` is the Grant's caller. It is recorded now rather than derived later because
     /status must be able to refuse a caller asking about somebody else's task, and after
     the Job is deleted this table is the only place that answer exists.
+
+    `gpu` picks WHICH cap applies. It comes from the Grant too, so a caller the policy
+    refused a GPU cannot consume a GPU slot by asking twice.
     """
     now = time.monotonic()
+    cap = MAX_CONCURRENT_GPU_TASKS if gpu else MAX_CONCURRENT_TASKS
     with _TASKS_LOCK:
         _prune_locked(now)
-        if _running_locked() >= MAX_CONCURRENT_TASKS:
+        if _running_locked(gpu) >= cap:
             return None
         # Retried rather than assumed unique. 12 hex characters is 48 bits, which makes a
         # collision vanishingly unlikely — but now that entries carry an owner, a reused
@@ -119,7 +137,13 @@ def start_task(owner: str) -> str | None:
         for _ in range(8):
             task_id = uuid.uuid4().hex[:12]
             if task_id not in _TASKS:
-                _TASKS[task_id] = {"state": "running", "result": {}, "finished_at": 0.0, "owner": owner}
+                _TASKS[task_id] = {
+                    "state": "running",
+                    "result": {},
+                    "finished_at": 0.0,
+                    "owner": owner,
+                    "gpu": gpu,
+                }
                 return task_id
     return None
 

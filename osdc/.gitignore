@@ -26,5 +26,7 @@ modules/*/generated/
 
 
 # Packer build artifacts (AMI IDs from the last local build)
-modules/*/packer/manifest.json
+# Glob, not a literal name: a packer directory holding more than one template gives each
+# its own manifest (manifest-gpu.json), and those are the same artifact.
+modules/*/packer/manifest*.json
 modules/*/packer/.packer.d/

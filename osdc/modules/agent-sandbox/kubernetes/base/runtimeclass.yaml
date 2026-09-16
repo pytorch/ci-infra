@@ -27,3 +27,39 @@ scheduling:
     - key: instance-type
       operator: Exists
       effect: NoSchedule
+
+---
+# The GPU sibling. A separate class, not a flag on the one above: scheduling.nodeSelector
+# is part of the RuntimeClass, so one class cannot target two fleets.
+#
+# The handler is still runsc, but only the GPU AMI turns on nvproxy (the containerd
+# runtime options point runsc at /etc/containerd/runsc.toml there). A pod that landed on
+# the CPU fleet with this class would therefore start and then find no GPU — the
+# nodeSelector is what prevents that.
+#
+# nvproxy forwards NVIDIA ioctls to the host driver, so a task using this class can reach
+# the GPU driver. That is a real reduction in isolation compared with the CPU class; see
+# docs/agent-sandbox-gpu-gvisor.md.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor-gpu
+  labels:
+    osdc.io/module: agent-sandbox
+handler: runsc
+scheduling:
+  nodeSelector:
+    node-fleet: ai-sandbox-gpu
+  tolerations:
+    - key: node-fleet
+      operator: Equal
+      value: ai-sandbox-gpu
+      effect: NoSchedule
+    # Exists, not a pinned value — same reasoning as the CPU class above.
+    - key: instance-type
+      operator: Exists
+      effect: NoSchedule
+    # GPU fleets carry the nvidia.com/gpu taint from the nodepool generator.
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule

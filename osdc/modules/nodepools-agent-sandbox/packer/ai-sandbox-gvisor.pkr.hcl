@@ -40,7 +40,12 @@ variable "gvisor_release" {
   description = "gVisor release date to pin (yyyymmdd), from https://gvisor.dev/docs/user_guide/install/"
   type        = string
   # Pinned: `latest` meant nodes launched a day apart could differ.
-  default = "20260803"
+  #
+  # Kept in lockstep with the GPU AMI, which is what actually forces this number: nvproxy
+  # there must know the NVIDIA driver in its base AMI. Nothing on the CPU side needs
+  # 20260831 specifically — one install script serves both, and two releases installed by
+  # one script is a difference nobody would remember to check.
+  default = "20260831"
 }
 
 variable "subnet_filter_name" {

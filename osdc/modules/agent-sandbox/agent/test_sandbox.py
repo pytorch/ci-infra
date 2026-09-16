@@ -372,3 +372,50 @@ class TestRunTask:
         result = sandbox.run_task({"repo": "org/repo", "ref": ref, "model": "m"})
         assert seen["ref"] == "main"
         assert result["errors"] == {}
+
+
+class TestGpuInfo:
+    """gpu_info is the end-to-end evidence for nvproxy: reaching nvidia-smi from inside a
+    gVisor sandbox means devices were injected, ioctls were forwarded and the host driver
+    answered."""
+
+    def test_reports_devices(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            assert cmd[0] == "nvidia-smi"
+            return subprocess.CompletedProcess(cmd, 0, stdout="NVIDIA L4, 580.159.03, 23034 MiB\n", stderr="")
+
+        monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+        info = sandbox.gpu_info()
+        assert info["count"] == 1
+        assert "NVIDIA L4" in info["devices"][0]
+
+    def test_missing_nvidia_smi_is_reported_not_raised(self, monkeypatch):
+        """The usual symptom of a GPU pod that landed without device injection — it has to
+        surface in the result, not kill the task."""
+
+        def boom(cmd, **kwargs):
+            raise FileNotFoundError(cmd[0])
+
+        monkeypatch.setattr(sandbox.subprocess, "run", boom)
+        assert "not found" in sandbox.gpu_info()["error"]
+
+    def test_driver_error_is_reported(self, monkeypatch):
+        def boom(cmd, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd, stderr="Failed to initialize NVML: Unknown Error")
+
+        monkeypatch.setattr(sandbox.subprocess, "run", boom)
+        assert "NVML" in sandbox.gpu_info()["error"]
+
+    def test_run_task_reports_gpu_only_when_asked(self, monkeypatch):
+        """A CPU task legitimately has no nvidia-smi; reporting that as an error would make
+        every ordinary result look broken."""
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: ["README.md"])
+        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "ok")
+        monkeypatch.setattr(sandbox, "gpu_info", lambda: {"count": 1, "devices": ["NVIDIA L4, 580.159.03"]})
+
+        monkeypatch.delenv("SANDBOX_GPU", raising=False)
+        assert "gpu" not in sandbox.run_task({"repo": "org/repo", "model": "m"})
+
+        monkeypatch.setenv("SANDBOX_GPU", "1")
+        assert sandbox.run_task({"repo": "org/repo", "model": "m"})["gpu"]["count"] == 1
