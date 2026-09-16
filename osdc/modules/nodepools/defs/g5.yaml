@@ -8,6 +8,12 @@ fleet:
   exclude_regions:
     - us-west-1
   instances:
+    # Smallest node here with a GPU; a 1-GPU pod takes a whole node either way.
+    # Ranked above the other 1-GPU sizes; the multi-GPU ones pack several pods.
+    - type: g5.4xlarge
+      weight: 75
+      node_disk_size: 600
+      has_nvme: true
     - type: g5.48xlarge
       weight: 100
       node_disk_size: 600

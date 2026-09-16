@@ -1,0 +1,18 @@
+# ARC runner definition: rel-l-x86aavx2-11-41-l4
+# Release wheel-build runner (x86, GPU) — dedicated runner group + node isolation.
+# Instance type: g6.4xlarge — 1-GPU L4, 16c/64Gi node (pool: g6-4xlarge-release).
+# Release-class twin of l-x86aavx2-11-41-l4; see it for the sizing.
+runner:
+  name: rel-l-x86aavx2-11-41-l4
+  instance_type: g6.4xlarge
+  disk_size: 150
+  vcpu: 11
+  memory: 41Gi
+  gpu: 1
+  runner_class: release
+  # No runner_group here: release-class runners always land in the per-region
+  # group {cluster_group}-release-runners, derived by generate_runners.py from
+  # the cluster config (a def-level runner_group would be ignored for them).
+  proactive_capacity: 0
+  hud_failure_base_capacity: 0    # release builds aren't in the HUD queue; scale on demand
+  max_burst_capacity: 10
