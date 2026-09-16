@@ -1,0 +1,16 @@
+# ARC runner definition: l-x86aavx2-13-48-a10g
+# Instance type: g5.4xlarge — 1-GPU A10G, 16c/64Gi node (pool: g5-4xlarge).
+#
+# The g5 twin of l-x86aavx2-13-48-l4. See that def for the sizing derivation:
+# g5.4xlarge and g6.4xlarge have identical vCPU, memory and GPU counts, so the
+# headroom arithmetic is the same on both.
+runner:
+  name: l-x86aavx2-13-48-a10g
+  instance_type: g5.4xlarge
+  disk_size: 150
+  vcpu: 13
+  memory: 48Gi
+  gpu: 1
+  proactive_capacity: 0
+  hud_failure_base_capacity: 30
+  max_burst_capacity: 60

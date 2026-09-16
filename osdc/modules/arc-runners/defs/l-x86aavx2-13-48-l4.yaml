@@ -1,0 +1,37 @@
+# ARC runner definition: l-x86aavx2-13-48-l4
+# Instance type: g6.4xlarge — 1-GPU L4, 16c/64Gi node (pool: g6-4xlarge).
+#
+# The fleet's smallest 1-GPU runner, l-x86aavx2-29-113-l4, needs an 8xlarge to
+# hold it. This def adds a shape that fits the 4xlarge. Whether any given job
+# should use it is a separate question and not settled here.
+#
+# Sized against what Karpenter charges, not what analyze-utilization models --
+# see docs/node-utilization-optimization.md, "Caveat for any near-full-node
+# runner". The tool's DaemonSet figure is several Gi light; Karpenter's 1355m /
+# 10078Mi reproduces the 8xlarge failure in #1079 exactly (113Gi + 10078Mi =
+# 125790Mi, the number it reported).
+#
+#   node capacity           16000m   60620Mi   (instance_specs.py, estimated)
+#   Karpenter node overhead -1355m  -10078Mi
+#   = headroom for the job   14645m   50542Mi   (14.6 vCPU / 49.4Gi)
+#
+# 13 vCPU / 48Gi leaves 1645m / 1390Mi. The CPU margin is the same 1645m the
+# 29-of-32 8xlarge def runs with. The memory margin is thinner than that def's
+# 4.6Gi, which is the tradeoff for not stranding ~4Gi on every node: if the
+# estimated memory_mi turns out low, this is the field to walk back first.
+# No 4xlarge GPU node has been provisioned yet, so run
+# collect_instance_memory.py against the first one and revisit.
+#
+# On larger nodes it packs GPU-bound and clean -- 4 to a 24xlarge, 8 to a
+# 48xlarge -- except the 12xlarge, where 4 pods need 11 vCPU and =<41Gi, so
+# three land and one of the four GPUs idles. That size is last on the LF ladder.
+runner:
+  name: l-x86aavx2-13-48-l4
+  instance_type: g6.4xlarge
+  disk_size: 150
+  vcpu: 13
+  memory: 48Gi
+  gpu: 1
+  proactive_capacity: 0
+  hud_failure_base_capacity: 30
+  max_burst_capacity: 60

@@ -25,9 +25,20 @@ fleet:
       has_nvme: true
 
   instances:
-    - type: g6.48xlarge
+    # Top of both ladders: a 1-GPU pod sized for a 4xlarge gets a whole node to
+    # itself for roughly half the 8xlarge's hourly rate, and strands no GPUs.
+    # Pods too big for it (the 29-vCPU l4 runner, every 4-GPU runner) fall
+    # through to the sizes below, whose relative order is unchanged.
+    - type: g6.4xlarge
       weight:
         default: 100
+        lf-prod-aws-ue1: 100
+        lf-prod-aws-ue2: 100
+      node_disk_size: 600
+      has_nvme: true
+    - type: g6.48xlarge
+      weight:
+        default: 95
         lf-prod-aws-ue1: 0    # disabled — cannot be provisioned on LF
         lf-prod-aws-ue2: 0
       node_disk_size: 600
@@ -49,8 +60,8 @@ fleet:
     - type: g6.8xlarge
       weight:
         default: 70
-        lf-prod-aws-ue1: 100  # 1-GPU cost optimum ($2.01/runner-hr) — 94% of volume
-        lf-prod-aws-ue2: 100
+        lf-prod-aws-ue1: 95   # 1-GPU fallthrough for pods too big for the 4xlarge ($2.01/runner-hr)
+        lf-prod-aws-ue2: 95
       node_disk_size: 600
       has_nvme: true
     - type: g6.16xlarge
