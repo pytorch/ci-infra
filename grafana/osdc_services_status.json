@@ -4103,7 +4103,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "(count by (cluster) (((group by (cluster, namespace, deployment) ((kube_deployment_status_replicas_available{cluster=~\"$cluster\"} == 0) and (kube_deployment_spec_replicas{cluster=~\"$cluster\"} > 0))) or (group by (cluster, namespace, deployment) (kube_deployment_status_condition{cluster=~\"$cluster\", condition=\"Progressing\", status=\"false\"} == 1))) and on (cluster, namespace, deployment) (group by (cluster, namespace, deployment) (kube_deployment_spec_replicas{cluster=~\"$cluster\", namespace=\"harbor-system\"}) or group by (cluster, namespace, deployment) (kube_deployment_spec_replicas{cluster=~\"$cluster\", namespace=~\"arc-systems|buildkit|karpenter|keda|kube-system|monitoring\", deployment=~\"arc-gha-rs-controller|buildkitd-amd64|buildkitd-arm64|buildkitd-lb|karpenter|keda-operator|bin-pack-scheduler|coredns|ebs-csi-controller|node-compactor|alloy|.*kube-state-metrics|kube-prometheus-stack-operator|prometheus-pushgateway\"}))) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((kube_statefulset_status_replicas_ready{cluster=~\"$cluster\", namespace=\"harbor-system\"} == 0) and (kube_statefulset_replicas{cluster=~\"$cluster\", namespace=\"harbor-system\"} > 0)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((min_over_time(((clamp_min(((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))) - on(cluster) group_left() ((count by (cluster)(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)), 0) / clamp_min(0.005 * ((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))), 1.5)) > bool 1)[1h:1m]) == 1) or (min_over_time(((((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))) / clamp_min(((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))), 1)) >= bool 0.75)[15m:1m]) == 1)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + clamp_min(1 - ((count by (cluster)(kube_deployment_spec_replicas{cluster=~\"$cluster\"})) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)), 0)",
+                      "expr": "(count by (cluster) (((group by (cluster, namespace, deployment) ((kube_deployment_status_replicas_available{cluster=~\"$cluster\"} == 0) and (kube_deployment_spec_replicas{cluster=~\"$cluster\"} > 0))) or (group by (cluster, namespace, deployment) (kube_deployment_status_condition{cluster=~\"$cluster\", condition=\"Progressing\", status=\"false\"} == 1))) and on (cluster, namespace, deployment) (group by (cluster, namespace, deployment) (kube_deployment_spec_replicas{cluster=~\"$cluster\", namespace=\"harbor-system\"}) or group by (cluster, namespace, deployment) (kube_deployment_spec_replicas{cluster=~\"$cluster\", namespace=~\"arc-systems|buildkit|karpenter|keda|kube-system|logging|monitoring\", deployment=~\"arc-gha-rs-controller|buildkitd-amd64|buildkitd-arm64|buildkitd-lb|karpenter|keda-operator|bin-pack-scheduler|coredns|ebs-csi-controller|node-compactor|alloy|alloy-events|.*kube-state-metrics|kube-prometheus-stack-operator|prometheus-pushgateway\"}))) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((kube_statefulset_status_replicas_ready{cluster=~\"$cluster\", namespace=\"harbor-system\"} == 0) and (kube_statefulset_replicas{cluster=~\"$cluster\", namespace=\"harbor-system\"} > 0)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster) ((min_over_time(((clamp_min(((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))) - on(cluster) group_left() ((count by (cluster)(kube_node_status_condition{cluster=~\"$cluster\", condition=\"Ready\", status=\"true\"} == 0)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)), 0) / clamp_min(0.005 * ((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))), 1.5)) > bool 1)[1h:1m]) == 1) or (min_over_time(((((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_number_unavailable{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))) / clamp_min(((sum by (cluster, namespace)(max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=\"hf-cache\", daemonset=~\"hf-cache-mount.*\"}))) or (max by (cluster, namespace, daemonset)(kube_daemonset_status_desired_number_scheduled{cluster=~\"$cluster\", namespace=~\"arc-runners|kube-system|logging|monitoring\", daemonset=~\"runner-hooks-warmer|aws-node|kube-proxy|image-cache-janitor|algif-mitigation|dirtyfrag-mitigation|node-performance-tuning|ebs-csi-node|nvidia-device-plugin-daemonset|alloy-logging|.*prometheus-node-exporter\"}))), 1)) >= bool 0.75)[15m:1m]) == 1)) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + (count by (cluster)(up{cluster=~\"$cluster\", job=\"kube-state-metrics\"} == 0) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)) + clamp_min(1 - ((count by (cluster)(kube_deployment_spec_replicas{cluster=~\"$cluster\"})) or (group by (cluster)(up{cluster=~\"$cluster\"}) * 0)), 0)",
                       "legendFormat": "{{cluster}}",
                       "range": true,
                       "instant": false
@@ -4491,6 +4491,110 @@
             "options": {
               "content": "Matrix of diverging-signal counts by check-type (each row) and cluster (each tile). 0 = healthy; a higher number / red = something to investigate — expand that cluster's section below for detail.",
               "mode": "markdown"
+            }
+          },
+          "version": "13.2.0-30402795349"
+        }
+      }
+    },
+    "panel-151": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "(min(kube_deployment_status_replicas_ready{cluster=~\"$cluster\", namespace=\"logging\", deployment=\"alloy-events\"}) >= bool 1) or on() vector(0)",
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Ready replicas of `alloy-events`, the single-replica Deployment that ships Kubernetes Events to Grafana Cloud Loki. Down = events stop reaching Loki and event-based forensics goes blind; container stdout is not shipped here, so there is no second source. One replica per cluster means a single eviction takes the stream down.",
+        "id": 151,
+        "links": [],
+        "title": "Alloy Events [cluster]",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "text": "DOWN"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "1": {
+                        "color": "green",
+                        "text": "UP"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ],
+                "noValue": "DOWN",
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "textMode": "auto",
+              "wideLayout": true
             }
           },
           "version": "13.2.0-30402795349"
@@ -5080,6 +5184,19 @@
                       "height": 3,
                       "width": 5,
                       "x": 10,
+                      "y": 21
+                    }
+                  },
+                  {
+                    "kind": "GridLayoutItem",
+                    "spec": {
+                      "element": {
+                        "kind": "ElementReference",
+                        "name": "panel-151"
+                      },
+                      "height": 3,
+                      "width": 5,
+                      "x": 15,
                       "y": 21
                     }
                   }
