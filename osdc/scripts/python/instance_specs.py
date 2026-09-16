@@ -83,11 +83,11 @@ INSTANCE_SPECS: dict[str, dict] = {
     "g4dn.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g4dn.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
-    "g5.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 60620, "gpu": 1, "arch": "amd64"},
+    "g5.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 58981, "gpu": 1, "arch": "amd64"},
     "g5.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g5.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
-    "g6.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 60620, "gpu": 1, "arch": "amd64"},
+    "g6.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 58981, "gpu": 1, "arch": "amd64"},
     "g6.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g6.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
