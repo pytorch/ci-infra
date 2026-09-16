@@ -19,9 +19,24 @@ spec:
         # long-lived pod, so all alerts target the Job objects (kept by KSM via
         # the kube_job_.* allowlist in monitoring/helm/values.yaml).
         - alert: HarborCacheRecoveryFailing
+          # `kube_job_status_failed` is a gauge on the Job object, and the
+          # CronJob sets failedJobsHistoryLimit 3 with no ttlSecondsAfterFinished
+          # — a failed Job is retained until three newer failures evict it, so the
+          # bare gauge never returns to 0 and the alert can never clear itself.
+          # Gating on kube_job_status_start_time restricts it to runs started in
+          # the last 600s (2× the */5 schedule). activeDeadlineSeconds is 300, so
+          # a failure is always visible for at least 300s after it is recorded.
+          # Total absence of runs is HarborCacheRecoveryStale's job, not this one.
           expr: |
             max(
               kube_job_status_failed{namespace="harbor-system", job_name=~"harbor-cache-recovery-.*"}
+              and on (cluster, namespace, job_name)
+              (
+                (time() - kube_job_status_start_time{
+                  namespace="harbor-system",
+                  job_name=~"harbor-cache-recovery-.*"
+                }) < 600
+              )
             ) > 0
           for: 15m
           labels:
@@ -31,9 +46,10 @@ spec:
           annotations:
             summary: "harbor-cache-recovery cronjob is failing"
             description: >-
-              The harbor-cache-recovery CronJob has had failing runs for at least
-              15 minutes (≥3 consecutive runs at the */5 schedule). Containerd
-              content-corruption pull failures ("failed size validation",
+              The harbor-cache-recovery CronJob has had recently-started runs
+              failing continuously for at least 15 minutes (≥4 consecutive runs
+              at the */5 schedule). Containerd content-corruption pull failures
+              ("failed size validation",
               "unexpected commit digest" and similar) are no longer auto-purged
               from the Harbor proxy caches, so pods hitting one stay in
               ImagePullBackOff until that artifact is deleted by hand. Those are a
@@ -81,9 +97,17 @@ spec:
           # Catches the case where the CronJob isn't running at all — suspended,
           # controller stuck, no successful Job objects produced. 1800s = 30 min,
           # i.e. 6× the */5 schedule, so this fires only after sustained absence.
+          #
+          # `by (cluster)` belongs INSIDE max, with the subtraction outside it.
+          # successfulJobsHistoryLimit keeps three completion timestamps per
+          # cluster, so max picks the newest one — the last completion.
+          # Aggregating outside instead, as max by (cluster)(time() - M), yields
+          # the age of the OLDEST retained Job, roughly two cron periods stale.
+          # Dropping `by (cluster)` altogether collapses it to one fleet-wide
+          # value that no single cluster's outage can move.
           expr: |
             (time()
-              - max(kube_job_status_completion_time{
+              - max by (cluster) (kube_job_status_completion_time{
                   namespace="harbor-system",
                   job_name=~"harbor-cache-recovery-.*"
                 })
@@ -94,7 +118,7 @@ spec:
             team: pytorch-dev-infra
             priority: P3
           annotations:
-            summary: "harbor-cache-recovery has not completed successfully in >30m"
+            summary: "harbor-cache-recovery has not completed successfully in >30m ({{ $labels.cluster }})"
             description: >-
               No successful run of harbor-cache-recovery has been observed in the
               last 30 minutes, so corrupt Harbor proxy-cache artifacts are no
