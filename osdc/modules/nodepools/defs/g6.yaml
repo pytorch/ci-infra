@@ -13,18 +13,39 @@ fleet:
   # survivors are reordered by cost per delivered runner-hour rather than
   # left in largest-first order. See docs/current_runner_load_distribution.md
   # for the runner mix (94% 1-GPU / 6% 4-GPU) that the LF order is tuned for.
-  # Release wheel-build GPU runner (rel-l-x86aavx2-29-113-l4). Generates the
-  # g6-8xlarge-release NodePool with osdc.io/runner-class: release, so the CUDA
-  # x86_64 wheel rows get a device without sharing nodes with CI GPU jobs.
+  # Release wheel-build GPU runners. Generates the g6-*-release NodePools with
+  # osdc.io/runner-class: release, so the CUDA x86_64 wheel rows get a device
+  # without sharing nodes with CI GPU jobs.
   # g6.8xlarge rather than g5.8xlarge: same 32c/128Gi 1-GPU shape, cheaper per
   # runner-hour, and L4 (sm_89) is in the arch list those wheels compile for.
   release:
-    - type: g6.8xlarge
+    # Smallest node that fits, largest last. The 12xlarge earns its place at the
+    # bottom as a fallthrough: release pods match only release pools, so a class
+    # with nothing below its smallest size strands an oversized pod in Pending
+    # forever, which is what #1079 was.
+    - type: g6.4xlarge
       weight: 100
+      node_disk_size: 600
+      has_nvme: true
+    - type: g6.8xlarge
+      weight: 95
+      node_disk_size: 600
+      has_nvme: true
+    - type: g6.12xlarge
+      weight: 90
       node_disk_size: 600
       has_nvme: true
 
   instances:
+    # Smallest node here with a GPU; a 1-GPU pod takes a whole node either way.
+    # Ranked above the other 1-GPU sizes; the multi-GPU ones pack several pods.
+    - type: g6.4xlarge
+      weight:
+        default: 75
+        lf-prod-aws-ue1: 100
+        lf-prod-aws-ue2: 100
+      node_disk_size: 600
+      has_nvme: true
     - type: g6.48xlarge
       weight:
         default: 100
@@ -49,8 +70,8 @@ fleet:
     - type: g6.8xlarge
       weight:
         default: 70
-        lf-prod-aws-ue1: 100  # 1-GPU cost optimum ($2.01/runner-hr) — 94% of volume
-        lf-prod-aws-ue2: 100
+        lf-prod-aws-ue1: 95   # 1-GPU fallthrough for pods too big for the 4xlarge ($2.01/runner-hr)
+        lf-prod-aws-ue2: 95
       node_disk_size: 600
       has_nvme: true
     - type: g6.16xlarge
