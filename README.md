@@ -49,6 +49,8 @@ If you have an issue with CI, please submit an issue on the [Pytorch repo](https
 | IBM s390x | Andrea Frittoli | @Andrea Frittoli | ([afrittoli](https://github.com/afrittoli))
 | IBM ppc64le | Andrea Frittoli | @Andrea Frittoli | ([afrittoli](https://github.com/afrittoli))
 | RISC-v | Ludovic Henry | @Ludovic Henry | ([luhenry](https://github.com/luhenry))
+| OSDC LF | Thanh Ha/ Mick Tarsel  | @zxiiro, @Mick Tarsel | ([zxiiro](https://github.com/zxiiro)) ([mtarsel](https://github.com/mtarsel))
+| OSDC Meta | Huy Do/Jean Schmidt | @Huy Do, @Jean Schmidt | ([huydhn](https://github.com/huydhn)) ([jeanschmidt](https://github.com/jeanschmidt)) 
 
 ### Multi-Cloud Working Group
 
