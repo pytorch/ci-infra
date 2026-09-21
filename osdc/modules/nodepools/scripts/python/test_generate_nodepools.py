@@ -1,5 +1,6 @@
 """Unit tests for generate_nodepools.py — Karpenter NodePool generator."""
 
+import email
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -31,6 +32,23 @@ from generate_nodepools import (
 def parse_all_yaml(text: str) -> list[dict]:
     """Parse multi-document YAML string, filtering None entries."""
     return [doc for doc in yaml.safe_load_all(text) if doc is not None]
+
+
+def kubelet_config(ec2_node_class: dict) -> dict:
+    """Return spec.kubelet.config from the NodeConfig part of an EC2NodeClass userData.
+
+    Parses the MIME part rather than substring-matching the rendered text, so a
+    key indented into the wrong block — which nodeadm would silently ignore — is
+    a test failure rather than a passing `in userdata` check.
+    """
+    message = email.message_from_string(ec2_node_class["spec"]["userData"])
+    for part in message.walk():
+        if part.get_content_type() != "application/node.eks.aws":
+            continue
+        doc = yaml.safe_load(part.get_payload(decode=False))
+        if isinstance(doc, dict) and doc.get("kind") == "NodeConfig":
+            return doc["spec"]["kubelet"]["config"]
+    raise AssertionError("no NodeConfig MIME part in userData")
 
 
 def _make_nodepool_def(**overrides) -> dict:
@@ -611,6 +629,27 @@ class TestGenerateNodepoolYaml:
                 assert line.strip() == "containerLogMaxSize: 50Mi"
             if "containerLogMaxFiles" in line:
                 assert line.strip() == "containerLogMaxFiles: 5"
+
+    def test_single_process_oom_kill_enabled(self):
+        """Without this the kubelet sets memory.oom.group=1 and one runaway test
+        takes down the whole workflow pod, losing the output that names it."""
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        assert kubelet_config(docs[1])["singleProcessOOMKill"] is True
+
+    def test_single_process_oom_kill_survives_topology_options(self):
+        """The topologyManagerPolicyOptions branch splices lines into the same
+        block, so re-check the key still lands under kubelet.config."""
+        nodepool_def = _make_nodepool_def(
+            topology_manager_policy="restricted",
+            topology_manager_scope="container",
+        )
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        config = kubelet_config(docs[1])
+        assert config["singleProcessOOMKill"] is True
+        assert "prefer-closest-numa-nodes" in config["topologyManagerPolicyOptions"]
 
     def test_block_device_disk_size(self):
         nodepool_def = _make_nodepool_def(node_disk_size=2500)
@@ -1223,6 +1262,11 @@ class TestRealDefFiles:
         docs = parse_all_yaml(output)
         assert docs[0]["metadata"]["name"] == real_def["name"]
         assert docs[1]["metadata"]["name"] == real_def["name"]
+
+    def test_single_process_oom_kill_enabled(self, real_def):
+        output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR)
+        docs = parse_all_yaml(output)
+        assert kubelet_config(docs[1])["singleProcessOOMKill"] is True
 
     def test_instance_type_in_requirements(self, real_def):
         output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR)
