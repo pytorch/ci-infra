@@ -7,6 +7,25 @@ fleet:
   gpu: true
   exclude_regions:
     - us-west-1
+  # Release wheel-build GPU runners.
+  release:
+    # Smallest node that fits, largest last. The 12xlarge earns its place at the
+    # bottom as a fallthrough: release pods match only release pools, so a class
+    # with nothing below its smallest size strands an oversized pod in Pending
+    # forever, which is what #1079 was.
+    - type: g5.4xlarge
+      weight: 100
+      node_disk_size: 600
+      has_nvme: true
+    - type: g5.8xlarge
+      weight: 95
+      node_disk_size: 600
+      has_nvme: true
+    - type: g5.12xlarge
+      weight: 90
+      node_disk_size: 600
+      has_nvme: true
+
   instances:
     # Smallest node here with a GPU; a 1-GPU pod takes a whole node either way.
     # Ranked above the other 1-GPU sizes; the multi-GPU ones pack several pods.
