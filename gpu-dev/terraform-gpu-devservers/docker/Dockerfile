@@ -126,6 +126,11 @@ RUN pip install --no-cache-dir --break-system-packages \
         gpu-dev \
         aws-bedrock-token-generator
 
+# TODO: re-enable when JupyterLab bundles vega-functions >=6.1.1
+# Vega/Altair output renders as JSON.
+RUN jupyter labextension disable @jupyterlab/vega5-extension && \
+    jupyter labextension lock    @jupyterlab/vega5-extension
+
 # Create dev user with UID 1081 to avoid conflicts with common base image users (e.g., ubuntu=1000)
 RUN useradd -u 1081 -m -s /usr/bin/zsh dev && \
     usermod -aG sudo dev && \
