@@ -471,6 +471,17 @@ spec:
 {"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' + chr(10) if topology_policy in ("restricted", "best-effort") else ""}\
           containerLogMaxSize: 50Mi
           containerLogMaxFiles: 5
+          # Kill the process that overran, not every process in the container.
+          # On cgroup v2 the kubelet sets memory.oom.group=1, which the kernel
+          # reads as "kill the cgroup as an indivisible unit" -- so a single
+          # runaway test takes down the workflow pod's rpc-server and shell with
+          # it, and the step reports a bare exit 137 with no output, because the
+          # process that would have reported died in the same sweep. The only
+          # tasks the kernel exempts are those at oom_score_adj -1000, and the
+          # kubelet pins Guaranteed pods to -997, which the container cannot
+          # lower (CapEff is 0). Upstream added this flag for exactly this
+          # regression; see kubernetes/kubernetes#126096.
+          singleProcessOOMKill: true
 {_user_data_script_mime_part(indented_userdata)}
     --==BOUNDARY==--
 
