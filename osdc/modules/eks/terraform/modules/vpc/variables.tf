@@ -9,6 +9,11 @@ variable "cidr" {
   default     = "10.0.0.0/16"
 }
 
+variable "region" {
+  description = "AWS region — used to build the S3 gateway endpoint service name"
+  type        = string
+}
+
 variable "azs" {
   description = "Availability zones"
   type        = list(string)

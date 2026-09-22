@@ -43,6 +43,9 @@ TAG_REQUIREMENTS: dict[str, list[str]] = {
     "BUILDKIT": ["arc-runners", "buildkit"],
     "CACHE_ENFORCER": ["arc-runners", "cache-enforcer"],
     "RELEASE": ["arc-runners"],
+    # The sandbox job runs on a normal runner and calls the sandbox Service over
+    # the network, so it needs both arc-runners and the agent-sandbox module.
+    "AGENT_SANDBOX": ["arc-runners", "agent-sandbox"],
 }
 
 INVERSE_TAG_EXCLUSIONS: dict[str, list[str]] = {

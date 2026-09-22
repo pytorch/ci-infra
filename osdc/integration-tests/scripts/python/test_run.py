@@ -18,6 +18,7 @@ from phases import (
 from run import (
     CANARY_REPO,
     branch_name,
+    derive_release_runner_group,
     format_duration,
     gh_api,
     has_module,
@@ -29,6 +30,7 @@ from run import (
     resolve_org_target,
     run_cmd_with_retry,
     safe_json_loads,
+    verify_ecr_image_exists,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -782,16 +784,49 @@ class TestReleaseRunnerGroupResolution:
     def test_cluster_with_override(self, cfg_staging):
         cluster_runner_group = resolve(cfg_staging, "arc-runners.runner_group")
         assert cluster_runner_group == "meta-prod-rg"
-        release_runner_group = cluster_runner_group or "release-runners"
-        assert release_runner_group == "meta-prod-rg"
+        assert derive_release_runner_group(cluster_runner_group) == "meta-prod-rg-release-runners"
 
     def test_cluster_without_override(self, cfg_production):
         cluster_runner_group = resolve(cfg_production, "arc-runners.runner_group")
         assert cluster_runner_group is None
-        runner_group = cluster_runner_group or "default"
-        release_runner_group = cluster_runner_group or "release-runners"
-        assert runner_group == "default"
-        assert release_runner_group == "release-runners"
+        assert derive_release_runner_group(cluster_runner_group) == "default"
+
+    def test_literal_default_group_keeps_suffix(self):
+        # A cluster that names "default" outright still gets a dedicated release
+        # group — only an absent group collapses to plain "default".
+        assert derive_release_runner_group("default") == "default-release-runners"
+
+    @pytest.mark.parametrize(
+        ("org", "arc_runners"),
+        [
+            (None, {"github_config_url": "https://github.com/pytorch"}),
+            (
+                "meta-pytorch",
+                {
+                    "github_config_url": "https://github.com/pytorch",
+                    "runner_group": "primary-rg",
+                    "additional_orgs": [
+                        {
+                            "github_config_url": "https://github.com/meta-pytorch",
+                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                        },
+                    ],
+                },
+            ),
+        ],
+        ids=["primary-org", "additional-org"],
+    )
+    def test_agrees_with_generator_when_group_unset(self, org, arc_runners):
+        # The shared helper is only a single source of truth if the harness and
+        # generate_runners.py feed it the same raw value. A group-less config is
+        # where they can silently diverge: coalescing to "default" before the
+        # helper yields "default-release-runners", a group no generated runner
+        # ever registers in, so release jobs would queue forever.
+        cfg = {"cluster": {"arc-runners": arc_runners}, "defaults": {}}
+        _, harness_group = resolve_org_target(cfg, org)
+        generator_source = arc_runners["additional_orgs"][0] if org else arc_runners
+        generator_group = generator_source.get("runner_group")
+        assert derive_release_runner_group(harness_group) == derive_release_runner_group(generator_group)
 
 
 # ── resolve_org_target ────────────────────────────────────────────────────
@@ -838,13 +873,16 @@ class TestResolveOrgTarget:
         assert repo == "meta-pytorch/pytorch-gha-infra"
         assert group == "mp-rg"
 
-    def test_primary_without_runner_group_defaults(self):
+    def test_primary_without_runner_group_returns_none(self):
         cfg = {"cluster": {"arc-runners": {"github_config_url": "https://github.com/pytorch"}}, "defaults": {}}
         repo, group = resolve_org_target(cfg, None)
         assert repo == CANARY_REPO
-        assert group == "default"
+        assert group is None
+        # Coalescing is the caller's job, and only for the CI group.
+        assert (group or "default") == "default"
+        assert derive_release_runner_group(group) == "default"
 
-    def test_additional_org_without_runner_group_defaults(self):
+    def test_additional_org_without_runner_group_returns_none(self):
         cfg = {
             "cluster": {
                 "arc-runners": {
@@ -862,7 +900,11 @@ class TestResolveOrgTarget:
         }
         repo, group = resolve_org_target(cfg, "meta-pytorch")
         assert repo == "meta-pytorch/pytorch-gha-infra"
-        assert group == "default"
+        assert group is None
+        # The entry's own absent group wins over the cluster's "primary-rg", and
+        # coalescing is the caller's job, only for the CI group.
+        assert (group or "default") == "default"
+        assert derive_release_runner_group(group) == "default"
 
     def test_additional_org_missing_canary_repo_exits(self):
         cfg = {
@@ -1492,7 +1534,7 @@ class TestParseArgs:
             ],
         ):
             args = parse_args()
-        assert args.ecr_pull_image_name == "pytorch-linux-jammy-py3.10-clang18"
+        assert args.ecr_pull_image_name == "pytorch-linux-jammy-linter"
 
     def test_ecr_pull_image_name_override(self):
         with patch(
@@ -1784,6 +1826,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo"),
             patch("phases.generate_workflow", return_value="wf content"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch(
                 "phases.prepare_pr",
@@ -1825,6 +1868,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", side_effect=KeyboardInterrupt),
@@ -1867,6 +1911,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", return_value={}),
@@ -1906,6 +1951,7 @@ class TestMain:
             patch("phases.clear_staging_pools") as mock_clear,
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=None),
             patch("phases_validation.run_parallel_validation") as mock_validation,
@@ -1937,7 +1983,7 @@ class TestMain:
             keep_pr=False,
             force=True,
             skip_drain=True,
-            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+            ecr_pull_image_name="pytorch-linux-jammy-linter",
         )
 
         import logging
@@ -1945,6 +1991,7 @@ class TestMain:
         with (
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc123") as mock_resolve,
             patch("phases.generate_workflow", return_value="wf") as mock_gen,
             patch("phases.prepare_pr", return_value=None),
@@ -1957,11 +2004,11 @@ class TestMain:
         mock_resolve.assert_called_once_with()
         kwargs = mock_gen.call_args.kwargs
         assert kwargs["ecr_pull_sha"] == "abc123"
-        assert kwargs["ecr_pull_resolved_tag"] == "pytorch-linux-jammy-py3.10-clang18-abc123"
+        assert kwargs["ecr_pull_resolved_tag"] == "pytorch-linux-jammy-linter-abc123"
         assert "tree-SHA: abc123" in caplog.text
         assert (
             "image URL: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:"
-            "pytorch-linux-jammy-py3.10-clang18-abc123"
+            "pytorch-linux-jammy-linter-abc123"
         ) in caplog.text
 
     @patch("run.parse_args")
@@ -1996,7 +2043,7 @@ class TestMain:
             keep_pr=False,
             force=True,
             skip_drain=True,
-            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+            ecr_pull_image_name="pytorch-linux-jammy-linter",
         )
 
         import logging
@@ -2038,7 +2085,7 @@ class TestMain:
             keep_pr=False,
             force=True,
             skip_drain=True,
-            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+            ecr_pull_image_name="pytorch-linux-jammy-linter",
         )
 
         with (
@@ -2079,6 +2126,7 @@ class TestMain:
         with (
             patch("phases.cleanup_stale_prs") as mock_cleanup,
             patch("phases.ensure_canary_repo", return_value=tmp_path) as mock_ensure,
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.generate_workflow", return_value="wf") as mock_gen,
             patch("phases.prepare_pr", return_value=None) as mock_prepare,
@@ -2118,6 +2166,7 @@ class TestMain:
         with (
             patch("phases.cleanup_stale_prs") as mock_cleanup,
             patch("phases.ensure_canary_repo", return_value=tmp_path) as mock_ensure,
+            patch("run.verify_ecr_image_exists"),
             patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.generate_workflow", return_value="wf") as mock_gen,
             patch("phases.prepare_pr", return_value=None) as mock_prepare,
@@ -2237,3 +2286,39 @@ class TestRegionExcludedBlocks:
     def test_missing_fleet_def_returns_empty(self, tmp_path):
         # No modules/nodepools/defs tree → FileNotFoundError handled → empty.
         assert region_excluded_blocks(tmp_path, "us-west-1") == set()
+
+
+class TestVerifyEcrImageExists:
+    """A missing tag must fail here, not two hours later as an unexplained job
+    timeout — but an unavailable checker must not block the whole run."""
+
+    @patch("run.subprocess.run")
+    def test_present_tag_passes(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="{}", stderr="")
+        verify_ecr_image_exists("pytorch-linux-jammy-linter-abc123")
+        assert "imageTag=pytorch-linux-jammy-linter-abc123" in mock_run.call_args[0][0]
+
+    @patch("run.subprocess.run")
+    def test_missing_tag_exits(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=254,
+            stdout="",
+            stderr="An error occurred (ImageNotFoundException) when calling the DescribeImages operation",
+        )
+        with pytest.raises(SystemExit) as exc:
+            verify_ecr_image_exists("pytorch-linux-jammy-py3.10-clang18-abc123")
+        assert exc.value.code == 1
+
+    @patch("run.subprocess.run", side_effect=FileNotFoundError("aws not found"))
+    def test_missing_aws_cli_warns_and_continues(self, _mock_run):
+        verify_ecr_image_exists("any-tag")  # must not raise
+
+    @patch("run.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="aws", timeout=60))
+    def test_timeout_warns_and_continues(self, _mock_run):
+        verify_ecr_image_exists("any-tag")  # must not raise
+
+    @patch("run.subprocess.run")
+    def test_other_aws_error_warns_and_continues(self, mock_run):
+        """Credentials or throttling problems are not evidence the tag is absent."""
+        mock_run.return_value = MagicMock(returncode=255, stdout="", stderr="ExpiredTokenException")
+        verify_ecr_image_exists("any-tag")  # must not raise

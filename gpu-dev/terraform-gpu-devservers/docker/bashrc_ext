@@ -1,0 +1,40 @@
+# GPU Dev Server Extensions (managed by system - do not edit)
+# This file is overwritten on every pod startup to ensure latest features.
+# Put your personal customizations in ~/.bashrc instead.
+
+# User identification (set by Lambda on startup)
+export GPU_DEV_USER_ID="dev"
+
+# Function to check for GPU reservation expiry warnings and startup script status
+check_warnings() {
+    # Check for startup script still running
+    if [ -f /home/dev/STARTUP_SCRIPT_RUNNING.txt ]; then
+        echo -e "\033[1;33m$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\033[0m"
+    fi
+    # Check for expiry warnings
+    for warning_file in /home/dev/WARN_EXPIRES_IN_*MIN.txt; do
+        if [ -f "$warning_file" ]; then
+            # Extract minutes from filename (e.g., WARN_EXPIRES_IN_15MIN.txt -> 15)
+            minutes=$(echo "$warning_file" | sed 's/.*WARN_EXPIRES_IN_\([0-9]*\)MIN.txt/\1/')
+            echo -e "\033[1;31m🚨 URGENT: Server expires in <${minutes} minutes! 🚨\033[0m"
+            return
+        fi
+    done 2>/dev/null
+}
+
+# Run warning check before every command prompt
+PROMPT_COMMAND="check_warnings; $PROMPT_COMMAND"
+
+# Auto-cleanup of deprecated ANTHROPIC_MODEL pinning. An older docker image
+# hardcoded ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0 in
+# .shell_env, which then got cached on persistent disks. We unset it in the
+# current session and strip the line from disk so it doesn't come back.
+# Self-healing — once cleaned, the case statement no longer matches.
+case "${ANTHROPIC_MODEL:-}" in
+    *sonnet-4-20250514*)
+        unset ANTHROPIC_MODEL
+        if [ -f "$HOME/.shell_env" ]; then
+            sed -i '/ANTHROPIC_MODEL.*sonnet-4-20250514/d' "$HOME/.shell_env" 2>/dev/null || true
+        fi
+        ;;
+esac

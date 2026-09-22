@@ -24,16 +24,17 @@ source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
-# Read per-installation config. replicas_per_arch / pods_per_node are the
-# per-arch defaults; amd64_* / arm64_* override them when the arches differ.
+# Read per-installation config. {amd64,arm64}_instance_types map an instance
+# type to its pods-per-node; several sizes give Karpenter a capacity fallback.
+# pods_per_node stays the default for any entry that omits its count.
 REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.replicas_per_arch 4)
-ARM64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_instance_type m8gd.24xlarge)
-AMD64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_instance_type m6id.24xlarge)
+# No inline fallback: defaults.buildkit in clusters.yaml always supplies these,
+# and a missing value should abort rather than silently deploy a guess.
+ARM64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_instance_types)
+AMD64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_instance_types)
 PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.pods_per_node 2)
 AMD64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_replicas "$REPLICAS")
 ARM64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_replicas "$REPLICAS")
-AMD64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_pods_per_node "$PODS_PER_NODE")
-ARM64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_pods_per_node "$PODS_PER_NODE")
 # Lowercase via tr (not ${VAR,,}) — deploy.sh runs under macOS bash 3.2 too.
 AUTOSCALING=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.enabled false | tr '[:upper:]' '[:lower:]')
 
@@ -49,8 +50,6 @@ GEN_ARGS=(
   --pods-per-node "$PODS_PER_NODE"
   --amd64-replicas "$AMD64_REPLICAS"
   --arm64-replicas "$ARM64_REPLICAS"
-  --amd64-pods-per-node "$AMD64_PODS_PER_NODE"
-  --arm64-pods-per-node "$ARM64_PODS_PER_NODE"
   --output-dir "$GENERATED_DIR"
 )
 if [[ "$AUTOSCALING" == "true" ]]; then
@@ -77,6 +76,40 @@ uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" "${GEN_ARGS[@]}"
 
 echo "Applying BuildKit Karpenter NodePools..."
 sed "s/CLUSTER_NAME_PLACEHOLDER/$CNAME/g" "$GENERATED_DIR/nodepools.yaml" | kubectl_apply_if_changed -f -
+
+# Pool names are derived from {amd64,arm64}_instance_types, so dropping or
+# renaming an entry leaves its NodePool behind. An orphan is not inert: the pod
+# selects on workload-type and arch only, so a stale pool keeps provisioning
+# nodes of a size no longer configured. Apply never deletes, so sweep by label.
+_kind_names() { # kind -> names of that kind in the generated manifest
+  awk -v kind="$1" '
+    $0 == "kind: " kind { want = 1; next }
+    want && /^  name: / { print $2; want = 0 }
+  ' "$GENERATED_DIR/nodepools.yaml"
+}
+
+_prune_stale() { # resource, kind
+  local resource="$1" kind="$2" expected deployed
+  expected=$(_kind_names "$kind")
+  # Never prune off an empty expected set — that would delete the whole module.
+  if [[ -z "$expected" ]]; then
+    echo "  WARNING: no $kind found in generated manifest; skipping stale sweep"
+    return 0
+  fi
+  deployed=$(kubectl get "$resource" -l "osdc.io/module=buildkit" \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+  for name in $deployed; do
+    if ! grep -qxF "$name" <<<"$expected"; then
+      echo "  Deleting stale $kind: $name"
+      kubectl delete "$resource" "$name" --wait=false 2>/dev/null \
+        || echo "    WARNING: failed to delete $kind $name (continuing)"
+    fi
+  done
+}
+
+echo "Checking for stale BuildKit NodePools..."
+_prune_stale nodepools.karpenter.sh NodePool
+_prune_stale ec2nodeclasses.karpenter.k8s.aws EC2NodeClass
 
 # --- Apply static k8s resources ---
 
