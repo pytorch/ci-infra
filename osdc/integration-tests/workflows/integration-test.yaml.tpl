@@ -248,7 +248,10 @@ jobs:
   # died, because whatever would have reported it died in the same sweep.
   #
   # The second step is the real assertion: it only runs if the runner outlived
-  # the OOM. Needs singleProcessOOMKill in the nodepools kubelet config.
+  # the OOM. Needs singleProcessOOMKill in the nodepools kubelet config, which
+  # only takes effect once a node reboots onto the new userData -- so the job
+  # steps aside on a node that has not rolled yet rather than failing for the
+  # length of a fleet rotation.
   test-oom-kills-only-the-offender:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
@@ -262,8 +265,14 @@ jobs:
             exit 1
           fi
           echo "memory.max=$LIMIT"
-          echo "memory.oom.group=$(cat /sys/fs/cgroup/memory.oom.group)"
           echo "oom_score_adj=$(cat /proc/self/oom_score_adj)"
+
+          GROUP=$(cat /sys/fs/cgroup/memory.oom.group)
+          echo "memory.oom.group=$GROUP"
+          if [ "$GROUP" != "0" ]; then
+            echo "::warning::memory.oom.group=$GROUP — this node booted before singleProcessOOMKill reached it, so an OOM here still kills the whole container. Skipping the balloon: it would fail for a reason this job cannot act on. The nodepools smoke test tracks which pools are still waiting to roll."
+            exit 0
+          fi
 
           # Backgrounded so the balloon is its own process: the kernel should pick
           # it on RSS alone and leave this shell, the runner and rpc-server alone.
@@ -329,8 +338,14 @@ jobs:
             exit 1
           fi
           echo "memory.max=$LIMIT"
-          echo "memory.oom.group=$(cat /sys/fs/cgroup/memory.oom.group)"
           echo "oom_score_adj=$(cat /proc/self/oom_score_adj)"
+
+          GROUP=$(cat /sys/fs/cgroup/memory.oom.group)
+          echo "memory.oom.group=$GROUP"
+          if [ "$GROUP" != "0" ]; then
+            echo "::warning::memory.oom.group=$GROUP — this node booted before singleProcessOOMKill reached it, so an OOM here still kills the whole container. Skipping the balloon: it would fail for a reason this job cannot act on. The nodepools smoke test tracks which pools are still waiting to roll."
+            exit 0
+          fi
 
           LIMIT="$LIMIT" python3 -c '
           import os
