@@ -582,6 +582,9 @@ class TestMain:
             dockerhub_token=None,
             github_username=None,
             github_token=None,
+            ecr_registry_url=None,
+            ecr_access_key=None,
+            ecr_secret_key=None,
             no_wait=False,
         )
         mock_create_session.return_value = MagicMock()
@@ -617,6 +620,9 @@ class TestMain:
             dockerhub_token=None,
             github_username=None,
             github_token=None,
+            ecr_registry_url=None,
+            ecr_access_key=None,
+            ecr_secret_key=None,
             no_wait=True,
         )
         mock_create_session.return_value = MagicMock()
@@ -646,6 +652,9 @@ class TestMain:
             dockerhub_token=None,
             github_username=None,
             github_token=None,
+            ecr_registry_url=None,
+            ecr_access_key=None,
+            ecr_secret_key=None,
             no_wait=True,
         )
         mock_create_session.return_value = MagicMock()
@@ -677,6 +686,9 @@ class TestMain:
             dockerhub_token=None,
             github_username=None,
             github_token=None,
+            ecr_registry_url=None,
+            ecr_access_key=None,
+            ecr_secret_key=None,
             no_wait=True,
         )
         mock_create_session.return_value = MagicMock()
@@ -709,6 +721,9 @@ class TestMain:
             dockerhub_token=None,
             github_username=None,
             github_token=None,
+            ecr_registry_url=None,
+            ecr_access_key=None,
+            ecr_secret_key=None,
             no_wait=False,
         )
         mock_create_session.return_value = MagicMock()
@@ -743,6 +758,9 @@ class TestMain:
             dockerhub_token=None,
             github_username="ghuser",
             github_token="ghtoken",
+            ecr_registry_url=None,
+            ecr_access_key=None,
+            ecr_secret_key=None,
             no_wait=True,
         )
         mock_create_session.return_value = MagicMock()
@@ -786,6 +804,9 @@ class TestMain:
             dockerhub_token="tok",
             github_username=None,
             github_token=None,
+            ecr_registry_url=None,
+            ecr_access_key=None,
+            ecr_secret_key=None,
             no_wait=True,
         )
         mock_create_session.return_value = MagicMock()
@@ -806,3 +827,59 @@ class TestMain:
                 break
         else:
             pytest.fail("dockerhub registry call not found")
+
+
+class TestPrivateEcrPullthrough:
+    """The optional aws-ecr endpoint appended by --ecr-registry-url."""
+
+    ECR_URL = "https://308535385114.dkr.ecr.us-east-1.amazonaws.com"
+
+    def _args(self, **over):
+        base = {
+            "harbor_url": HARBOR_URL,
+            "admin_password": "pw",
+            "dockerhub_username": None,
+            "dockerhub_token": None,
+            "github_username": None,
+            "github_token": None,
+            "ecr_registry_url": None,
+            "ecr_access_key": None,
+            "ecr_secret_key": None,
+            "no_wait": True,
+        }
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    @patch("configure_harbor_projects.create_proxy_cache_project", return_value=True)
+    @patch("configure_harbor_projects.ensure_registry_endpoint", return_value=True)
+    @patch("configure_harbor_projects.fetch_csrf_token")
+    @patch("configure_harbor_projects.create_session")
+    @patch("configure_harbor_projects.argparse.ArgumentParser.parse_args")
+    def test_absent_by_default(self, mock_args, mock_sess, mock_csrf, mock_ensure, mock_proj):
+        mock_args.return_value = self._args()
+        mock_sess.return_value = MagicMock()
+        assert main() == 0
+        names = [c.args[2]["name"] for c in mock_ensure.call_args_list]
+        assert "ecr-private" not in names
+
+    @patch("configure_harbor_projects.create_proxy_cache_project", return_value=True)
+    @patch("configure_harbor_projects.ensure_registry_endpoint", return_value=True)
+    @patch("configure_harbor_projects.fetch_csrf_token")
+    @patch("configure_harbor_projects.create_session")
+    @patch("configure_harbor_projects.argparse.ArgumentParser.parse_args")
+    def test_registered_as_aws_ecr_with_credentials(self, mock_args, mock_sess, mock_csrf, mock_ensure, mock_proj):
+        """type must be aws-ecr — docker-registry cannot refresh the 12h ECR token."""
+        mock_args.return_value = self._args(ecr_registry_url=self.ECR_URL, ecr_access_key="AKIA", ecr_secret_key="shh")
+        mock_sess.return_value = MagicMock()
+        assert main() == 0
+        call = next(c for c in mock_ensure.call_args_list if c.args[2]["name"] == "ecr-private")
+        registry, creds = call.args[2], call.args[3]
+        assert registry["type"] == "aws-ecr"
+        assert registry["url"] == self.ECR_URL
+        assert creds == {"type": "basic", "access_key": "AKIA", "access_secret": "shh"}
+
+    @patch("configure_harbor_projects.argparse.ArgumentParser.parse_args")
+    def test_url_without_credentials_is_rejected(self, mock_args):
+        mock_args.return_value = self._args(ecr_registry_url=self.ECR_URL)
+        with pytest.raises(SystemExit):
+            main()

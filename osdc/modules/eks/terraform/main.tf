@@ -32,9 +32,10 @@ locals {
 module "vpc" {
   source = "./modules/vpc"
 
-  name = "${var.cluster_name}-vpc"
-  cidr = var.vpc_cidr
-  azs  = local.azs
+  name   = "${var.cluster_name}-vpc"
+  cidr   = var.vpc_cidr
+  azs    = local.azs
+  region = var.aws_region
 
   # Dynamic subnet sizing based on AZ count
   private_subnets = length(local.azs) == 2 ? [

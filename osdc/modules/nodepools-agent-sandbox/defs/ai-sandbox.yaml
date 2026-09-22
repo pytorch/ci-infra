@@ -1,0 +1,54 @@
+# Karpenter NodePool fleet: ai-sandbox — dedicated pool for the AI agent sandbox.
+#
+# These nodes run gVisor (runsc) as a containerd runtime handler, baked into a
+# custom AMI (packer/) and selected by tag below — no userData script, and
+# containerd is never restarted on a running node. Only the agent sandbox pods
+# (runtimeClassName: gvisor, pinned here via the RuntimeClass scheduling block in
+# modules/agent-sandbox) schedule onto this fleet.
+#
+# The AMI must exist in the cluster's region before this fleet can launch a node:
+#   just build-agent-sandbox-ami <cluster>
+# It pins the AL2023 base, so unlike the al2023@latest fleets it does not pick up
+# CVE fixes on node rotation — rebuild to refresh. See the module README.
+#
+# The node-fleet=ai-sandbox taint isolates the pool; agent pods tolerate it via
+# the gvisor RuntimeClass scheduling. Deliberately a single small CPU instance
+# type for the prototype — no NVMe, no GPU.
+#
+# c7a.2xlarge is the smallest CPU node OSDC already uses (modules/nodepools
+# c7a-2xl), so this fleet adds no new instance type.
+#
+# Sizing — 2xlarge holds exactly 3 sandboxes (all figures measured on a live node,
+# not derived from AWS-advertised specs, which overstate usable memory):
+#   allocatable            7.91 vCPU / 14624 MiB  (8 vCPU / 16 GiB, maxPods 58)
+#   less fleet daemonsets  0.92 vCPU /  2142 MiB  (alloy-logging + hf-cache mount
+#                                                  dominate; see the README table)
+#   free for sandboxes     7.00 vCPU / 12482 MiB
+#   sandbox slot           2 vCPU / 4 GiB, requests == limits
+#                          -> 3 by CPU (7.00/2), 3 by memory (12482/4096)
+# The 2:4 slot matches c7a's 1:2 vCPU:GiB ratio, so neither dimension strands
+# capacity. Memory is the tighter of the two: only ~194 MiB spare beyond the 3rd
+# slot, so a daemonset gaining ~200 MiB of requests costs a slot — recheck this
+# after adding anything cluster-wide. Step up to c7a.4xlarge when the prototype
+# needs more concurrency, but redo the arithmetic rather than scaling it linearly:
+# kube-reserved grows with maxPods (58 -> 234).
+fleet:
+  name: ai-sandbox
+  arch: amd64
+  gpu: false
+  instances:
+    - type: c7a.2xlarge
+      weight: 100
+      node_disk_size: 100
+      # Select the gVisor AMI built by packer/, by tag rather than name glob so
+      # the naming scheme can change without touching this def.
+      #
+      # TODO: this matches on osdc.io/ami alone, so the K8sVersion the build
+      # records is never read back at launch — after an EKS bump the fleet keeps
+      # launching pre-upgrade nodes until someone rebuilds the AMI. Accepted for
+      # the prototype (one AMI, and clusters.yaml has a single eks_version for
+      # every cluster); test_ami_exists_in_region fails on the skew meanwhile.
+      # Fail closed instead by adding K8sVersion here, which means plumbing the
+      # cluster's eks_version through the nodepool generator.
+      ami_selector_tags:
+        osdc.io/ami: ai-sandbox-gvisor
