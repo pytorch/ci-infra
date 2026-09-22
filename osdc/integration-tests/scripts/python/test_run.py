@@ -130,6 +130,12 @@ def workflow_template(tmp_path):
         '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }\n'
         "    steps:\n"
         "      - run: echo oom\n"
+        "  # BEGIN_OOM_KILL_GPU\n"
+        "  oom-kill-gpu-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86aavx2-11-41-a10g"] }\n'
+        "    steps:\n"
+        "      - run: echo gpu-oom\n"
+        "  # END_OOM_KILL_GPU\n"
         "  # END_OOM_KILL\n"
         "  # BEGIN_BUILDKIT\n"
         "  buildkit-job:\n"

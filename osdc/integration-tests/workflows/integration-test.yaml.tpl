@@ -296,6 +296,70 @@ jobs:
       - name: Verify the runner survived and still reports steps
         run: |
           echo "PASS: this step running at all proves the rpc-server outlived the container OOM"
+
+  # BEGIN_OOM_KILL_GPU
+  # Same test on a GPU runner, because GPU nodes are the ones that can silently
+  # miss the setting: Karpenter has no nvidia alias family, so they pick their
+  # AMI by name glob and their kubelet drifts off the control plane. The same
+  # glob currently yields 1.31 on one prod cluster and 1.36 on another, and
+  # singleProcessOOMKill does not exist before 1.32.
+  #
+  # a10g-11-41 rather than a T4: it is the smallest GPU runner we have, and it
+  # is the class the OOMing CUDA shards actually run on. 41Gi of a 64GiB
+  # g5.4xlarge leaves ~13GiB once Karpenter's overhead is counted, so driving
+  # the cgroup to its limit stays a clean cgroup OOM instead of node pressure.
+  # g5 is excluded in us-west-1, so this is region-gated off staging.
+  test-gpu-oom-kills-only-the-offender:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86aavx2-11-41-a10g"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Confirm this really is a GPU runner
+        run: |
+          nvidia-smi --query-gpu=name --format=csv,noheader || {
+            echo "FAIL: no GPU visible — this test must not pass on a CPU node"
+            exit 1
+          }
+
+      - name: Overrun the memory limit in a child process
+        run: |
+          LIMIT=$(cat /sys/fs/cgroup/memory.max)
+          if [ "$LIMIT" = "max" ]; then
+            echo "FAIL: container has no memory limit — this test would consume the node"
+            exit 1
+          fi
+          echo "memory.max=$LIMIT"
+          echo "memory.oom.group=$(cat /sys/fs/cgroup/memory.oom.group)"
+          echo "oom_score_adj=$(cat /proc/self/oom_score_adj)"
+
+          LIMIT="$LIMIT" python3 -c '
+          import os
+          limit = int(os.environ["LIMIT"])
+          cap = limit + 4 * 1024**3
+          chunks, total = [], 0
+          while total < cap:
+              chunks.append(bytearray(256 * 1024 * 1024))
+              total += 256 * 1024 * 1024
+          raise SystemExit(9)
+          ' &
+          BALLOON=$!
+          wait "$BALLOON" && rc=0 || rc=$?
+          echo "balloon exited rc=$rc"
+
+          if [ "$rc" -eq 9 ]; then
+            echo "FAIL: allocated 4GiB past memory.max without being killed — limit not enforced"
+            exit 1
+          fi
+          if [ "$rc" -ne 137 ]; then
+            echo "FAIL: expected the balloon to be SIGKILLed (137), got $rc"
+            exit 1
+          fi
+          echo "PASS: the balloon was killed and this shell survived it"
+
+      - name: Verify the runner survived and still reports steps
+        run: |
+          echo "PASS: this step running at all proves the rpc-server outlived the container OOM"
+  # END_OOM_KILL_GPU
   # END_OOM_KILL
 
   # BEGIN_HF_CACHE
@@ -1744,49 +1808,6 @@ jobs:
             exit 1
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
-
-  # GPU counterpart to test-oom-kills-only-the-offender. GPU nodes do not take
-  # the cluster's AMI alias — Karpenter has no nvidia alias family, so they
-  # select by name glob and their kubelet can silently lag the control plane.
-  # That is not hypothetical: the whole GPU fleet ran 1.31 under a 1.35 control
-  # plane, where singleProcessOOMKill does not exist and was quietly dropped.
-  #
-  # This asserts the setting took effect instead of driving a real OOM. These
-  # runners are sized to nearly fill their node (115Gi of a 128GiB g4dn.8xlarge,
-  # ~3GiB left once Karpenter's overhead is counted), so ballooning to the limit
-  # every deploy would court node-level pressure and kubelet eviction rather
-  # than the clean cgroup OOM the CPU job already exercises. The kill semantics
-  # are the kernel's and do not differ here; only the kubelet does, and
-  # memory.oom.group is that difference made visible.
-  test-gpu-oom-kill-is-per-process:
-    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-29-115-t4"] }
-    container:
-      image: ghcr.io/actions/actions-runner:latest
-    steps:
-      - name: Confirm this really is a GPU runner
-        run: |
-          nvidia-smi --query-gpu=name --format=csv,noheader || {
-            echo "FAIL: no GPU visible — this test must not pass on a CPU node"
-            exit 1
-          }
-
-      - name: The kubelet must not group-kill this container
-        run: |
-          GROUP_FILE=/sys/fs/cgroup/memory.oom.group
-          if [ ! -f "$GROUP_FILE" ]; then
-            echo "FAIL: $GROUP_FILE missing — not cgroup v2, so the OOM behaviour here is unverified"
-            exit 1
-          fi
-          GROUP=$(cat "$GROUP_FILE")
-          echo "memory.max=$(cat /sys/fs/cgroup/memory.max) memory.oom.group=$GROUP"
-          if [ "$GROUP" != "0" ]; then
-            echo "FAIL: memory.oom.group=$GROUP, so an OOM kills every process in this pod,"
-            echo "      including the rpc-server that would have reported which step died."
-            echo "      Either singleProcessOOMKill is unset, or this node's kubelet predates"
-            echo "      1.32 and dropped it — check the GPU AMI pin in generate_nodepools.py."
-            exit 1
-          fi
-          echo "PASS: memory.oom.group=0 — an OOM here kills only the process that overran"
 
   test-gpu-t4-multi:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-45-172-t4-4"] }
