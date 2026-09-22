@@ -132,9 +132,19 @@ class TestKubeletAppliedIt:
 
 
 class TestOOMKillsOnlyTheOffender:
-    """The behaviour the flag exists for, exercised end to end on a real node."""
+    """The behaviour the flag exists for, exercised end to end on a real node.
 
-    def test_a_container_oom_spares_the_rest_of_the_container(self, current_nodes: list[dict]) -> None:
+    Staging only. The two tests above assert per-deploy state and have to cover
+    prod, but this one asserts a kernel invariant that moves only on an AMI or
+    kubelet bump -- re-proving it on five prod clusters after every deploy buys
+    nothing and costs a pod that deliberately OOMs on whichever node it lands on.
+    """
+
+    def test_a_container_oom_spares_the_rest_of_the_container(
+        self, current_nodes: list[dict], cluster_id: str
+    ) -> None:
+        if not cluster_id.startswith("meta-staging"):
+            pytest.skip(f"behavioural OOM probe runs on staging only, not {cluster_id}")
         if not current_nodes:
             pytest.skip("no nodes on the current EC2NodeClass revision yet")
 
