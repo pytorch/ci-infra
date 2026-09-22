@@ -140,9 +140,7 @@ class TestOOMKillsOnlyTheOffender:
     nothing and costs a pod that deliberately OOMs on whichever node it lands on.
     """
 
-    def test_a_container_oom_spares_the_rest_of_the_container(
-        self, current_nodes: list[dict], cluster_id: str
-    ) -> None:
+    def test_a_container_oom_spares_the_rest_of_the_container(self, current_nodes: list[dict], cluster_id: str) -> None:
         if not cluster_id.startswith("meta-staging"):
             pytest.skip(f"behavioural OOM probe runs on staging only, not {cluster_id}")
         if not current_nodes:
