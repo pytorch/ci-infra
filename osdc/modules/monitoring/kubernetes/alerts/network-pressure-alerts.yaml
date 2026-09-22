@@ -9,34 +9,50 @@ spec:
   groups:
     - name: ipv6-network-pressure
       rules:
+        # 10% and 25% are anomaly lines, not saturation lines, and they are
+        # engineering judgement rather than a measured failure point: no node in
+        # the fleet has crossed either in 90 days, the all-time observed maximum
+        # is 8.69% on a single staging node, and production peaks at 4.54%. A
+        # node sustaining 10% is therefore doing something structurally different
+        # from every node ever observed, which is the signal worth acting on.
+        #
+        # The right signal would be node-exporter's `node_nf_conntrack_stat_*`
+        # insert-failure and drop counters — conntrack exhaustion is a cliff, not
+        # a ramp, so a utilisation proxy cannot give useful lead time. Those
+        # series do not exist in this Prometheus: node-exporter's ServiceMonitor
+        # keeps only the four `node_memory_*` / `node_nf_conntrack_entries*`
+        # metrics, and the extended conntrack collector is not enabled.
         - alert: NodeConntrackHighWarn
-          expr: node_nf_conntrack_entries / node_nf_conntrack_entries_limit > 0.80
+          expr: node_nf_conntrack_entries / node_nf_conntrack_entries_limit > 0.10
           for: 5m
           labels:
             severity: warning
             team: pytorch-dev-infra
             priority: P3
           annotations:
-            summary: "Node conntrack table > 80% full ({{ $labels.node }})"
+            summary: "Node conntrack table > 10% full ({{ $labels.node }})"
             description: |
-              Node {{ $labels.node }} conntrack table is {{ $value | humanizePercentage }} full.
-              Under IPv6-only EKS, pod-to-IPv4-internet egress goes via VPC CNI's IPv4 SNAT,
-              which is conntrack-heavy. Pre-cutover baseline should be well below this threshold.
-              Investigate via `ssh <node> sudo conntrack -L | wc -l`.
+              Node {{ $labels.node }} conntrack table is {{ $value | humanizePercentage }} full,
+              above every level observed anywhere in the fleet. Under IPv6-only EKS,
+              pod-to-IPv4-internet egress goes via VPC CNI's IPv4 SNAT, which is
+              conntrack-heavy. This is not saturation — it is an unexplained departure
+              from the fleet baseline. Investigate via `ssh <node> sudo conntrack -L | wc -l`.
 
         - alert: NodeConntrackHighCritical
-          expr: node_nf_conntrack_entries / node_nf_conntrack_entries_limit > 0.95
+          expr: node_nf_conntrack_entries / node_nf_conntrack_entries_limit > 0.25
           for: 2m
           labels:
             severity: critical
             team: pytorch-dev-infra
             priority: P3
           annotations:
-            summary: "Node conntrack table > 95% full — imminent connection drops ({{ $labels.node }})"
+            summary: "Node conntrack table > 25% full — unexplained growth ({{ $labels.node }})"
             description: |
-              Node {{ $labels.node }} conntrack table is {{ $value | humanizePercentage }} full.
-              New connections will start failing imminently. Increase `nf_conntrack_max` sysctl
-              OR drain the node. See docs/ipv6-cluster-recreation.md for tuning guidance.
+              Node {{ $labels.node }} conntrack table is {{ $value | humanizePercentage }} full,
+              roughly 3x the highest utilisation ever observed on any node. Nothing is
+              failing yet, but the table has no measured ceiling behaviour to fall back on
+              and exhaustion drops new connections without warning. Increase `nf_conntrack_max`
+              sysctl OR drain the node. See docs/ipv6-cluster-recreation.md for tuning guidance.
 
         - alert: NodeConntrackMetricMissing
           # Detect silent loss of node-exporter scraping. Without this, the

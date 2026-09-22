@@ -1,0 +1,42 @@
+name: OSDC setup
+description: Install just, the mise toolchain, and Python dependencies for OSDC workflows, retrying transient failures.
+runs:
+  using: composite
+  steps:
+    # GitHub Actions has no native per-step retry, so each step below is retried
+    # by duplication: continue-on-error on the first attempt plus a copy gated on
+    # its failure. Preferred over a retry action so that no unpinnable
+    # third-party code runs on the deploy / merge-queue paths.
+    - name: Install just
+      id: install-just
+      continue-on-error: true
+      uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+    - name: Install just (retry)
+      if: ${{ steps.install-just.outcome == 'failure' }}
+      uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+    - name: Install mise
+      id: install-mise
+      continue-on-error: true
+      uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+      with:
+        version: "2026.5.11"
+        install: true
+        working_directory: osdc
+    - name: Install mise (retry)
+      if: ${{ steps.install-mise.outcome == 'failure' }}
+      uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+      with:
+        version: "2026.5.11"
+        install: true
+        working_directory: osdc
+
+    - name: Install Python dependencies
+      id: install-python
+      continue-on-error: true
+      shell: bash
+      run: cd osdc && uv sync
+    - name: Install Python dependencies (retry)
+      if: ${{ steps.install-python.outcome == 'failure' }}
+      shell: bash
+      run: cd osdc && uv sync

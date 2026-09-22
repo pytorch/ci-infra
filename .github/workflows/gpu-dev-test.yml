@@ -1,0 +1,44 @@
+name: "gpu-dev: Test"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gpu-dev/**"
+      - ".github/workflows/gpu-dev-test.yml"
+  pull_request:
+    paths:
+      - "gpu-dev/**"
+      - ".github/workflows/gpu-dev-test.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-dev-test-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: gpu-dev
+
+jobs:
+  unit:
+    name: unit + mocks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # setup-uv ignores defaults.run.working-directory and builds its venv at
+      # $GITHUB_WORKSPACE, not gpu-dev/. Hence --active on the run below.
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.12"
+
+      - name: Install package + test deps
+        run: uv pip install -e ".[test]"
+
+      - name: Run unit + mock tests (integration excluded)
+        run: uv run --active pytest -m "not integration"
