@@ -238,6 +238,16 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     # controller, which handles consolidation via NoSchedule taints instead
     # of Karpenter's disruptive consolidation.
     # Default comes from cluster-level config (via env var), not per-def hardcode
+    if is_gpu:
+        # Empty would render a glob that matches no AMI, so GPU nodes would never
+        # launch. Fail here instead, where the cause is obvious.
+        eks_version = os.environ.get("NODEPOOLS_EKS_VERSION", "")
+        if not eks_version:
+            raise RuntimeError(
+                f"NODEPOOLS_EKS_VERSION is required to pin the GPU AMI for '{nodepool_def['name']}'; "
+                "deploy.sh reads it from the cluster's eks_version."
+            )
+
     cluster_compactor_enabled = os.environ.get("NODEPOOLS_COMPACTOR_ENABLED", "false").lower() == "true"
     compactor_enabled = nodepool_def.get("node_compactor", cluster_compactor_enabled)
 
@@ -263,9 +273,15 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     # across all nodes, remove osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
     # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
     if is_gpu:
+        # Karpenter's alias families are al2/al2023/bottlerocket/windows -- there
+        # is no nvidia one, so GPU nodes have to select the AMI by name. The glob
+        # must carry the control plane's minor: AWS publishes every minor the same
+        # morning and Karpenter takes the newest match, so an unversioned glob is
+        # decided by which one AWS happened to stamp last. That put the whole GPU
+        # fleet on 1.31 against a 1.35 control plane.
         ami_family_block = "  amiFamily: AL2023"
-        ami_selector_block = """  amiSelectorTerms:
-    - name: "amazon-eks-node-al2023-x86_64-nvidia-*\""""
+        ami_selector_block = f"""  amiSelectorTerms:
+    - name: "amazon-eks-node-al2023-x86_64-nvidia-{eks_version}-*\""""
         if compactor_enabled:
             disruption_budget = os.environ.get("NODEPOOLS_GPU_DISRUPTION_BUDGET", "100%")
             consolidation_after = os.environ.get("NODEPOOLS_GPU_CONSOLIDATE_AFTER", "2m")

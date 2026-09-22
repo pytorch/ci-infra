@@ -51,6 +51,13 @@ def kubelet_config(ec2_node_class: dict) -> dict:
     raise AssertionError("no NodeConfig MIME part in userData")
 
 
+@pytest.fixture(autouse=True)
+def _eks_version():
+    """GPU defs refuse to render without it; deploy.sh supplies it in prod."""
+    with patch.dict(os.environ, {"NODEPOOLS_EKS_VERSION": "1.35"}, clear=False):
+        yield
+
+
 def _make_nodepool_def(**overrides) -> dict:
     """Build a minimal nodepool def dict with sensible defaults."""
     base = {
@@ -349,10 +356,33 @@ class TestGenerateNodepoolYaml:
         assert docs[1]["spec"]["amiSelectorTerms"] == [{"alias": "al2023@latest"}]
 
     def test_gpu_ec2nodeclass_ami_name_glob(self):
+        """The glob must carry the control plane's minor.
+
+        AWS publishes every minor the same morning and Karpenter takes the
+        newest match, so an unversioned glob is decided by whichever one AWS
+        stamped last -- that is how the GPU fleet ended up on 1.31 under a 1.35
+        control plane, where singleProcessOOMKill does not exist.
+        """
         nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
         docs = self._parse(output)
-        assert docs[1]["spec"]["amiSelectorTerms"] == [{"name": "amazon-eks-node-al2023-x86_64-nvidia-*"}]
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"name": "amazon-eks-node-al2023-x86_64-nvidia-1.35-*"}]
+
+    def test_gpu_ec2nodeclass_refuses_an_unpinned_ami(self):
+        nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")
+        with (
+            patch.dict(os.environ, {"NODEPOOLS_EKS_VERSION": ""}, clear=False),
+            pytest.raises(RuntimeError, match="NODEPOOLS_EKS_VERSION"),
+        ):
+            generate_nodepool_yaml(nodepool_def, "nodepools")
+
+    def test_cpu_ec2nodeclass_needs_no_eks_version(self):
+        """CPU pools use the alias, which Karpenter resolves to the cluster's own
+        version, so they must keep rendering without the env var."""
+        nodepool_def = _make_nodepool_def()
+        with patch.dict(os.environ, {"NODEPOOLS_EKS_VERSION": ""}, clear=False):
+            docs = self._parse(generate_nodepool_yaml(nodepool_def, "nodepools"))
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"alias": "al2023@latest"}]
 
     def test_ami_selector_tags_replace_alias(self):
         """A def selecting its own AMI must not keep the stock alias alongside
