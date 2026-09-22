@@ -1,0 +1,13 @@
+# ARC runner definition: l-x86aavx2-11-41-a10g
+# Instance type: g5.4xlarge — 1-GPU A10G, 16c/64Gi node (pool: g5-4xlarge).
+# Same node shape as l-x86aavx2-11-41-l4; see it for the sizing.
+runner:
+  name: l-x86aavx2-11-41-a10g
+  instance_type: g5.4xlarge
+  disk_size: 150
+  vcpu: 11
+  memory: 41Gi
+  gpu: 1
+  proactive_capacity: 0
+  hud_failure_base_capacity: 30
+  max_burst_capacity: 60

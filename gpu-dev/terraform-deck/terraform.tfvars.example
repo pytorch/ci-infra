@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars and fill in your values
+domain_name     = "devservers.io"
+route53_zone_id = "Z0123456789ABCDEF"  # aws route53 list-hosted-zones
+aws_region      = "us-east-2"

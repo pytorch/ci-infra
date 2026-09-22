@@ -227,7 +227,7 @@ data:
 
 
     # ---------------------------------------------------------------------------
-    # crictl interaction (host access via nsenter)
+    # crictl interaction
     # ---------------------------------------------------------------------------
 
     def run_crictl(*args: str) -> str:

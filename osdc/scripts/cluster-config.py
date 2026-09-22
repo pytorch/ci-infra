@@ -132,6 +132,10 @@ def main():
             print(str(val).lower())
         elif isinstance(val, list):
             print(",".join(str(v) for v in val))
+        elif isinstance(val, dict):
+            # Ordered "key:value,key:value" — e.g. buildkit instance_types
+            # maps an instance type to its pods-per-node.
+            print(",".join(f"{k}:{v}" for k, v in val.items()))
         else:
             print(val)
 
