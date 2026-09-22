@@ -12,6 +12,7 @@ import json
 import subprocess
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import yaml
@@ -27,6 +28,8 @@ PROBE_NAMESPACE = "default"
 PROBE_IMAGE = "public.ecr.aws/docker/library/alpine:3.21"
 PROBE_LIMIT = "128Mi"
 PROBE_TIMEOUT_S = 180
+CONFIGZ_WORKERS = 8
+SCALED_AWAY = "scaled away"
 
 # sleep is the canary and tail /dev/zero is the balloon: tail keeps the whole
 # unterminated stream in memory, so it is far and away the highest-badness
@@ -90,6 +93,30 @@ def _is_ready(node: dict) -> bool:
     return any(c["type"] == "Ready" and c["status"] == "True" for c in node.get("status", {}).get("conditions", []))
 
 
+def _configz_oom_setting(entry: tuple[str, dict]) -> tuple[str, str | None]:
+    """Ask one node's kubelet what it booted with.
+
+    Returns (nodepool, complaint): None when the kubelet answered correctly,
+    SCALED_AWAY when the node vanished mid-run, else what it said.
+
+    The kubelet version is in the complaint because the likeliest reason for a
+    false answer is a node older than 1.32, where the field does not exist and
+    is dropped without comment.
+    """
+    nodepool, node = entry
+    name = node["metadata"]["name"]
+    try:
+        raw = run_kubectl(["get", "--raw", f"/api/v1/nodes/{name}/proxy/configz"], json_output=False)
+    except subprocess.CalledProcessError:
+        # Scaled away between listing and probing — normal on this fleet.
+        return nodepool, SCALED_AWAY
+    value = json.loads(raw)["kubeletconfig"].get("singleProcessOOMKill")
+    if value is True:
+        return nodepool, None
+    version = node.get("status", {}).get("nodeInfo", {}).get("kubeletVersion", "?")
+    return nodepool, f"{name} reports {value!r} (kubelet {version})"
+
+
 class TestNodeClassRequestsIt:
     def test_every_node_class_enables_single_process_oom_kill(self, node_classes: dict[str, dict]) -> None:
         missing = sorted(
@@ -111,18 +138,12 @@ class TestKubeletAppliedIt:
         if not current_nodes:
             pytest.skip("no nodes on the current EC2NodeClass revision yet")
 
-        sample = {n["metadata"]["labels"][NODEPOOL_LABEL]: n["metadata"]["name"] for n in current_nodes}
-        wrong, answered = {}, 0
-        for nodepool, node in sorted(sample.items()):
-            try:
-                raw = run_kubectl(["get", "--raw", f"/api/v1/nodes/{node}/proxy/configz"], json_output=False)
-            except subprocess.CalledProcessError:
-                # Scaled away between listing and probing — normal on this fleet.
-                continue
-            answered += 1
-            value = json.loads(raw)["kubeletconfig"].get("singleProcessOOMKill")
-            if value is not True:
-                wrong[nodepool] = f"{node} reports {value!r}"
+        sample = {n["metadata"]["labels"][NODEPOOL_LABEL]: n for n in current_nodes}
+        with ThreadPoolExecutor(max_workers=CONFIGZ_WORKERS) as pool:
+            answers = list(pool.map(_configz_oom_setting, sorted(sample.items())))
+
+        wrong = {p: d for p, d in answers if d is not None and d != SCALED_AWAY}
+        answered = sum(1 for _, d in answers if d != SCALED_AWAY)
         if not answered:
             pytest.skip("no sampled node stayed up long enough to answer configz")
         assert not wrong, (
