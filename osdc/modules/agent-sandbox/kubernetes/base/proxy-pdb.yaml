@@ -1,0 +1,23 @@
+# Keep a sigv4-proxy replica serving through voluntary disruption.
+#
+# The proxy is the sandbox's only route to Bedrock, and the worker
+# has no retry — so losing all replicas fails the task outright, not just slowly.
+# Rolling updates are already covered by maxUnavailable: 0 plus a readiness probe;
+# these budgets cover the other half, the disruptions Kubernetes initiates:
+# `kubectl drain` on a base node, Karpenter consolidating one, or a node upgrade.
+#
+# minAvailable: 1 with replicas: 2 lets exactly one node drain at a time, which is
+# what the base node pool does anyway. Raising replicas past the base node count
+# would leave a pod Pending (see the spread constraint), so 2/1 is the pairing.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sigv4-proxy
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sigv4-proxy

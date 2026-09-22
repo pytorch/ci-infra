@@ -61,9 +61,9 @@ meta-prod-aws-uw1:
   node_compactor:
     min_node_age_seconds: 900
   buildkit:
-    arm64_instance_type: c7gd.16xlarge
-    amd64_instance_type: m6id.24xlarge
-    pods_per_node: 2
+    arm64_instance_types:                         # override: c7gd, not the default m7gd
+      c7gd.16xlarge: 2
+    # amd64 inherits defaults.buildkit (m6id.24xlarge:2 preferred, m6id.12xlarge:1 fallback)
   arc-runners:
     github_config_url: "https://github.com/pytorch"
     github_secret_name: meta-prod-aws-uw1
@@ -82,7 +82,7 @@ meta-prod-aws-uw1:
     - nodepools-h100        # H100 only — no B200 capacity in us-west-1
     - arc-runners
     - arc-runners-h100
-    - buildkit
+    - buildkit              # planned; the live meta-prod-aws-uw1 entry does not deploy it
     - pypi-cache
     - cache-enforcer
     - zombie-cleanup
