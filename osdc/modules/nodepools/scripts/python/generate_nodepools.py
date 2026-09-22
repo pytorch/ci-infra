@@ -302,6 +302,25 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         gpu_taints = ""
         gpu_tags = ""
 
+    # ----- Custom AMI override -----
+    # A def may select its own AMI by tag instead of the stock AL2023 alias, for
+    # fleets that need something baked into the image (the ai-sandbox fleet needs
+    # gVisor's runsc, which cannot be installed at boot without restarting
+    # containerd). Tags rather than a name glob so the AMI naming scheme can
+    # change without touching the nodepool.
+    #
+    # Trade-off worth knowing: `alias: al2023@latest` picks up AL2023 CVE fixes
+    # automatically on node rotation; a custom AMI only moves when it is rebuilt.
+    # The alias also tracks the cluster's Kubernetes version, which tags do not —
+    # a def using this knob owns keeping its image in step with an EKS bump.
+    ami_selector_tags = nodepool_def.get("ami_selector_tags") or {}
+    if ami_selector_tags:
+        tag_lines = "\n".join(f'        {k}: "{v}"' for k, v in sorted(ami_selector_tags.items()))
+        ami_family_block = "  amiFamily: AL2023"
+        ami_selector_block = f"""  amiSelectorTerms:
+    - tags:
+{tag_lines}"""
+
     # ----- Baremetal consolidate_after override -----
     # Baremetal instances take much longer to provision, so they get a longer
     # consolidation window to avoid unnecessary churn.
@@ -586,7 +605,13 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
 
     # Only set optional keys when explicitly provided — leaving them absent
     # lets generate_nodepool_yaml() fall through to its own defaults.
-    for key in ("node_compactor", "topology_manager_policy", "topology_manager_scope", "user_data_script"):
+    for key in (
+        "node_compactor",
+        "topology_manager_policy",
+        "topology_manager_scope",
+        "user_data_script",
+        "ami_selector_tags",
+    ):
         val = inst.get(key)
         if val is not None:
             nodepool_def[key] = val
@@ -597,6 +622,63 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
         nodepool_def["extra_labels"] = merged
 
     return nodepool_def
+
+
+def _resolve_weight(weight, cluster):
+    """Resolve a per-cluster weight map to an int.
+
+    A scalar weight applies to every cluster unchanged. A mapping must carry
+    a ``default`` key; a cluster-name key overrides it for that cluster only
+    (e.g. ``{"default": 100, "lf-prod-aws-ue1": 0}``). Weight ``0`` means "do
+    not generate this NodePool for this cluster" — Karpenter weights are
+    1-100, so 0 is an unambiguous sentinel.
+    """
+    if not isinstance(weight, dict):
+        return weight
+    return weight.get(cluster, weight["default"])
+
+
+def _resolve_instance_weights(items, cluster):
+    """Resolve each instance's weight for ``cluster`` and drop disabled ones (weight 0)."""
+    resolved = [{**inst, "weight": _resolve_weight(inst["weight"], cluster)} for inst in items]
+    return [inst for inst in resolved if inst["weight"] != 0]
+
+
+def _validate_weight_value(val, fleet_name, def_file, section, i, label):
+    """Validate a single resolved weight value: int, sentinel 0, or Karpenter's 1-100 range."""
+    if not isinstance(val, int) or isinstance(val, bool):
+        raise ValueError(
+            f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: {label} must be an int, got {type(val).__name__}"
+        )
+    if not (val == 0 or 1 <= val <= 100):
+        raise ValueError(
+            f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: "
+            f"{label} must be 0 (disabled) or 1-100 (Karpenter's valid weight range), got {val}"
+        )
+
+
+def _validate_weight(weight, fleet_name, def_file, section, i):
+    """Validate a fleet instance's ``weight`` value: an int, or a mapping with a 'default' key.
+
+    Per-cluster keys are not checked against the real cluster list (that would
+    couple this generator to clusters.yaml) — a misspelled cluster key silently
+    falls back to 'default' instead of erroring.
+    """
+    if isinstance(weight, dict):
+        if "default" not in weight:
+            raise ValueError(
+                f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: "
+                f"weight mapping missing required 'default' key"
+            )
+        for key, val in weight.items():
+            _validate_weight_value(val, fleet_name, def_file, section, i, f"weight['{key}']")
+    elif not isinstance(weight, int) or isinstance(weight, bool):
+        raise ValueError(
+            f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: "
+            f"weight must be an int or a mapping with a 'default' key, got {type(weight).__name__}"
+        )
+    else:
+        _validate_weight_value(weight, fleet_name, def_file, section, i, "weight")
 
 
 def _validate_fleet(fleet_data, def_file):
@@ -613,6 +695,7 @@ def _validate_fleet(fleet_data, def_file):
                     raise ValueError(
                         f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: missing required key '{key}'"
                     )
+            _validate_weight(inst["weight"], fleet_name, def_file, section, i)
             if inst["type"] not in INSTANCE_SPECS:
                 raise ValueError(
                     f"Fleet '{fleet_name}' in {def_file.name}: instance type '{inst['type']}' "
@@ -621,7 +704,7 @@ def _validate_fleet(fleet_data, def_file):
                 )
 
 
-def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region=None):
+def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region=None, cluster=None):
     """Process a ``fleet:`` definition. Returns count of generated files."""
     _validate_fleet(fleet_data, def_file)
 
@@ -630,8 +713,11 @@ def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, regi
         log_info(f"  Fleet '{fleet_name}': skipped (excluded in region '{region}')")
         return 0
 
-    instances = fleet_data.get("instances", [])
-    release_instances = fleet_data.get("release", [])
+    instances = _resolve_instance_weights(fleet_data.get("instances", []), cluster)
+    release_instances = _resolve_instance_weights(fleet_data.get("release", []), cluster)
+
+    if fleet_data.get("instances") and not instances:
+        log_info(f"  Fleet '{fleet_name}': all instances weight 0 for cluster '{cluster}' — skipped entirely")
 
     log_info(f"  Fleet '{fleet_name}': {len(instances)} instance(s)")
 
@@ -673,6 +759,10 @@ def main():
     # Cluster region — used to honor exclude_regions on fleet/nodepool defs.
     # When unset, exclude_regions is a no-op (backward-compatible).
     region = os.environ.get("NODEPOOLS_REGION", "")
+    # Cluster-config key — used to resolve per-cluster weight maps (see
+    # defs/g6.yaml). When unset, a dict-valued weight falls back to its
+    # 'default' entry, matching today's scalar-weight behavior.
+    cluster = os.environ.get("NODEPOOLS_CLUSTER", "")
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
@@ -702,10 +792,12 @@ def main():
 
             # Determine format: fleet, fleets, or legacy nodepool
             if "fleet" in data:
-                generated += _process_fleet(data["fleet"], def_file, defs_dir, output_dir, module_name, region)
+                generated += _process_fleet(data["fleet"], def_file, defs_dir, output_dir, module_name, region, cluster)
             elif "fleets" in data:
                 for fleet_data in data["fleets"]:
-                    generated += _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region)
+                    generated += _process_fleet(
+                        fleet_data, def_file, defs_dir, output_dir, module_name, region, cluster
+                    )
             elif "nodepool" in data:
                 generated += _process_nodepool(data["nodepool"], def_file, defs_dir, output_dir, module_name, region)
             else:

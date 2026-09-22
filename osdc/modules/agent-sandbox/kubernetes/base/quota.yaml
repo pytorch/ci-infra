@@ -1,0 +1,31 @@
+# The concurrency ceiling, and the thing that stops a caller loop spending money.
+#
+# /run is unauthenticated — any pod in arc-runners can call it — and each call creates a
+# Job. Without a cap, a loop turns into pending pods, Karpenter turns pending pods into
+# ai-sandbox nodes, and nothing stops until an AWS quota does. The dispatcher's own
+# MAX_CONCURRENT_TASKS gives a caller a clean 429; this is the bound that holds even if
+# a dispatcher is buggy or someone runs a second one.
+#
+# Sized for 12 task slots (2 vCPU / 4 GiB / 20 GiB each = 24 / 48Gi / 240Gi) plus the
+# standing pods: 2 dispatchers (200m/256Mi, 500m/512Mi limits) and 2 sigv4-proxies
+# (100m/128Mi, 500m/256Mi limits). 12 slots is 4 fleet nodes at 3 per node.
+#
+# Raising the task slot size or the fleet's node_disk_size means redoing these numbers —
+# a quota that rejects pods is indistinguishable from a fleet that cannot schedule them
+# unless you go looking at events.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ai-sandbox
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  hard:
+    pods: "20"
+    requests.cpu: "25"
+    requests.memory: "50Gi"
+    requests.ephemeral-storage: "245Gi"
+    limits.cpu: "27"
+    limits.memory: "51Gi"
+    limits.ephemeral-storage: "245Gi"

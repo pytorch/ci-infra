@@ -54,7 +54,8 @@ jobs:
           # The buildkit client dials with gRPC's ~20s connect timeout, so a busy
           # / cold pool drops the connection fast (no HAProxy queue holds it).
           # Retry long enough to outlast a peer's ~10 min build when the pool is
-          # over-subscribed (9 builds > 8 pods): ~45 x (≈5s fail + 15s) ≈ 15 min.
+          # retry budget: ~45 x (≈5s fail + 15s) ≈ 15 min, enough to outlast a
+          # cold scale-up of the whole pool.
           for attempt in $(seq 1 45); do
             if buildctl --addr "$ENDPOINT" build \
                 --frontend dockerfile.v0 \
@@ -86,10 +87,11 @@ jobs:
     # per-build deadline, the build fails loudly with "only N/M after Xs" — so
     # this FAILS if autoscaling stalls.
     #
-    # Runs concurrently with `build`, so 9 builds contend for a max-8 pool: the
-    # odd one out waits for HAProxy to add capacity, exercising the same
-    # autoscaling path. The buildx-client retry tolerates the gRPC connect race
-    # while the pool is coming up cold.
+    # Runs concurrently with `build`, so 9 builds hit the pool at once. KEDA
+    # scales one pod per session, so the pool is driven to 9 — above TARGET, and
+    # below the configured max, which is what leaves headroom for a lagging pod.
+    # The buildx-client retry tolerates the gRPC connect race while the pool is
+    # coming up cold.
     runs-on:
       group: ${{ inputs.runner_group }}
       labels: [ "${{ inputs.runner_label }}" ]
