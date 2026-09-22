@@ -24,14 +24,19 @@ defaults:
   base_node_count: 6
   base_node_instance_type: m7i.12xlarge
   base_node_max_unavailable_percentage: 33
-  # TODO(CVE-2026-31431): when bumping to a kernel 6.12.85+ AL2023 AMI,
-  # remove osdc/base/kubernetes/algif-mitigation.yaml.
-  # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
-  # TODO(CVE-2026-43284): when bumping to a kernel with the DirtyFrag fix
-  # (6.1.170+ or 6.12.83+ on AL2023), remove
-  # osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
-  # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
-  base_node_ami_version: "v20260318"
+  # v20260903 ships kernel 6.12.103-127.188.amzn2023, which carries the KVM
+  # shadow-MMU use-after-free fix (CVE-2026-64561 "Zapscape", ALAS2023-2026-2057,
+  # first available in v20260818). Every Karpenter fleet had already picked this
+  # up on its own — those track `alias: al2023@latest` and rotate — so these
+  # pinned base node groups were the last nodes in any cluster still on 6.12.73.
+  #
+  # The same kernel clears both mitigation DaemonSets below. Remove them once the
+  # base nodes have actually rotated onto this AMI, not when this pin lands:
+  #   TODO(CVE-2026-31431): osdc/base/kubernetes/algif-mitigation.yaml, needs 6.12.85+
+  #   https://explore.alas.aws.amazon.com/CVE-2026-31431.html
+  #   TODO(CVE-2026-43284): osdc/base/kubernetes/dirtyfrag-mitigation.yaml, needs 6.12.83+
+  #   https://aws.amazon.com/security/security-bulletins/2026-027-aws/
+  base_node_ami_version: "v20260903"
   eks_version: "1.35"
   single_nat_gateway: false
 
@@ -45,6 +50,10 @@ defaults:
     registry_replicas: 4
     nginx_replicas: 6
     pdb_max_unavailable: 1  # conservative: at most 1 pod down per component
+    # Registry holding the PyTorch CI images, for harbor.ecr_pullthrough. Not
+    # derived from the deploying account: LF clusters are in 391835788720 and
+    # pull these same images cross-account.
+    ecr_pullthrough_registry: "308535385114.dkr.ecr.us-east-1.amazonaws.com"
 
   # --- Module defaults ---
   karpenter:
@@ -76,6 +85,24 @@ defaults:
     cpu_disruption_budget: "20%"
   buildkit:
     replicas_per_arch: 12
+    # instance type -> pods per node, in preference order. Each entry becomes
+    # its own weighted NodePool, so the first is what a normal scale-up uses
+    # and the rest are only reached when it cannot provision. The first entry
+    # sizes the pod; a later one must hold at least its stated count of that
+    # pod or generation fails. m6id.12xlarge is half a 24xlarge, so it takes
+    # one of the same pods the 24xlarge takes two of.
+    #
+    # Both m6id sizes draw on the same host fleet, so a family-wide shortage
+    # m8id is the cross-family escape for an m6id-wide shortage: gen-7 x86 has
+    # no instance-store variant, so gen-8 is the nearest family that still
+    # satisfies instanceStorePolicy: RAID0.
+    amd64_instance_types:
+      m6id.24xlarge: 2
+      m6id.12xlarge: 1
+      m8id.24xlarge: 2
+      m8id.12xlarge: 1
+    arm64_instance_types:
+      m7gd.16xlarge: 4
     autoscaling:
       enabled: false
   keda:
@@ -175,14 +202,26 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
-        amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
-        arm64_max: 8
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
+        # Headroom over the test's 8-backend target, not a capacity estimate.
+        amd64_max: 12
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
+        arm64_max: 12
     modules:
       - karpenter
       - arc
@@ -252,25 +291,46 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
-        amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
-        arm64_max: 8
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
+        # Headroom over the test's 8-backend target, not a capacity estimate.
+        amd64_max: 12
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
+        arm64_max: 12
     pypi_cache:
       replicas: 1
+    agent_sandbox:
+      # Bedrock model the agent invokes. Must be a cross-region inference profile
+      # ID (`us.` prefix), not a bare foundation-model ID: every Anthropic model
+      # in us-east-1 is INFERENCE_PROFILE-only, and the Claude 3 generation that
+      # still advertises ON_DEMAND is refused as provider-legacy. Haiku 4.5 is
+      # the cheapest active model.
+      default_model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     modules:
       - karpenter
       - arc
       - hf-cache
       - nodepools
+      - nodepools-agent-sandbox
       - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
+      - agent-sandbox
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -301,6 +361,10 @@ clusters:
       registry_replicas: 1
       nginx_replicas: 1
       pdb_max_unavailable: "100%"  # aggressive: staging has 1 replica each
+      # Proxy the private us-east-1 ECR through Harbor so CI image layers are
+      # served from this cluster's own bucket instead of cross-region S3.
+      # Staging-only while the ECR adapter's auth is being validated.
+      ecr_pullthrough: true
     karpenter:
       replicas: 1
       log_level: debug
@@ -331,25 +395,49 @@ clusters:
       scheduler_name: bin-pack-scheduler
       capacity_aware_fresh_multiplier: 1.0
     buildkit:
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
+      # Prod's shape on small instances; the integration test only builds
+      # alpine, so pod size is irrelevant. arm64 is the one to watch: 4 cold
+      # nodes to prod's 2, all pulling through a single-replica Harbor.
+      amd64_instance_types:
+        m6id.4xlarge: 2
+        m6id.2xlarge: 1
+      arm64_instance_types:
+        m7gd.4xlarge: 2
+        m7gd.2xlarge: 1
       autoscaling:
         enabled: true
-        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
-        amd64_max: 8
-        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
-        arm64_max: 8
+        # 2, not 1: the primary pool provisions a 2-pod 4xlarge either way, so the
+        # second pod is free — and at 1, maxSurge:0/maxUnavailable:1 takes the
+        # backend to zero on every rollout. Never 0: the session metric cannot
+        # leave 0 once the backend has no servers.
+        amd64_min: 2
+        # Headroom over the test's 8-backend target, not a capacity estimate.
+        amd64_max: 12
+        arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
+        arm64_max: 12
     pypi_cache:
       replicas: 1
+    agent_sandbox:
+      # Same model as ue1: a cross-region inference profile ID (`us.` prefix), not a
+      # bare foundation-model ID — every Anthropic model is INFERENCE_PROFILE-only and
+      # the Claude 3 generation still advertising ON_DEMAND is refused as
+      # provider-legacy. A `us.` profile routes within the US, so it resolves from
+      # us-east-2 as well, and the IRSA policy's region wildcard on foundation models
+      # already covers wherever it lands.
+      default_model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     modules:
       - karpenter
       - arc
       - hf-cache
       - nodepools
+      # The gVisor fleet. Its AMI is REGIONAL and must exist in us-east-2 before the
+      # fleet can launch a node: just build-agent-sandbox-ami meta-staging-aws-ue2
+      - nodepools-agent-sandbox
       - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
+      - agent-sandbox
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -367,6 +455,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.8.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     arc:
       chart_version: "0.14.1-jeanschmidt.19"
     node_compactor:
@@ -423,13 +513,9 @@ clusters:
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
       autoscaling:
         enabled: true
-        amd64_min: 2   # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 2   # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
         amd64_max: 360  # ~90d peak ≈180, x2 for headroom
         arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 30  # ~90d peak ≈15, x2 for headroom
@@ -468,16 +554,14 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
       autoscaling:
         enabled: true
-        amd64_min: 2   # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 2   # warm baseline: 2 pods (1x 24xlarge or 2x 12xlarge)
         amd64_max: 360  # ~90d peak ≈180, x2 for headroom
         arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 30  # ~90d peak ≈15, x2 for headroom
@@ -568,6 +652,8 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.16.0.0/16"
+    harbor:
+      ecr_pullthrough: true
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:

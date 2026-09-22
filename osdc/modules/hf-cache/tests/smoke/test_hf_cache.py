@@ -104,6 +104,17 @@ class TestHfCacheMountDaemonSet:
             "a soft ceiling with headroom, not the hard cap."
         )
 
+    def test_caps_tcp_receive_buffer(self, mount_pod_spec: dict) -> None:
+        """Socket memory is charged to the container cgroup and is what OOM-kills the mount;
+        rclone has no VFS read-concurrency cap, so the per-socket ceiling is bounded instead."""
+        cmd = " ".join(mount_pod_spec["containers"][0].get("command", []))
+        assert "/proc/sys/net/ipv4/tcp_rmem" in cmd, (
+            "rclone must cap tcp_rmem in its own netns — socket buffers are what breach the limit."
+        )
+        assert not mount_pod_spec.get("hostNetwork"), (
+            "the mount must not be hostNetwork: the tcp_rmem cap would then apply node-wide."
+        )
+
     def test_hostpath_bidirectional(self, mount_pod_spec: dict) -> None:
         # rclone mounts the parent /mnt (not /mnt/hf_cache) so a dead FUSE can't block
         # container creation — see the self-heal rationale in mount-daemonset.yaml.tpl.

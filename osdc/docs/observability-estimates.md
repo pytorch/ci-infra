@@ -5,7 +5,7 @@ Per-unit cost estimates for metrics cardinality and log volume. For architecture
 > **Stale estimates warning**: The numerical cardinality estimates in the "Estimated Metrics Load for meta-prod-aws-ue2" section below are stale for multiple reasons and should not be relied on without re-validation:
 > - **Per-source whitelists landed after the original calculation.** node-exporter is now ~4 series per node (was estimated at 200–400) and cAdvisor is restricted to control-plane namespaces (was estimated at 30–50 cluster-wide).
 > - **The kubelet ServiceMonitor is currently disabled** on IPv6-only EKS (`modules/monitoring/helm/values.yaml` `kubelet.enabled: false`). Both cAdvisor and `kubelet_*` series produce **zero** today. The per-source descriptions below describe the planned post-IPv6 state, not current behavior. See `observability.md` "Disabled scrapers (IPv6 migration)".
-> - **`meta-prod-aws-ue2` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 10 (5/arch × 2), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
+> - **`meta-prod-aws-ue2` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 24 (`replicas_per_arch: 12` × 2 archs, though KEDA makes the live count a range), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
 > - **Scale-set count is 50**, not 40 (42 upstream + 4 B200 + 4 H100).
 > - **`gha_capacity_*` family count is 16**, not 15.
 >
@@ -239,7 +239,7 @@ From `clusters.yaml` defaults plus `meta-prod-aws-ue2` overrides:
 | Harbor exporter / jobservice / portal / db / redis | 1 each | chart defaults |
 | node-compactor | 1 | single replica |
 | Monitoring Alloy | 2 | Hard-coded in `modules/monitoring/helm/alloy-values.yaml` (`controller.replicas: 2`, `clustering.enabled: true`) — there is no `monitoring.alloy_replicas` config knob |
-| BuildKit daemon | 10 | `defaults.buildkit.replicas_per_arch: 5` × 2 archs |
+| BuildKit daemon | 24 | `defaults.buildkit.replicas_per_arch: 12` × 2 archs; every buildkit cluster runs KEDA, so the live count varies between the per-arch min and max |
 | BuildKit HAProxy | 1 | single replica |
 | CoreDNS | 6 | `defaults.coredns.replicas: 6` (`meta-prod-aws-ue2` has no override) |
 | kube-state-metrics | 1 | single replica |
