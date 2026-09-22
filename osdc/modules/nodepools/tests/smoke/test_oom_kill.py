@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import email
 import json
+import re
 import subprocess
 import time
 import uuid
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -30,6 +32,7 @@ PROBE_LIMIT = "128Mi"
 PROBE_TIMEOUT_S = 180
 CONFIGZ_WORKERS = 8
 SCALED_AWAY = "scaled away"
+MIN_KUBELET = (1, 32)  # singleProcessOOMKill was added in kubelet 1.32
 
 # sleep is the canary and tail /dev/zero is the balloon: tail keeps the whole
 # unterminated stream in memory, so it is far and away the highest-badness
@@ -93,6 +96,25 @@ def _is_ready(node: dict) -> bool:
     return any(c["type"] == "Ready" and c["status"] == "True" for c in node.get("status", {}).get("conditions", []))
 
 
+def _kubelet_minor(node: dict) -> tuple[int, int]:
+    """(major, minor) from e.g. "v1.31.14-eks-a887778"; (0, 0) if unparseable."""
+    raw = node.get("status", {}).get("nodeInfo", {}).get("kubeletVersion", "")
+    match = re.match(r"v?(\d+)\.(\d+)", raw)
+    return (int(match[1]), int(match[2])) if match else (0, 0)
+
+
+@pytest.fixture(scope="module")
+def capable_nodes(current_nodes: list[dict]) -> list[dict]:
+    """Nodes whose kubelet is new enough for the field to exist at all.
+
+    singleProcessOOMKill landed in 1.32. An older kubelet drops the key without
+    comment, so asserting it there says nothing about whether we configured it
+    correctly -- it only restates the node's version. Those nodes are surfaced
+    as a warning by the test below instead of failing it.
+    """
+    return [n for n in current_nodes if _kubelet_minor(n) >= MIN_KUBELET]
+
+
 def _configz_oom_setting(entry: tuple[str, dict]) -> tuple[str, str | None]:
     """Ask one node's kubelet what it booted with.
 
@@ -117,6 +139,27 @@ def _configz_oom_setting(entry: tuple[str, dict]) -> tuple[str, str | None]:
     return nodepool, f"{name} reports {value!r} (kubelet {version})"
 
 
+def _warn_about_kubelets_too_old(current_nodes: list[dict]) -> None:
+    """Surface nodes the flag cannot reach, without failing on them.
+
+    Kept visible rather than silently filtered: a pool stuck on an old kubelet
+    is a real gap in coverage, it just is not this flag's bug to report.
+    """
+    stale: dict[str, str] = {}
+    for node in current_nodes:
+        if _kubelet_minor(node) >= MIN_KUBELET:
+            continue
+        pool = node["metadata"]["labels"][NODEPOOL_LABEL]
+        stale.setdefault(pool, node["status"]["nodeInfo"]["kubeletVersion"])
+    if stale:
+        wanted = ".".join(map(str, MIN_KUBELET))
+        warnings.warn(
+            f"singleProcessOOMKill is unreachable on {len(stale)} nodepool(s) whose kubelet predates {wanted}: "
+            f"{dict(sorted(stale.items()))}. Their OOMs still kill the whole container.",
+            stacklevel=2,
+        )
+
+
 class TestNodeClassRequestsIt:
     def test_every_node_class_enables_single_process_oom_kill(self, node_classes: dict[str, dict]) -> None:
         missing = sorted(
@@ -128,17 +171,20 @@ class TestNodeClassRequestsIt:
 
 
 class TestKubeletAppliedIt:
-    def test_kubelets_report_single_process_oom_kill(self, current_nodes: list[dict]) -> None:
+    def test_kubelets_report_single_process_oom_kill(
+        self, capable_nodes: list[dict], current_nodes: list[dict]
+    ) -> None:
         """Ask one node per nodepool what config it actually booted with.
 
         The EC2NodeClass only proves what we asked for; configz is the kubelet's
         own answer, so a userData block that nodeadm parsed but ignored shows up
         here and nowhere else.
         """
-        if not current_nodes:
-            pytest.skip("no nodes on the current EC2NodeClass revision yet")
+        _warn_about_kubelets_too_old(current_nodes)
+        if not capable_nodes:
+            pytest.skip(f"no nodes on the current revision run kubelet >= {'.'.join(map(str, MIN_KUBELET))}")
 
-        sample = {n["metadata"]["labels"][NODEPOOL_LABEL]: n for n in current_nodes}
+        sample = {n["metadata"]["labels"][NODEPOOL_LABEL]: n for n in capable_nodes}
         with ThreadPoolExecutor(max_workers=CONFIGZ_WORKERS) as pool:
             answers = list(pool.map(_configz_oom_setting, sorted(sample.items())))
 
@@ -161,13 +207,13 @@ class TestOOMKillsOnlyTheOffender:
     nothing and costs a pod that deliberately OOMs on whichever node it lands on.
     """
 
-    def test_a_container_oom_spares_the_rest_of_the_container(self, current_nodes: list[dict], cluster_id: str) -> None:
+    def test_a_container_oom_spares_the_rest_of_the_container(self, capable_nodes: list[dict], cluster_id: str) -> None:
         if not cluster_id.startswith("meta-staging"):
             pytest.skip(f"behavioural OOM probe runs on staging only, not {cluster_id}")
-        if not current_nodes:
-            pytest.skip("no nodes on the current EC2NodeClass revision yet")
+        if not capable_nodes:
+            pytest.skip("no nodes on the current revision run a kubelet that supports the flag")
 
-        node = current_nodes[0]["metadata"]["name"]
+        node = capable_nodes[0]["metadata"]["name"]
         name = f"osdc-oom-probe-{uuid.uuid4().hex[:8]}"
         manifest = {
             "apiVersion": "v1",
