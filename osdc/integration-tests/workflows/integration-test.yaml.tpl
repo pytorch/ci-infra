@@ -239,6 +239,65 @@ jobs:
   # END_NO_CACHE_ENFORCER
   # END_ARC_RUNNERS
 
+  # BEGIN_OOM_KILL
+  # ── Single-process OOM kill ─────────────────────────────────────────
+  # A step that overruns the container's memory limit must lose only the process
+  # that overran. Under the kubelet default (memory.oom.group=1) the kernel kills
+  # the cgroup as a unit, which takes the hook's rpc-server and the step's shell
+  # with it — the job then reports a bare exit 137 and nothing about which step
+  # died, because whatever would have reported it died in the same sweep.
+  #
+  # The second step is the real assertion: it only runs if the runner outlived
+  # the OOM. Needs singleProcessOOMKill in the nodepools kubelet config.
+  test-oom-kills-only-the-offender:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Overrun the memory limit in a child process
+        run: |
+          LIMIT=$(cat /sys/fs/cgroup/memory.max)
+          if [ "$LIMIT" = "max" ]; then
+            echo "FAIL: container has no memory limit — this test would consume the node"
+            exit 1
+          fi
+          echo "memory.max=$LIMIT"
+          echo "memory.oom.group=$(cat /sys/fs/cgroup/memory.oom.group)"
+          echo "oom_score_adj=$(cat /proc/self/oom_score_adj)"
+
+          # Backgrounded so the balloon is its own process: the kernel should pick
+          # it on RSS alone and leave this shell, the runner and rpc-server alone.
+          LIMIT="$LIMIT" python3 -c '
+          import os
+          limit = int(os.environ["LIMIT"])
+          # Overrun by a clear margin, then give up rather than eat the node if
+          # the cgroup turns out not to be enforcing its limit at all.
+          cap = limit + 4 * 1024**3
+          chunks, total = [], 0
+          while total < cap:
+              chunks.append(bytearray(256 * 1024 * 1024))
+              total += 256 * 1024 * 1024
+          raise SystemExit(9)
+          ' &
+          BALLOON=$!
+          wait "$BALLOON" && rc=0 || rc=$?
+          echo "balloon exited rc=$rc"
+
+          if [ "$rc" -eq 9 ]; then
+            echo "FAIL: allocated 4GiB past memory.max without being killed — limit not enforced"
+            exit 1
+          fi
+          if [ "$rc" -ne 137 ]; then
+            echo "FAIL: expected the balloon to be SIGKILLed (137), got $rc"
+            exit 1
+          fi
+          echo "PASS: the balloon was killed and this shell survived it"
+
+      - name: Verify the runner survived and still reports steps
+        run: |
+          echo "PASS: this step running at all proves the rpc-server outlived the container OOM"
+  # END_OOM_KILL
+
   # BEGIN_HF_CACHE
   # ── HF Cache: read-only mount, env, and offline model load ──────────
   test-hf-cache-mount:

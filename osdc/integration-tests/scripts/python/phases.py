@@ -40,6 +40,7 @@ TAG_REQUIREMENTS: dict[str, list[str]] = {
     "HF_CACHE": ["arc-runners", "hf-cache"],
     "HF_CACHE_OIDC": ["arc-runners", "hf-cache"],
     "GPU_T4": ["arc-runners", "nodepools"],
+    "OOM_KILL": ["arc-runners", "nodepools"],
     "BUILDKIT": ["arc-runners", "buildkit"],
     "CACHE_ENFORCER": ["arc-runners", "cache-enforcer"],
     "RELEASE": ["arc-runners"],
