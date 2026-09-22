@@ -1,12 +1,15 @@
 # ARC runner definition: l-x86aavx2-29-113-l4
 # Instance type: g6.8xlarge — 1-GPU L4, 32c/128Gi node
-# Actual K8s capacity ~118.4Gi. Max job memory after all overhead: 113Gi.
+# 104Gi, not the 113Gi the label says: node capacity is 121241Mi and Karpenter
+# charges 1355m / 10078Mi on a workload node, so 113Gi demands 125790Mi and
+# overshoots. The label keeps -113- because renaming is a cross-repo contract
+# change; Karpenter reads the request below.
 runner:
   name: l-x86aavx2-29-113-l4
   instance_type: g6.8xlarge
   disk_size: 150
   vcpu: 29
-  memory: 113Gi
+  memory: 104Gi
   gpu: 1
   proactive_capacity: 0
   hud_failure_base_capacity: 30

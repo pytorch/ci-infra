@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PyTorch GPU Infrastructure</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #000; height: 100vh; overflow: hidden;
+      }
+      .carousel { position: relative; width: 100%; height: 100vh; }
+      .slide {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        opacity: 0; transition: opacity 0.5s ease-in-out;
+        display: flex; justify-content: center; align-items: center;
+      }
+      .slide.active { opacity: 1; z-index: 1; }
+
+      /* ── Title ── */
+      .title-slide {
+        background: linear-gradient(135deg, #0a0a0a 0%, #111827 50%, #0f0c29 100%);
+        flex-direction: column; text-align: center; padding: 60px;
+        position: relative; overflow: hidden;
+      }
+      .title-slide::before {
+        content: ''; position: absolute; top: -40%; left: -40%; width: 180%; height: 180%;
+        background: radial-gradient(ellipse at 40% 60%, rgba(118,185,0,0.05) 0%, transparent 50%),
+                    radial-gradient(ellipse at 60% 40%, rgba(56,189,248,0.05) 0%, transparent 50%);
+        pointer-events: none;
+      }
+      .title-slide .logo { height: 80px; margin-bottom: 30px; position: relative; }
+      .title-slide h1 {
+        font-size: 3.8rem; font-weight: 800; letter-spacing: -2px; color: white;
+        margin-bottom: 16px; position: relative;
+      }
+      .title-slide h1 span {
+        background: linear-gradient(90deg, #76b900, #38bdf8);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      }
+      .title-slide .subtitle {
+        font-size: 1.5rem; color: rgba(148,163,184,0.6); margin-bottom: 50px; position: relative;
+      }
+      .title-slide .presenters {
+        font-size: 1.3rem; color: rgba(148,163,184,0.4); position: relative;
+      }
+
+      /* ── Picker slides (2 tiles, one highlighted one greyed) ── */
+      .picker-slide {
+        background: #0a0a0a; flex-direction: row; gap: 40px; padding: 60px 80px;
+        color: white;
+      }
+      .tile {
+        flex: 1; border-radius: 22px; padding: 50px 44px;
+        display: flex; flex-direction: column; align-items: center;
+        text-align: center; transition: all 0.5s ease;
+        position: relative; max-width: 560px;
+      }
+      .tile .tile-icon { font-size: 4rem; margin-bottom: 20px; }
+      .tile h2 { font-size: 2.4rem; font-weight: 800; margin-bottom: 12px; }
+      .tile p { font-size: 1.15rem; line-height: 1.6; }
+      .tile .tile-arrow {
+        margin-top: 24px; font-size: 1.2rem; font-weight: 600;
+        opacity: 0; transition: opacity 0.5s;
+      }
+
+      .tile-active {
+        border: 2px solid;
+        transform: scale(1.02);
+        box-shadow: 0 0 40px rgba(0,0,0,0.3);
+      }
+      .tile-active .tile-arrow { opacity: 1; }
+
+      .tile-greyed {
+        border: 2px solid rgba(255,255,255,0.06);
+        background: rgba(255,255,255,0.015);
+        opacity: 0.3;
+        filter: grayscale(0.8);
+      }
+
+      .tile-ci.tile-active {
+        background: rgba(56,189,248,0.06);
+        border-color: rgba(56,189,248,0.3);
+      }
+      .tile-ci h2 { color: #38bdf8; }
+      .tile-ci p { color: rgba(148,163,184,0.6); }
+      .tile-ci .tile-arrow { color: #38bdf8; }
+
+      .tile-dev.tile-active {
+        background: rgba(118,185,0,0.06);
+        border-color: rgba(118,185,0,0.3);
+      }
+      .tile-dev h2 { color: #76b900; }
+      .tile-dev p { color: rgba(148,163,184,0.6); }
+      .tile-dev .tile-arrow { color: #76b900; }
+
+      /* ── Detail slides ── */
+      .detail-slide {
+        background: #0a0a0a; flex-direction: column; padding: 50px 100px;
+        color: white; justify-content: center; align-items: center;
+      }
+      .detail-slide h1 {
+        font-size: 3rem; font-weight: 700; margin-bottom: 40px; text-align: center;
+      }
+      .detail-slide .col {
+        background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 18px; padding: 40px 48px; max-width: 900px; width: 100%;
+      }
+      .detail-slide .col-header {
+        display: flex; align-items: center; gap: 14px; margin-bottom: 28px;
+        padding-bottom: 18px; border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .detail-slide .col-header .icon { font-size: 2.2rem; }
+      .detail-slide .col-header h2 { font-size: 1.8rem; font-weight: 700; }
+
+      .detail-slide ul { list-style: none; }
+      .detail-slide li {
+        font-size: 1.25rem; color: rgba(255,255,255,0.6); line-height: 1.6;
+        padding: 10px 0; padding-left: 1.8em; position: relative;
+      }
+      .detail-slide li::before {
+        content: ""; position: absolute; left: 0; top: 20px;
+        width: 10px; height: 10px; border-radius: 50%;
+      }
+      .detail-slide li strong { color: rgba(255,255,255,0.9); font-weight: 600; }
+
+      .detail-slide .stat-row {
+        display: flex; gap: 20px; margin-top: 24px; padding-top: 20px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+      }
+      .detail-slide .mini-stat { flex: 1; text-align: center; }
+      .detail-slide .mini-stat .num { font-size: 2.2rem; font-weight: 800; }
+      .detail-slide .mini-stat .label { font-size: 0.8rem; color: rgba(148,163,184,0.4); }
+
+      .ci-accent h1 { color: #38bdf8; }
+      .ci-accent .col-header h2 { color: #38bdf8; }
+      .ci-accent li::before { background: #38bdf8; }
+      .ci-accent .num {
+        background: linear-gradient(135deg, #38bdf8, #818cf8);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      }
+
+      .dev-accent h1 { color: #76b900; }
+      .dev-accent .col-header h2 { color: #76b900; }
+      .dev-accent li::before { background: #76b900; }
+      .dev-accent .num {
+        background: linear-gradient(135deg, #76b900, #a0e040);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      }
+
+      /* ── Nav ── */
+      .nav-controls {
+        position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+        z-index: 1000; display: flex; gap: 15px; align-items: center;
+      }
+      .nav-btn {
+        background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.15);
+        color: rgba(255,255,255,0.6); padding: 12px 20px; border-radius: 25px; cursor: pointer;
+        transition: all 0.3s; font-size: 16px; backdrop-filter: blur(10px);
+      }
+      .nav-btn:hover { background: rgba(255,255,255,0.2); }
+      .indicator {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: rgba(255,255,255,0.2); cursor: pointer; transition: all 0.3s;
+      }
+      .indicator.active { background: rgba(255,255,255,0.7); transform: scale(1.3); }
+      .slide-indicators { display: flex; gap: 8px; }
+      .slide-counter {
+        position: fixed; top: 20px; right: 30px; z-index: 1000;
+        color: rgba(255,255,255,0.3); font-size: 14px; font-family: "SF Mono", monospace;
+        background: rgba(0,0,0,0.4); padding: 6px 12px; border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="carousel">
+
+      <!-- 1: Title -->
+      <div class="slide active title-slide">
+        <img class="logo" src="https://upload.wikimedia.org/wikipedia/commons/9/96/Pytorch_logo.png" alt="PyTorch" />
+        <h1>GPU Infrastructure for <span>Open Source</span></h1>
+        <div class="subtitle">CI at 7,000 runners · Dev servers from T4 to B300 · All on Kubernetes</div>
+        <div class="presenters">Wouter Devriendt · Jean Schmidt</div>
+      </div>
+
+      <!-- 2: Picker — both active (intro) -->
+      <div class="slide picker-slide">
+        <div class="tile tile-ci tile-active">
+          <div class="tile-icon">⚡</div>
+          <h2>CI Infrastructure</h2>
+          <p>Testing every PR across 6 GPU vendors.<br/>7,367 concurrent runners at peak.</p>
+          <div class="tile-arrow">→ Jean Schmidt</div>
+        </div>
+        <div class="tile tile-dev tile-active">
+          <div class="tile-icon">🖥️</div>
+          <h2>Dev Servers</h2>
+          <p>SSH into GPUs in 15 seconds.<br/>T4 to B300, multi-node ready.</p>
+          <div class="tile-arrow">→ Wouter Devriendt</div>
+        </div>
+      </div>
+
+      <!-- 3: Picker — CI highlighted -->
+      <div class="slide picker-slide">
+        <div class="tile tile-ci tile-active">
+          <div class="tile-icon">⚡</div>
+          <h2>CI Infrastructure</h2>
+          <p>Testing every PR across 6 GPU vendors.<br/>7,367 concurrent runners at peak.</p>
+          <div class="tile-arrow">→ Jean Schmidt</div>
+        </div>
+        <div class="tile tile-dev tile-greyed">
+          <div class="tile-icon">🖥️</div>
+          <h2>Dev Servers</h2>
+          <p>SSH into GPUs in 15 seconds.<br/>T4 to B300, multi-node ready.</p>
+          <div class="tile-arrow">→ Wouter Devriendt</div>
+        </div>
+      </div>
+
+      <!-- 4: CI detail -->
+      <div class="slide detail-slide ci-accent">
+        <h1>CI: Testing PyTorch</h1>
+        <div class="col">
+          <div class="col-header">
+            <div class="icon">⚡</div>
+            <h2>The Challenge</h2>
+          </div>
+          <ul>
+            <li><strong>~100 PRs/day</strong> — every one needs GPU test suites</li>
+            <li><strong>400K test cases per PR</strong> across CUDA, ROCm, XPU</li>
+            <li>Peak: <strong>7,367 concurrent runners</strong> on 2,100 nodes</li>
+            <li>Was EC2-locked — couldn't accept donated GPU capacity</li>
+          </ul>
+          <div class="stat-row">
+            <div class="mini-stat"><div class="num">8,500</div><div class="label">jobs / hour</div></div>
+            <div class="mini-stat"><div class="num">1.5M</div><div class="label">CI min / day</div></div>
+            <div class="mini-stat"><div class="num">6</div><div class="label">GPU vendors</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5: Picker — Dev highlighted -->
+      <div class="slide picker-slide">
+        <div class="tile tile-ci tile-greyed">
+          <div class="tile-icon">⚡</div>
+          <h2>CI Infrastructure</h2>
+          <p>Testing every PR across 6 GPU vendors.<br/>7,367 concurrent runners at peak.</p>
+          <div class="tile-arrow">→ Jean Schmidt</div>
+        </div>
+        <div class="tile tile-dev tile-active">
+          <div class="tile-icon">🖥️</div>
+          <h2>Dev Servers</h2>
+          <p>SSH into GPUs in 15 seconds.<br/>T4 to B300, multi-node ready.</p>
+          <div class="tile-arrow">→ Wouter Devriendt</div>
+        </div>
+      </div>
+
+      <!-- 6: Dev detail -->
+      <div class="slide detail-slide dev-accent">
+        <h1>Dev: Building PyTorch</h1>
+        <div class="col">
+          <div class="col-header">
+            <div class="icon">🖥️</div>
+            <h2>The Challenge</h2>
+          </div>
+          <ul>
+            <li>Contributors need <strong>SSH access to real GPUs</strong></li>
+            <li>Debug CUDA kernels, profile with <strong>ncu / nsys</strong></li>
+            <li>Multi-node distributed training — <strong>up to 64 GPUs</strong></li>
+            <li>No cloud account needed — just a <strong>GitHub username</strong></li>
+          </ul>
+          <div class="stat-row">
+            <div class="mini-stat"><div class="num">~15s</div><div class="label">cold start</div></div>
+            <div class="mini-stat"><div class="num">T4→B300</div><div class="label">GPU range</div></div>
+            <div class="mini-stat"><div class="num">87M</div><div class="label">pip installs/mo</div></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="slide-counter" id="counter">1 / 5</div>
+    <div class="nav-controls">
+      <button class="nav-btn" onclick="go(current-1)">&#8592;</button>
+      <div class="slide-indicators" id="dots"></div>
+      <button class="nav-btn" onclick="go(current+1)">&#8594;</button>
+    </div>
+
+    <script>
+      let current = 0;
+      const slides = document.querySelectorAll('.slide');
+      const total = slides.length;
+      const dotsEl = document.getElementById('dots');
+      const counter = document.getElementById('counter');
+      for (let i = 0; i < total; i++) {
+        const d = document.createElement('div');
+        d.className = 'indicator' + (i === 0 ? ' active' : '');
+        d.onclick = () => go(i);
+        dotsEl.appendChild(d);
+      }
+      function go(n) {
+        current = Math.max(0, Math.min(n, total - 1));
+        slides.forEach(s => s.classList.remove('active'));
+        document.querySelectorAll('.indicator').forEach(d => d.classList.remove('active'));
+        slides[current].classList.add('active');
+        document.querySelectorAll('.indicator')[current].classList.add('active');
+        counter.textContent = `${current + 1} / ${total}`;
+      }
+      document.addEventListener('keydown', e => {
+        if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(current + 1); }
+        if (e.key === 'ArrowLeft') go(current - 1);
+        if (e.key === 'f' || e.key === 'F') {
+          document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+        }
+      });
+    </script>
+  </body>
+</html>

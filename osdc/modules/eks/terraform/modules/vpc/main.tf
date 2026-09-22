@@ -226,3 +226,24 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = var.single_nat_gateway ? aws_route_table.private[0].id : aws_route_table.private[count.index].id
 }
+
+# S3 Gateway Endpoint — keeps in-region S3 off the NAT gateways.
+# See docs/s3-gateway-endpoint.md.
+#
+# The prefix-list routes are created by ModifyVpcEndpoint, not CreateRoute, so
+# they cannot be inline `route` blocks on aws_route_table.private above. The AWS
+# provider skips vpce- gateway routes when diffing, so the two coexist — but a
+# provider bump should be checked with a second plan.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.this.id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = aws_route_table.private[*].id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.name}-s3"
+    }
+  )
+}

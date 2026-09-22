@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Args: $1=cluster-id
 #
-# Builds the container image (python + nsenter), pushes it to Harbor,
+# Builds the container image, pushes it to Harbor,
 # and applies the kustomized manifests with the image reference substituted.
 
 # shellcheck disable=SC2034  # CLUSTER is part of the deploy.sh interface

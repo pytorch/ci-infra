@@ -19,7 +19,11 @@ import yaml
 _GEN_DIR = Path(__file__).resolve().parents[2] / "scripts" / "python"
 if str(_GEN_DIR) not in sys.path:
     sys.path.insert(0, str(_GEN_DIR))
-from generate_nodepools import _build_fleet_nodepool_def, _is_excluded_for_region  # noqa: E402
+from generate_nodepools import (  # noqa: E402
+    _build_fleet_nodepool_def,
+    _is_excluded_for_region,
+    _resolve_instance_weights,
+)
 
 pytestmark = [pytest.mark.live]
 
@@ -39,7 +43,7 @@ def _get_defs_dir(upstream_dir: Path) -> Path:
     return upstream_dir / "modules" / "nodepools" / "defs"
 
 
-def _load_all_defs(upstream_dir: Path, region: str | None = None) -> list[dict]:
+def _load_all_defs(upstream_dir: Path, region: str | None = None, cluster: str | None = None) -> list[dict]:
     """Load all nodepool definition YAML files and return the nodepool dicts.
 
     Supports three formats: ``nodepool:`` (legacy), ``fleet:`` (single fleet),
@@ -50,6 +54,11 @@ def _load_all_defs(upstream_dir: Path, region: str | None = None) -> list[dict]:
     ``_is_excluded_for_region`` behavior so the expected NodePool set matches
     what was actually rendered for the cluster. When ``region`` is None
     (offline def-validation tests), all defs are returned regardless.
+
+    ``cluster`` resolves per-cluster weight maps the same way the generator
+    does, so an instance weighted to 0 for this cluster (e.g. g6.48xlarge on
+    lf-prod-aws-ue1/ue2) is dropped from the expected set instead of being
+    asserted as a missing NodePool CR.
     """
     defs_dir = _get_defs_dir(upstream_dir)
     defs = []
@@ -64,26 +73,28 @@ def _load_all_defs(upstream_dir: Path, region: str | None = None) -> list[dict]:
         elif "fleet" in data:
             if _is_excluded_for_region(data["fleet"], region):
                 continue
-            defs.extend(_expand_fleet(data["fleet"]))
+            defs.extend(_expand_fleet(data["fleet"], cluster))
         elif "fleets" in data:
             for fleet_data in data["fleets"]:
                 if _is_excluded_for_region(fleet_data, region):
                     continue
-                defs.extend(_expand_fleet(fleet_data))
+                defs.extend(_expand_fleet(fleet_data, cluster))
     return defs
 
 
-def _expand_fleet(fleet_data: dict) -> list[dict]:
+def _expand_fleet(fleet_data: dict, cluster: str | None = None) -> list[dict]:
     """Expand a fleet definition into individual nodepool-like dicts for validation.
 
     Delegates naming to the generator's ``_build_fleet_nodepool_def`` so the smoke
     expected-name set matches what the generator actually renders — including
     collision-aware family qualification when two families share a size suffix.
+    Resolves per-cluster weight and drops weight-0 instances via
+    ``_resolve_instance_weights``, mirroring the generator's ``_process_fleet``.
     """
     result = []
-    for inst in fleet_data.get("instances", []):
+    for inst in _resolve_instance_weights(fleet_data.get("instances", []), cluster):
         result.append(_build_fleet_nodepool_def(fleet_data, inst))
-    for inst in fleet_data.get("release", []):
+    for inst in _resolve_instance_weights(fleet_data.get("release", []), cluster):
         result.append(
             _build_fleet_nodepool_def(
                 fleet_data,
@@ -148,15 +159,18 @@ class TestNodePoolDefs:
 class TestNodePoolCRs:
     """Verify Karpenter NodePool CRs exist for each definition."""
 
-    def test_nodepools_exist(self, all_nodepools: dict, upstream_dir: Path, cluster_config: dict) -> None:
+    def test_nodepools_exist(
+        self, all_nodepools: dict, upstream_dir: Path, cluster_config: dict, cluster_id: str
+    ) -> None:
         """Each nodepool def has a matching NodePool CR in the cluster.
 
         Honors ``exclude_regions`` on fleet/nodepool defs so fleets that the
         generator correctly skipped for this cluster's region are not asserted
-        to exist as CRs.
+        to exist as CRs, and resolves per-cluster weight so an instance
+        weighted to 0 for this cluster is not asserted as a missing CR.
         """
         region = cluster_config["cluster"].get("region", "")
-        defs = _load_all_defs(upstream_dir, region=region)
+        defs = _load_all_defs(upstream_dir, region=region, cluster=cluster_id)
         existing = {np["metadata"]["name"] for np in all_nodepools.get("items", [])}
         missing = [d["name"] for d in defs if d["name"] not in existing]
         assert not missing, f"NodePool CRs not found for definitions: {missing}"
@@ -170,15 +184,21 @@ class TestNodePoolCRs:
 class TestNoStaleNodePools:
     """Verify no orphaned NodePools exist that don't match any definition."""
 
-    def test_no_stale_nodepools(self, all_nodepools: dict, upstream_dir: Path, cluster_config: dict) -> None:
+    def test_no_stale_nodepools(
+        self, all_nodepools: dict, upstream_dir: Path, cluster_config: dict, cluster_id: str
+    ) -> None:
         """All NodePools with the nodepools module label match a known def.
 
         Honors ``exclude_regions`` so a leftover CR from a previous deploy
         (when the def did not yet have ``exclude_regions``) is correctly
-        flagged as stale rather than masked as "expected".
+        flagged as stale rather than masked as "expected". Also resolves
+        per-cluster weight, so an instance weighted to 0 for this cluster is
+        excluded from ``expected`` — meaning a lingering CR for it (e.g. from
+        before the weight was set to 0) is correctly flagged as stale here
+        too, not just cleaned up by ``deploy.sh``'s own stale-resource pass.
         """
         region = cluster_config["cluster"].get("region", "")
-        defs = _load_all_defs(upstream_dir, region=region)
+        defs = _load_all_defs(upstream_dir, region=region, cluster=cluster_id)
         expected = {d["name"] for d in defs}
         managed = [
             np
