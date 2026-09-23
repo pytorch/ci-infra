@@ -134,6 +134,31 @@ def test_invalid_yaml_is_reported_with_the_file_name(tmp_path):
         manifest.load_dir(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The case that matters: a later key erasing an earlier restriction.
+        "clients:\n  workflows: [.github/workflows/a.yaml]\n  workflows: []\n",
+        "name: example\nname: other\n",
+        "base: &b {triggers: [push]}\nclients:\n  <<: *b\n",
+        'owner: !!str {=: "a", =: "b"}\n',
+        'owner: !!str {=: "a", <<: {=: "b"}}\n',
+    ],
+    ids=["nested-restriction-erased", "top-level", "merge-key", "scalar-tagged-duplicate", "scalar-tagged-merge"],
+)
+def test_a_repeated_or_merged_key_is_refused_before_parsing(tmp_path, text):
+    (tmp_path / "example.yaml").write_text(text)
+    with pytest.raises(
+        ManifestError, match=r"example\.yaml: not valid YAML.*(duplicate key|merge keys|stand in for a scalar)"
+    ):
+        manifest.load_dir(tmp_path)
+
+
+def test_the_strict_loader_still_reads_a_normal_manifest(tmp_path):
+    (tmp_path / "example.yaml").write_text(yaml.safe_dump(GOOD))
+    assert manifest.load_dir(tmp_path)["example"] == manifest.parse(copy.deepcopy(GOOD), "example")
+
+
 def test_every_checked_in_manifest_loads():
     loaded = manifest.load_dir(CAPABILITIES)
     assert loaded, "no manifests are checked in"
