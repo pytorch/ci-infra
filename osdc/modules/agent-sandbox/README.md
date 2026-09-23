@@ -213,6 +213,31 @@ manifest allows. The model is the manifest's `model.id`, or `BEDROCK_DEFAULT_MOD
 (set at deploy time from `clusters.yaml` → `agent_sandbox.default_model_id`) when the
 manifest leaves it empty or the call is unauthenticated.
 
+## Calling it from a workflow
+
+`action/` is a composite action that mints the job's OIDC token, calls `/run` under a
+manifest, and exposes `task-id`, `report` and `result-file` as outputs. It retries only a
+`429` (jittered backoff under `max-wait` seconds), never a failure after the task was
+admitted. Pin it by commit sha; it runs with the calling job's identity.
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: pytorch/ci-infra/osdc/modules/agent-sandbox/action@<sha>
+    id: sandbox
+    with:
+      manifest: ciforge-pr-review
+      repo: pytorch/pytorch
+      ref: main
+      task: "Summarize the build system."
+  # The report is model output: write it to the step summary, never echo it into the
+  # log, where a line starting with `::` would be read as a workflow command.
+  - run: printf '%s\n' "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+    env:
+      REPORT: ${{ steps.sandbox.outputs.report }}
+```
+
 ## Capacity
 
 A sandbox slot is **2 vCPU / 4 GiB / 20 GiB disk with requests == limits** (Guaranteed QoS), so
