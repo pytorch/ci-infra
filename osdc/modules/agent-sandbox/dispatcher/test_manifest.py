@@ -103,6 +103,53 @@ def test_a_malformed_manifest_is_refused(path, value, why):
         manifest.parse(mutated(path, value), "example")
 
 
+def test_effects_parse():
+    document = copy.deepcopy(GOOD)
+    document["capabilities"] = {
+        "effects": [
+            {"effect": "pr_comment", "max_bytes": 1000},
+            {"effect": "check_run", "name": "ai-review", "conclusions": ["neutral", "success"]},
+        ]
+    }
+    m = manifest.parse(document, "example")
+    assert [e.kind for e in m.effects] == ["pr_comment", "check_run"]
+    assert m.effects[0].max_bytes == 1000
+    assert m.effects[1].conclusions == {"neutral", "success"}
+
+
+def test_no_capabilities_means_read_only():
+    assert manifest.parse(GOOD, "example").effects == ()
+
+
+@pytest.mark.parametrize(
+    "effects",
+    [
+        "pr_comment",
+        [{"effect": "merge"}],
+        [{"effect": "pr_comment", "name": "x"}],
+        [{"effect": "pr_comment", "max_bytes": 0}],
+        [{"effect": "pr_comment", "max_bytes": True}],
+        [{"effect": "pr_comment", "max_bytes": 10**9}],
+        [{"effect": "check_run", "name": "ai-review"}],
+        [{"effect": "check_run", "conclusions": ["neutral"]}],
+        [{"effect": "check_run", "name": "ai-review", "conclusions": ["action_required"]}],
+        [{"effect": "check_run", "name": "bad\nname", "conclusions": ["neutral"]}],
+        [{"effect": "pr_comment"}, {"effect": "pr_comment"}],
+        [{"effect": "pr_comment", "surprise": 1}],
+    ],
+)
+def test_malformed_effects_are_refused(effects):
+    document = copy.deepcopy(GOOD)
+    document["capabilities"] = {"effects": effects}
+    with pytest.raises(ManifestError):
+        manifest.parse(document, "example")
+
+
+def test_a_trailing_newline_does_not_slip_past_a_pattern():
+    with pytest.raises(ManifestError):
+        manifest.parse(mutated("clients.repos.0.repository_id", "1\n"), "example")
+
+
 def test_the_same_client_repo_twice_is_refused():
     document = copy.deepcopy(GOOD)
     document["clients"]["repos"].append(dict(document["clients"]["repos"][0]))

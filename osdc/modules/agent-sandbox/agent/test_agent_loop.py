@@ -535,3 +535,58 @@ class TestLoop:
         out = agent_loop.run_agent(invoke, "m", "p", repo, clock=clock)
         assert out["tool_calls"] == 1
         assert "time limit" in out["error"]
+
+
+ALLOWED = [
+    {"effect": "pr_comment", "max_bytes": 50},
+    {"effect": "check_run", "max_bytes": 100, "conclusions": ["neutral"]},
+]
+
+
+class TestProposals:
+    def test_the_propose_tool_is_offered_only_when_effects_are_allowed(self, repo):
+        assert [t["name"] for t in repo.specs()] == ["list_dir", "read_file", "search"]
+        allowed = RepoTools(repo.dest, ALLOWED)
+        propose = allowed.specs()[-1]
+        assert propose["name"] == "propose_effect"
+        assert propose["input_schema"]["properties"]["effect"]["enum"] == ["check_run", "pr_comment"]
+        assert agent_loop.PROPOSE_EFFECT["input_schema"]["properties"]["effect"]["enum"] == [], (
+            "the template is not mutated"
+        )
+
+    def test_a_valid_proposal_is_recorded_not_performed(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        assert "proposed pr_comment" in tools.run("propose_effect", {"effect": "pr_comment", "body": "LGTM"})
+        assert tools.run(
+            "propose_effect", {"effect": "check_run", "body": "s", "conclusion": "neutral", "title": "T"}
+        ).startswith("proposed")
+        assert tools.proposals == [
+            {"effect": "pr_comment", "body": "LGTM"},
+            {"effect": "check_run", "body": "s", "title": "T", "conclusion": "neutral"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            ({"effect": "merge", "body": "x"}, "effect must be one of"),
+            ({"effect": "pr_comment", "body": ""}, "non-empty"),
+            ({"effect": "pr_comment", "body": "x" * 51}, "longer than 50"),
+            ({"effect": "check_run", "body": "s", "conclusion": "success"}, "conclusion must be"),
+        ],
+    )
+    def test_a_bad_proposal_is_an_error_the_model_can_fix(self, repo, args, message):
+        tools = RepoTools(repo.dest, ALLOWED)
+        assert message in tools.run("propose_effect", args)
+        assert tools.proposals == []
+
+    def test_proposals_are_capped(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        for _ in range(agent_loop.MAX_PROPOSALS):
+            tools.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+        assert "no more effects" in tools.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+
+    def test_without_allowed_effects_the_tool_does_not_exist(self, repo):
+        assert "unknown tool" in repo.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+
+    def test_malformed_allowed_effects_are_ignored(self, repo):
+        assert RepoTools(repo.dest, ["junk", {"no": "effect"}]).specs() == agent_loop.TOOLS

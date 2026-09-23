@@ -354,6 +354,15 @@ def _error_text(exc: Exception) -> str:
     return (stderr or str(exc))[:MAX_ERROR_CHARS]
 
 
+def _effects_field(spec: dict) -> list:
+    """The writes the manifest allows, from SANDBOX_EFFECTS (JSON). Malformed means none."""
+    try:
+        effects = json.loads(spec.get("effects") or "[]")
+    except (TypeError, ValueError):
+        return []
+    return effects if isinstance(effects, list) else []
+
+
 def _str_field(spec: dict, key: str, default: str) -> str:
     """A non-empty string field, or `default` for anything else.
 
@@ -392,6 +401,7 @@ def run_task(spec: dict) -> dict:
     task = _str_field(spec, "task", "Summarize this repository.")
     model = _str_field(spec, "model", DEFAULT_MODEL)
     base = _str_field(spec, "base", "")
+    allowed_effects = _effects_field(spec)
     result: dict = {"cloned": False, "file_count": 0, "top_level": [], "report": "", "errors": {}}
 
     with tempfile.TemporaryDirectory() as workdir:
@@ -446,10 +456,15 @@ def run_task(spec: dict) -> dict:
                 change["patch"] = patch[: max(0, len(patch) - excess)].decode(errors="ignore")
                 prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
         try:
+            tools = agent_loop.RepoTools(workdir, allowed_effects)
             limit = loop_time_limit(spec.get("deadline"), time.time())
-            outcome = agent_loop.run_agent(
-                invoke_model, model, prompt, agent_loop.RepoTools(workdir), time_limit_s=limit
-            )
+            outcome = agent_loop.run_agent(invoke_model, model, prompt, tools, time_limit_s=limit)
+            if tools.proposals and "error" not in outcome:
+                result["effects"] = tools.proposals
+            elif tools.proposals:
+                # A run that did not finish cleanly writes nothing: its proposals may have
+                # been made before it read what would have changed its mind.
+                result["errors"]["effects"] = "proposals dropped: the agent did not finish"
             result["report"] = outcome["report"]
             result["turns"] = outcome["turns"]
             result["tool_calls"] = outcome["tool_calls"]

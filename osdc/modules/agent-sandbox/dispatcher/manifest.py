@@ -12,9 +12,9 @@ decision and lives in authorize.py with the others.
 Strict on purpose: an unknown key anywhere is an error, and so is a key repeated within
 one mapping (plain YAML keeps the last value, so a later `workflows: []` would silently
 erase an earlier restriction). A mistyped constraint fails the deploy instead of silently
-granting more than its author meant. Regions follow the
-RFC's names (name, owner, clients, model, sandbox); the rest of the RFC schema arrives
-with the features that need it.
+granting more than its author meant. Regions follow the RFC's names (name, owner,
+clients, model, sandbox, capabilities); the rest of the RFC schema arrives with the
+features that need it.
 """
 
 from __future__ import annotations
@@ -32,6 +32,10 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ID_RE = re.compile(r"^[0-9]+$")
 WORKFLOW_RE = re.compile(r"^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$")
+CHECK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./-]{0,99}$")
+CHECK_CONCLUSIONS = frozenset({"success", "failure", "neutral"})
+# GitHub's own limits: a comment body and a check-run summary are both capped near 64 KiB.
+MAX_EFFECT_BYTES = 65536
 
 
 class ManifestError(ValueError):
@@ -48,6 +52,18 @@ class ClientRepo:
 
 
 @dataclass(frozen=True)
+class EffectSpec:
+    """One write the run may PROPOSE. The agent never writes: it proposes, the dispatcher
+    checks the proposal against this, and a separate applier performs it."""
+
+    kind: str  # "pr_comment" or "check_run"
+    max_bytes: int = MAX_EFFECT_BYTES
+    # check_run only: the name is fixed by the manifest, the conclusion chosen from a set.
+    name: str = ""
+    conclusions: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
 class Manifest:
     name: str
     owner: str
@@ -60,6 +76,8 @@ class Manifest:
     model: str
     # Public repositories the task may clone. The first is the default.
     sandbox_repos: tuple[str, ...]
+    # Writes the run may propose. Empty: a read-only manifest, the default.
+    effects: tuple[EffectSpec, ...] = ()
 
 
 def _mapping(value, where: str, allowed: set[str], required: set[str]) -> dict:
@@ -79,7 +97,7 @@ def _string(value, where: str, pattern: re.Pattern | None = None, allow_empty: b
         raise ManifestError(f"{where}: expected a string, got {type(value).__name__}")
     if not value and not allow_empty:
         raise ManifestError(f"{where}: must not be empty")
-    if value and pattern is not None and not pattern.match(value):
+    if value and pattern is not None and not pattern.fullmatch(value):
         raise ManifestError(f"{where}: {value!r} does not match {pattern.pattern}")
     return value
 
@@ -105,12 +123,36 @@ def _client_repo(entry, where: str) -> ClientRepo:
     )
 
 
+def _effect(entry, where: str) -> EffectSpec:
+    entry = _mapping(entry, where, {"effect", "max_bytes", "name", "conclusions"}, {"effect"})
+    kind = _string(entry["effect"], f"{where}.effect")
+    max_bytes = entry.get("max_bytes", MAX_EFFECT_BYTES)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 0 < max_bytes <= MAX_EFFECT_BYTES:
+        raise ManifestError(f"{where}.max_bytes: must be an integer in 1..{MAX_EFFECT_BYTES}")
+    if kind == "pr_comment":
+        if set(entry) - {"effect", "max_bytes"}:
+            raise ManifestError(f"{where}: pr_comment takes only effect and max_bytes")
+        return EffectSpec(kind=kind, max_bytes=max_bytes)
+    if kind == "check_run":
+        _mapping(entry, where, {"effect", "max_bytes", "name", "conclusions"}, {"effect", "name", "conclusions"})
+        conclusions = _string_list(entry["conclusions"], f"{where}.conclusions")
+        if not set(conclusions) <= CHECK_CONCLUSIONS:
+            raise ManifestError(f"{where}.conclusions: allowed values are {sorted(CHECK_CONCLUSIONS)}")
+        return EffectSpec(
+            kind=kind,
+            max_bytes=max_bytes,
+            name=_string(entry["name"], f"{where}.name", CHECK_NAME_RE),
+            conclusions=frozenset(conclusions),
+        )
+    raise ManifestError(f"{where}.effect: unknown effect {kind!r}; known are pr_comment, check_run")
+
+
 def parse(document, expected_name: str) -> Manifest:
     """Validate one parsed YAML document. `expected_name` is the file's stem."""
     top = _mapping(
         document,
         expected_name,
-        {"name", "owner", "clients", "model", "sandbox"},
+        {"name", "owner", "clients", "model", "sandbox", "capabilities"},
         {"name", "owner", "clients", "sandbox"},
     )
     name = _string(top["name"], "name", NAME_RE)
@@ -131,6 +173,15 @@ def parse(document, expected_name: str) -> Manifest:
 
     sandbox = _mapping(top["sandbox"], f"{name}.sandbox", {"repos"}, {"repos"})
 
+    effects: tuple[EffectSpec, ...] = ()
+    if "capabilities" in top:
+        caps = _mapping(top["capabilities"], f"{name}.capabilities", {"effects"}, {"effects"})
+        if not isinstance(caps["effects"], list):
+            raise ManifestError(f"{name}.capabilities.effects: expected a list")
+        effects = tuple(_effect(e, f"{name}.capabilities.effects[{i}]") for i, e in enumerate(caps["effects"]))
+        if len({e.kind for e in effects}) != len(effects):
+            raise ManifestError(f"{name}.capabilities.effects: an effect is listed twice")
+
     return Manifest(
         name=name,
         owner=_string(top["owner"], f"{name}.owner"),
@@ -141,6 +192,7 @@ def parse(document, expected_name: str) -> Manifest:
         ),
         model=model,
         sandbox_repos=tuple(_string_list(sandbox["repos"], f"{name}.sandbox.repos", REPO_RE)),
+        effects=effects,
     )
 
 

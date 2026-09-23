@@ -10,6 +10,9 @@
 #         task: "Review this change."
 #
 # Pin it by commit sha: it runs inside the calling job, with the caller's identity.
+# With apply-effects: "true" a second step applies the writes the run proposed (a PR
+# comment, a check run) with `github-token`: the job's token by default, which can write
+# only to the calling repository. See apply_effects.py for the checks.
 # Needs python3 on the runner. The dispatcher is reachable only from the OSDC
 # arc-runners today, so run the job on an OSDC runner group.
 name: agent-sandbox
@@ -45,6 +48,22 @@ inputs:
     description: Seconds to keep retrying while the dispatcher is at capacity (HTTP 429)
     required: false
     default: "900"
+  apply-effects:
+    description: "true: apply the writes the run proposed and the dispatcher accepted (needs pr-number)"
+    required: false
+    default: "false"
+  pr-number:
+    description: Pull request the effects target
+    required: false
+    default: ""
+  repository:
+    description: Repository of that pull request; effects for any other repository are refused
+    required: false
+    default: ${{ github.repository }}
+  github-token:
+    description: Token used to apply effects (needs pull-requests/checks write on `repository`); the job's own token can write only to the calling repository
+    required: false
+    default: ${{ github.token }}
 outputs:
   task-id:
     description: The dispatcher's task id
@@ -72,3 +91,13 @@ runs:
         INPUT_ENDPOINT: ${{ inputs.endpoint }}
         INPUT_MAX_WAIT: ${{ inputs.max-wait }}
       run: python3 "$GITHUB_ACTION_PATH/sandbox_client.py"
+    - id: apply
+      if: ${{ inputs.apply-effects == 'true' && steps.run.outputs.result-file != '' }}
+      shell: bash
+      env:
+        INPUT_RESULT_FILE: ${{ steps.run.outputs.result-file }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_TOKEN_IS_JOB_TOKEN: ${{ inputs.github-token == github.token }}
+      run: python3 "$GITHUB_ACTION_PATH/apply_effects.py"

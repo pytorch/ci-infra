@@ -91,6 +91,28 @@ TOOLS = [
 ]
 
 
+PROPOSE_EFFECT = {
+    "name": "propose_effect",
+    "description": (
+        "Propose a write to the pull request under review: a comment, or a check run with a "
+        "conclusion. Nothing is written by you; a separate trusted step checks and applies "
+        "proposals after you finish. Propose each effect once, with your final text."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "effect": {"type": "string", "enum": []},
+            "body": {"type": "string", "description": "Markdown: the comment, or the check run's summary."},
+            "title": {"type": "string", "description": "check_run only."},
+            "conclusion": {"type": "string", "description": "check_run only."},
+        },
+        "required": ["effect", "body"],
+    },
+}
+MAX_PROPOSALS = 3
+MAX_PROPOSAL_BYTES = 128 * 1024
+
+
 class ToolError(ValueError):
     """A tool call the model should see as an error message, not a crash."""
 
@@ -138,8 +160,11 @@ class RepoTools:
     kubelet's ephemeral-storage accounting, a named one cannot.
     """
 
-    def __init__(self, dest: str):
+    def __init__(self, dest: str, effects: list | None = None):
         self.dest = dest
+        # Writes the run may propose, from the manifest via SANDBOX_EFFECTS.
+        self.effects = {e["effect"]: e for e in (effects or []) if isinstance(e, dict) and "effect" in e}
+        self.proposals: list[dict] = []
         self.timeout = TOOL_TIMEOUT_S
         self.scratch = os.path.join(os.path.dirname(os.path.abspath(dest)), ".agent-scratch")
 
@@ -292,8 +317,42 @@ class RepoTools:
         # Bounded again after decoding: escaping can multiply a byte by four.
         return _clip("\n".join(lines))
 
+    def specs(self) -> list[dict]:
+        """The tools offered to the model: the read tools, plus propose_effect when the
+        manifest allows at least one write."""
+        if not self.effects:
+            return TOOLS
+        propose = json.loads(json.dumps(PROPOSE_EFFECT))
+        propose["input_schema"]["properties"]["effect"]["enum"] = sorted(self.effects)
+        return [*TOOLS, propose]
+
+    def propose_effect(self, effect=None, body=None, title=None, conclusion=None) -> str:
+        """Record a proposal. Checked here only enough to tell the model early; the
+        dispatcher re-checks every proposal against the Grant."""
+        spec = self.effects.get(effect)
+        if spec is None:
+            raise ToolError(f"effect must be one of {sorted(self.effects)}")
+        if not isinstance(body, str) or not body.strip():
+            raise ToolError("body must be non-empty text")
+        if len(body.encode()) > spec.get("max_bytes", MAX_PROPOSAL_BYTES):
+            raise ToolError(f"body is longer than {spec.get('max_bytes')} bytes; shorten it")
+        if effect == "check_run" and conclusion not in spec.get("conclusions", []):
+            raise ToolError(f"conclusion must be one of {spec.get('conclusions', [])}")
+        used = sum(len(json.dumps(p)) for p in self.proposals)
+        proposal = {
+            k: v
+            for k, v in {"effect": effect, "body": body, "title": title, "conclusion": conclusion}.items()
+            if v is not None
+        }
+        if len(self.proposals) >= MAX_PROPOSALS or used + len(json.dumps(proposal)) > MAX_PROPOSAL_BYTES:
+            raise ToolError("no more effects can be proposed in this run")
+        self.proposals.append(proposal)
+        return f"proposed {effect} ({len(self.proposals)} of at most {MAX_PROPOSALS}); it will be checked and applied after you finish"
+
     def run(self, name: str, arguments) -> str:
         tool = {"list_dir": self.list_dir, "read_file": self.read_file, "search": self.search}.get(name)
+        if name == "propose_effect" and self.effects:
+            tool = self.propose_effect
         if tool is None:
             return f"error: unknown tool {name!r}"
         if not isinstance(arguments, dict):
@@ -422,7 +481,7 @@ def run_agent(
         remaining = deadline - clock()
         if remaining < 1:
             return done(turn - 1, f"time limit of {max(0, int(time_limit_s))}s reached")
-        fields = {"system": SYSTEM, "messages": messages, "tools": TOOLS, "max_tokens": MAX_TOKENS}
+        fields = {"system": SYSTEM, "messages": messages, "tools": tools.specs(), "max_tokens": MAX_TOKENS}
         if len(json.dumps(fields)) > MAX_REQUEST_BYTES:
             return done(turn - 1, f"the conversation grew past {MAX_REQUEST_BYTES} bytes")
         if turn == 1 and len(prompt.encode()) > prompt_budget_bytes():

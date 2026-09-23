@@ -72,6 +72,17 @@ def checked_in_manifests(monkeypatch):
 
 
 @pytest.fixture
+def signed(tmp_path, monkeypatch):
+    """Signing keys the verifier trusts, for tests that send real tokens."""
+    keys = {test_oidc.KID: test_oidc._keypair()}
+    path = tmp_path / "jwks.json"
+    path.write_text(json.dumps(test_oidc._jwks_document(keys)))
+    monkeypatch.setattr(oidc, "JWKS_PATH", path)
+    oidc._CACHE.update(keyset=None, loaded_at=0.0, fetched_at=None)
+    return keys
+
+
+@pytest.fixture
 def fake_k8s(monkeypatch, tmp_path):
     """Stand in for the API server: record Jobs, answer polls, serve a pod log."""
     state = {"jobs": [], "deleted": [], "job_status": {"succeeded": 1}, "log": '{"cloned": true, "report": "ok"}\n'}
@@ -169,6 +180,7 @@ class TestJobManifest:
         assert env["SANDBOX_REPO"] == "org/repo"
         assert env["SANDBOX_REF"] == "v1"
         assert env["SANDBOX_BASE"] == ""
+        assert env["SANDBOX_EFFECTS"] == "[]"
         assert env["SANDBOX_MODEL"] == "us.x"
         assert env["SANDBOX_TASK"] == "", "an omitted task must arrive empty so run_task applies its default"
 
@@ -211,6 +223,15 @@ class TestRunToCompletion:
         fake_k8s["log"] = "Killed\n"
         result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "DeadlineExceeded" in result["errors"]["task"]
+
+    def test_a_failed_pod_proposes_nothing_whatever_it_printed(self, fake_k8s):
+        fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]}
+        fake_k8s["log"] = (
+            json.dumps({"head_sha": "e" * 40, "errors": {}, "effects": [{"effect": "pr_comment", "body": "x"}]}) + "\n"
+        )
+        result = tasks._run_to_completion("abc123456789", a_grant())
+        assert "effects" not in result
+        assert result["errors"]["dispatch"] == "pod failed: DeadlineExceeded"
 
     def test_failed_pod_that_did_print_a_result_keeps_it(self, fake_k8s):
         """A task whose clone failed still printed the errors object — that is the
@@ -321,6 +342,30 @@ class TestHTTPSurface:
         with pytest.raises(urllib.error.HTTPError) as exc:
             _post(f"{server}/run", body)
         assert exc.value.code == 400
+
+    def test_allowed_effects_reach_the_task_and_proposals_are_screened(self, server, fake_k8s, signed):
+        fake_k8s["log"] = (
+            json.dumps(
+                {
+                    "head_sha": "d" * 40,
+                    "report": "r",
+                    "errors": {},
+                    "effects": [{"effect": "pr_comment", "body": "hi"}, {"effect": "merge", "body": "x"}],
+                }
+            )
+            + "\n"
+        )
+        token = test_oidc.a_token(signed, **{**test_authorize.GOOD_CLAIMS, "event_name": "pull_request"})
+        req = urllib.request.Request(  # noqa: S310
+            f"{server}/run",
+            data=json.dumps({"manifest": "ciforge-pr-review", "task": "review", "ref": "d" * 40}).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        )
+        body = json.loads(_opener.open(req, timeout=30).read())
+        env = {e["name"]: e["value"] for e in fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]}
+        assert {e["effect"] for e in json.loads(env["SANDBOX_EFFECTS"])} == {"pr_comment", "check_run"}
+        assert [e["effect"] for e in body["effects"]] == ["pr_comment"]
+        assert "merge" in body["errors"]["effects"]
 
     def test_a_branch_with_a_hash_or_accent_is_accepted(self, server, fake_k8s):
         """Previously valid git names keep working: `feature/#123` and `café` are both
@@ -714,15 +759,6 @@ class TestAuthenticatedSurface:
     test_oidc.py proves the verifier; this proves the endpoints are wired to it — which
     is a different claim, and the one that would silently regress.
     """
-
-    @pytest.fixture
-    def signed(self, tmp_path, monkeypatch):
-        keys = {test_oidc.KID: test_oidc._keypair()}
-        path = tmp_path / "jwks.json"
-        path.write_text(json.dumps(test_oidc._jwks_document(keys)))
-        monkeypatch.setattr(oidc, "JWKS_PATH", path)
-        oidc._CACHE.update(keyset=None, loaded_at=0.0, fetched_at=None)
-        return keys
 
     def _authed_post(self, server, token, payload):
         req = urllib.request.Request(  # noqa: S310  (loopback http:// built in-test)

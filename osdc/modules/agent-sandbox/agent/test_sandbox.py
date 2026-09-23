@@ -846,3 +846,31 @@ class TestRunTaskLoop:
         monkeypatch.setattr(sandbox, "invoke_model", fake_invoke)
         result = sandbox.run_task({"repo": "org/repo", "model": "m"})
         assert "recursion" in result["errors"]["bedrock"]
+
+    def test_proposals_from_a_finished_run_are_returned(self, monkeypatch):
+        def fake_run_agent(invoke, model, prompt, tools, **kw):
+            tools.proposals.append({"effect": "pr_comment", "body": "LGTM"})
+            return {"report": "done", "turns": 2, "tool_calls": 1}
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox.agent_loop, "run_agent", fake_run_agent)
+        effects = json.dumps([{"effect": "pr_comment"}])
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "effects": effects})
+        assert result["effects"] == [{"effect": "pr_comment", "body": "LGTM"}]
+
+    def test_proposals_from_an_unfinished_run_are_dropped(self, monkeypatch):
+        def fake_run_agent(invoke, model, prompt, tools, **kw):
+            tools.proposals.append({"effect": "pr_comment", "body": "LGTM"})
+            return {"report": "partial", "turns": 24, "tool_calls": 40, "error": "turn limit"}
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox.agent_loop, "run_agent", fake_run_agent)
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "effects": json.dumps([{"effect": "pr_comment"}])})
+        assert "effects" not in result
+        assert "did not finish" in result["errors"]["effects"]
+
+    @pytest.mark.parametrize("raw", ["not json", '{"a": 1}', "", None])
+    def test_malformed_allowed_effects_mean_none(self, raw):
+        assert sandbox._effects_field({"effects": raw}) == []

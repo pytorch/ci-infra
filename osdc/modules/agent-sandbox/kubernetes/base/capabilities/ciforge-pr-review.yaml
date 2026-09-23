@@ -15,3 +15,15 @@ model:
 sandbox:
   # Public repos only: the task pod clones anonymously and holds no credential.
   repos: [pytorch/pytorch, pytorch/test-infra, pytorch/ci-infra]
+capabilities:
+  # Writes the run may PROPOSE. The dispatcher screens proposals against this and the
+  # action's apply step performs them with the calling job's token, only while the pull
+  # request still points at the commit the agent read. Advisory only: a neutral check.
+  # The callers run in pytorch/ciforge and the targets are other repositories, so the
+  # apply step needs a `github-token` for the target; the ciforge job token cannot write
+  # there, and the action refuses to try.
+  effects:
+    - effect: pr_comment
+    - effect: check_run
+      name: ai-review
+      conclusions: [neutral]
