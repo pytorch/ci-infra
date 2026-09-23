@@ -1,0 +1,185 @@
+# The git credential proxy: it holds the GitHub token so the task pod does not.
+#
+# Same shape, and the same reason, as sigv4-proxy. A task pod must be able to read a
+# PRIVATE repository, and the one thing it must never hold is a credential that can do
+# it — so the credential lives here and the agent sends an unauthenticated request that
+# this pod authenticates on its way out. `clone_repo` fetches
+# `http://git-proxy.ai-sandbox.svc:8080/<owner>/<repo>.git` and never learns the token.
+#
+# THE ALLOWLIST IS THE SECURITY BOUNDARY, NOT THE TOKEN'S SCOPE. A proxy that forwarded
+# any path with a token attached would let anything that can reach it read every repo
+# that token can, which is a larger set than any one task is granted. `repo_allowed`
+# below is the fence, it is a literal in git rather than a deploy-time substitution —
+# the same argument authorize.py makes for ALLOWED_CALLERS: this is the answer to "whose
+# private code may leave the cluster", so it belongs in review and in git history.
+#
+# READ ONLY. Only the two endpoints `git fetch` uses are routed:
+#   GET  /<repo>.git/info/refs?service=git-upload-pack
+#   POST /<repo>.git/git-upload-pack
+# `git-receive-pack` (push) is not a location here and `service=git-receive-pack` is
+# rejected explicitly, so a token that happens to carry write access cannot be used for
+# one through this proxy.
+#
+# WHAT IT DOES NOT DO. It does not make the task pod's network safe in general: the
+# sandbox-task-egress policy still allows TCP 443 to anywhere, so a task can still reach
+# github.com directly — ANONYMOUSLY, which is the status quo and reaches public repos
+# only. This proxy adds authenticated reads of named private repos; it removes nothing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-proxy-config
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+data:
+  # Rendered by the nginx image's envsubst entrypoint, which substitutes only names that
+  # are actually env vars — `$uri` and `$repo_allowed` are nginx variables and survive.
+  default.conf.template: |
+    # Resolve github.com at request time. Without a resolver nginx resolves the upstream
+    # ONCE at startup and pins the address, so a GitHub IP change breaks every fetch
+    # until the pod restarts.
+    resolver ${GIT_PROXY_RESOLVER} valid=30s ipv6=on;
+
+    map $uri $repo_allowed {
+        default                       0;
+        "~^/pytorch/ciforge\.git/"    1;
+    }
+
+    server {
+        listen 8080;
+        # A clone of a large repository is one long response; the default 60s read
+        # timeout would cut it off mid-pack.
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        # `git fetch` advertises refs first, then asks for the pack. Both carry the repo
+        # path, so both are matched by the same allowlist.
+        location ~ ^/(?<owner>[A-Za-z0-9._-]+)/(?<repo>[A-Za-z0-9._-]+)\.git/(?<verb>info/refs|git-upload-pack)$ {
+            if ($repo_allowed = 0) {
+                return 403 "repository is not on the git-proxy allowlist\n";
+            }
+            # The advertisement is the only place a push announces itself, so refusing
+            # it here is what keeps `git push` from ever reaching GitHub with our token.
+            if ($args ~ "service=git-receive-pack") {
+                return 403 "this proxy is read-only\n";
+            }
+
+            proxy_set_header Authorization "Basic ${GIT_PROXY_BASIC_AUTH}";
+            proxy_set_header Host github.com;
+            proxy_pass https://github.com/$owner/$repo.git/$verb$is_args$args;
+        }
+
+        location / {
+            return 403 "only git fetch of an allowlisted repository is proxied\n";
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-proxy
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: git-proxy
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: git-proxy
+  template:
+    metadata:
+      labels:
+        app: git-proxy
+        osdc.io/module: agent-sandbox
+    spec:
+      serviceAccountName: git-proxy
+      # Never on the sandbox fleet. This pod holds the credential the fleet exists to be
+      # kept away from, and a gVisor node running untrusted tasks is the last place it
+      # should share a kernel with.
+      nodeSelector:
+        role: base-infrastructure
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-fleet
+                    operator: NotIn
+                    values: ["ai-sandbox"]
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: git-proxy
+              matchLabelKeys:
+                - pod-template-hash
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: git-proxy
+          image: harbor:30002/dockerhub-cache/library/nginx:1.29-alpine
+          ports:
+            - name: proxy
+              containerPort: 8080
+          env:
+            # Pre-encoded `x-access-token:<token>`, because git over HTTPS authenticates
+            # with Basic and nginx cannot base64 at render time. See the module README
+            # for the one-liner that produces it.
+            - name: GIT_PROXY_BASIC_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: git-proxy-credentials
+                  key: basic-auth
+            # kube-dns, read off the pod's own resolv.conf at deploy time. Hardcoding
+            # the usual IPv6 ULA would break any cluster whose service CIDR differs.
+            - name: GIT_PROXY_RESOLVER
+              value: "__KUBE_DNS_IP__"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/templates
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 101
+            allowPrivilegeEscalation: false
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: git-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-proxy
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+    app: git-proxy
+spec:
+  selector:
+    app: git-proxy
+  ports:
+    - name: proxy
+      port: 8080
+      targetPort: proxy
