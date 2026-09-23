@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import subprocess
+import time
 
 import agent_loop
 import pytest
@@ -390,6 +391,117 @@ class TestLoop:
         invoke = scripted(answer("ok"))
         agent_loop.run_agent(invoke, "m", "p", repo, clock=clock)
         assert invoke.timeouts == [10.0]
+
+    def test_a_shorter_time_limit_caps_the_deadline(self, repo):
+        clock = iter([0.0, 290.0]).__next__
+        invoke = scripted(answer("ok"))
+        agent_loop.run_agent(invoke, "m", "p", repo, clock=clock, time_limit_s=300)
+        assert invoke.timeouts == [10.0]
+
+    def test_a_longer_time_limit_never_exceeds_the_loop_deadline(self, repo):
+        clock = iter([0.0, 590.0]).__next__
+        invoke = scripted(answer("ok"))
+        agent_loop.run_agent(invoke, "m", "p", repo, clock=clock, time_limit_s=10_000)
+        assert invoke.timeouts == [10.0]
+
+    def test_no_time_left_is_the_time_limit_before_any_call(self, repo):
+        invoke = scripted(answer("never"))
+        out = agent_loop.run_agent(invoke, "m", "p", repo, time_limit_s=0)
+        assert invoke.seen == []
+        assert out["error"] == "time limit of 0s reached"
+
+    def test_a_nearly_full_context_stops_the_tools_and_asks_for_an_answer(self, repo):
+        full = agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS - 1000
+        first = dict(tool_use("list_dir", {}), usage={"input_tokens": full, "output_tokens": 10})
+        invoke = scripted(first, answer("ok"))
+        out = agent_loop.run_agent(invoke, "m", "p", repo)
+        assert out["tool_calls"] == 0
+        assert invoke.seen[1]["messages"][-1]["content"][0]["content"].startswith("error: tool budget")
+
+    def test_cached_tokens_count_toward_the_context(self, repo):
+        half = (agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS) // 2
+        usage = {"input_tokens": 10, "cache_read_input_tokens": half, "cache_creation_input_tokens": half}
+        invoke = scripted(dict(tool_use("list_dir", {}), usage=usage), answer("ok"))
+        assert agent_loop.run_agent(invoke, "m", "p", repo)["tool_calls"] == 0
+
+    def test_room_in_the_context_is_spent_by_each_result_in_a_turn(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_OUTPUT_BYTES", 1000)
+        # Room for one worst-case result (1000 + 1024 bytes) plus less than the framing
+        # (256 bytes) that any result adds, so the second call no longer fits.
+        room_tokens = (1000 + 1024 + 100) // agent_loop.MIN_BYTES_PER_TOKEN
+        used = agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS - room_tokens
+        both = {
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": str(i), "name": "list_dir", "input": {}} for i in range(2)],
+            "usage": {"input_tokens": used, "output_tokens": 0},
+        }
+        invoke = scripted(both, answer("ok"))
+        out = agent_loop.run_agent(invoke, "m", "p", repo)
+        assert out["tool_calls"] == 1
+        results = invoke.seen[1]["messages"][-1]["content"]
+        assert results[1]["content"].startswith("error: tool budget")
+
+    def test_tools_requested_after_a_refusal_end_the_loop(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
+        invoke = scripted(*[tool_use("list_dir", {}) for _ in range(5)])
+        out = agent_loop.run_agent(invoke, "m", "p", repo)
+        assert len(invoke.seen) == 3  # ran, refused, then asked again
+        assert out["tool_calls"] == 1
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+
+    def test_an_answer_after_a_refusal_is_accepted(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        invoke = scripted(tool_use("list_dir", {}), answer("from what I had"))
+        out = agent_loop.run_agent(invoke, "m", "p", repo)
+        assert out == {"report": "from what I had", "turns": 2, "tool_calls": 0}
+
+    def test_dense_content_cannot_overflow_the_window_in_one_turn(self, repo, monkeypatch):
+        """Five worst-case results in one turn, at one token per byte, must still fit."""
+        monkeypatch.setattr(
+            agent_loop.RepoTools, "run", lambda self, name, args: "x" * agent_loop.MAX_TOOL_OUTPUT_BYTES
+        )
+        used = 95_000
+        many = {
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": str(i), "name": "list_dir", "input": {}} for i in range(5)],
+            "usage": {"input_tokens": used, "output_tokens": 0},
+        }
+        invoke = scripted(many, answer("ok"))
+        agent_loop.run_agent(invoke, "m", "p", repo)
+        added = sum(len(r["content"].encode()) for r in invoke.seen[1]["messages"][-1]["content"])
+        assert used + added <= agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS
+
+    def test_a_model_call_that_outlives_the_deadline_is_abandoned(self, repo):
+        def slow(model, fields, timeout=None):
+            time.sleep(5)
+            return answer("too late")
+
+        started = time.monotonic()
+        out = agent_loop.run_agent(slow, "m", "p", repo, time_limit_s=1.5)
+        assert time.monotonic() - started < 4
+        assert out["error"] == "time limit of 1s reached during a model call"
+
+    def test_an_error_from_the_model_call_reaches_the_caller(self, repo):
+        def boom(model, fields, timeout=None):
+            raise ValueError("bad response")
+
+        with pytest.raises(ValueError, match="bad response"):
+            agent_loop.run_agent(boom, "m", "p", repo)
+
+    def test_a_first_prompt_too_large_for_the_window_is_never_sent(self, repo):
+        invoke = scripted(answer("never"))
+        out = agent_loop.run_agent(invoke, "m", "x" * (agent_loop.prompt_budget_bytes() + 1), repo)
+        assert invoke.seen == []
+        assert out["error"] == "the prompt is too large for the model's context window"
+
+    def test_without_usage_the_context_is_estimated_high(self, repo):
+        huge = {"type": "text", "text": "x" * (2 * agent_loop.CONTEXT_WINDOW_TOKENS)}
+        first = {
+            "stop_reason": "tool_use",
+            "content": [huge, {"type": "tool_use", "id": "t", "name": "list_dir", "input": {}}],
+        }
+        invoke = scripted(first, answer("ok"))
+        assert agent_loop.run_agent(invoke, "m", "p", repo)["tool_calls"] == 0
 
     def test_less_than_a_second_left_is_the_time_limit(self, repo):
         clock = iter([0.0, 599.5]).__next__
