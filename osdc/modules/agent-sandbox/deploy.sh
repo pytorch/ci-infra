@@ -229,33 +229,39 @@ print(f"{int((MAX_AGE_S - age) // 60)} min")
 JWKS_JOB="jwks-refresher-deploy-$(date +%s)"
 echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
 jwks_failure=""
+# The Job's own limit is activeDeadlineSeconds 300 (kubernetes/base/oidc.yaml), retries
+# included, so wait past it: a shorter wait could fail a first deploy whose fetch, slowed
+# by a cold image pull, completes a minute later.
+JWKS_WAIT_S=330
+# A key problem does not stop the script where it is found: the prune and IRSA-revocation
+# steps below must still run. It is recorded here and fails the deploy at the end.
+JWKS_FATAL=""
 if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresher -n "$NAMESPACE"; then
-  if kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s; then
+  if kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout="${JWKS_WAIT_S}s"; then
     kubectl delete job "$JWKS_JOB" -n "$NAMESPACE" --ignore-not-found
   else
-    jwks_failure="${JWKS_JOB} did not complete in 120s (kept for inspection; check its logs)"
+    jwks_failure="${JWKS_JOB} did not complete in ${JWKS_WAIT_S}s (kept for inspection; check its logs)"
   fi
 else
   jwks_failure="could not start ${JWKS_JOB}"
 fi
 if [[ -n "$jwks_failure" ]]; then
-  # A failed read is not "no keys": it stops the deploy with its own message.
+  # A failed read is not "no keys": it fails the deploy with its own message.
   if ! existing_keys=$(kubectl get configmap oidc-jwks -n "$NAMESPACE" -o jsonpath='{.data.jwks\.json}'); then
-    echo "[agent-sandbox] ERROR: ${jwks_failure}, and oidc-jwks could not be read to tell whether signing keys are present." >&2
-    exit 1
-  fi
-  if [[ -z "$existing_keys" ]]; then
-    echo "[agent-sandbox] ERROR: ${jwks_failure}, and oidc-jwks holds no signing keys yet, so the dispatcher refuses every /run and /status call. Fix the fetch and re-run the deploy." >&2
-    exit 1
-  fi
+    JWKS_FATAL="${jwks_failure}, and oidc-jwks could not be read to tell whether signing keys are present."
+  elif [[ -z "$existing_keys" ]]; then
+    JWKS_FATAL="${jwks_failure}, and oidc-jwks holds no signing keys yet, so the dispatcher refuses every /run and /status call. Fix the fetch and re-run the deploy."
   # Present is not usable: the dispatcher also refuses a malformed document, an empty key
   # set and keys older than 24h (dispatcher/oidc.py). Same checks here, so the warning
   # below is only printed when the old set really is still accepted.
-  if ! keys_left=$(printf '%s' "$existing_keys" | python3 -c "$JWKS_USABLE_PY"); then
-    echo "[agent-sandbox] ERROR: ${jwks_failure}, and the signing keys in oidc-jwks cannot carry this deploy (${keys_left}): the dispatcher refuses every call once they are stale or if they are malformed. Fix the fetch and re-run the deploy." >&2
-    exit 1
+  elif ! keys_left=$(printf '%s' "$existing_keys" | python3 -c "$JWKS_USABLE_PY"); then
+    JWKS_FATAL="${jwks_failure}, and the signing keys in oidc-jwks cannot carry this deploy (${keys_left}): the dispatcher refuses every call once they are stale or if they are malformed. Fix the fetch and re-run the deploy."
+  else
+    echo "[agent-sandbox] Warning: ${jwks_failure}. The previous signing keys stay in use for about ${keys_left} more; the CronJob retries every 6h."
   fi
-  echo "[agent-sandbox] Warning: ${jwks_failure}. The previous signing keys stay in use for about ${keys_left} more; the CronJob retries every 6h."
+  if [[ -n "$JWKS_FATAL" ]]; then
+    echo "[agent-sandbox] ERROR: ${JWKS_FATAL} (the deploy continues its cleanup steps, then fails)" >&2
+  fi
 fi
 
 # --- Prune objects earlier designs left behind (idempotent) ---
@@ -298,6 +304,11 @@ fi
 # above them removes a credential. A crash-looping new pod leaves the old one serving,
 # and swallowing the failure tells the operator it succeeded. There is no task rollout to
 # wait for — task pods only exist while a request is in flight.
+if [[ -n "$JWKS_FATAL" ]]; then
+  echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2
+  exit 1
+fi
+
 echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
 kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=10m
