@@ -222,6 +222,15 @@ def test_every_checked_in_manifest_is_in_the_configmap():
     assert listed == on_disk
 
 
+def test_the_dispatcher_ships_with_auth_required():
+    """Stated explicitly rather than left to the code default, so a reader of the
+    Deployment sees the posture and the rollback switch in one place."""
+    documents = yaml.safe_load_all((MODULE / "kubernetes" / "base" / "dispatcher.yaml").read_text())
+    deployment = next(d for d in documents if d and d["kind"] == "Deployment")
+    env = {e["name"]: e.get("value") for e in deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["REQUIRE_AUTH"] == "true"
+
+
 def test_the_dispatcher_mounts_the_manifests_where_the_loader_looks():
     documents = yaml.safe_load_all((MODULE / "kubernetes" / "base" / "dispatcher.yaml").read_text())
     deployment = next(d for d in documents if d and d["kind"] == "Deployment")

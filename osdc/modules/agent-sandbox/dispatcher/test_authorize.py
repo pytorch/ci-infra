@@ -317,6 +317,23 @@ def test_the_integration_test_is_admitted_by_its_manifest():
     assert ".github/workflows/integration-test.yaml" in m.workflows
 
 
+def test_every_canary_call_to_run_carries_a_token():
+    """With REQUIRE_AUTH on, a canary step that posts to /run without a token gets a 401
+    and fails the job. Only the step asserting that 401 may omit it. Each call is read up
+    to its body (`-d`), where its headers end."""
+    template = MODULE.parent.parent / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
+    lines = template.read_text().split("\n")
+    calls = [i for i, line in enumerate(lines) if '"$SANDBOX/run"' in line]
+    assert calls, "found no /run call in the canary"
+    for i in calls:
+        end = next(j for j in range(i, len(lines)) if " -d " in lines[j] or lines[j].strip().startswith("-d "))
+        call = "\n".join(lines[i - 1 : end + 1])
+        if "%{http_code}" in call:
+            continue  # the step that asserts the 401
+        assert "Authorization: Bearer" in call, f"canary /run call at line {i + 1} sends no token"
+        assert "$MANIFEST" in call, f"canary /run call at line {i + 1} names no manifest"
+
+
 def test_manifests_are_not_shared_mutable_state():
     """authorize() must not edit what it is handed."""
     before = copy.deepcopy(MANIFESTS)
