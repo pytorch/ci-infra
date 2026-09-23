@@ -65,6 +65,11 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   given. Name lists are cut to 256 KiB each (`top_level_total` / `changed_files_total`
   carry the real counts) so the result always fits the 1 MiB log it travels in.
 
+  The model works in a loop (`agent/agent_loop.py`) with three read-only tools over the
+  checked-out commit — `list_dir`, `read_file`, `search` — until it answers, or 24 turns
+  or 600 s run out (`errors.agent`). Tools read through git (`HEAD:<path>`), never the
+  filesystem. The result also carries `turns` and `tool_calls`.
+
   `ref` is a branch, tag or commit sha, fetched at depth 1 (a name as an explicit
   `refs/heads/…`, then `refs/tags/…`); names follow `git check-ref-format --branch`. `base` is an optional full
   commit sha: the task fetches it too and puts `git diff base ref` (bounded) in front of
