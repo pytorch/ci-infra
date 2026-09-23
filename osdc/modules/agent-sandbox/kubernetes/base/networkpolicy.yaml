@@ -76,6 +76,15 @@ spec:
   policyTypes:
     - Egress
   egress:
+    # The git credential proxy. Same shape as the sigv4 one below: the task pod sends an
+    # unauthenticated request and the proxy attaches the credential on its way out.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: git-proxy
+      ports:
+        - protocol: TCP
+          port: 8080
     - to:
         - podSelector:
             matchLabels:
@@ -205,3 +214,61 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+---
+# Only task pods may ask the proxy to spend the credential. The dispatcher has no reason
+# to fetch a repository, and nothing outside this namespace can reach it at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: git-proxy-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: git-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: sandbox-task
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# DNS, and HTTPS to GitHub. Not narrowed to GitHub's ranges: they move, and the same
+# argument the task-pod policy makes applies here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: git-proxy-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: git-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: "::/0"
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
