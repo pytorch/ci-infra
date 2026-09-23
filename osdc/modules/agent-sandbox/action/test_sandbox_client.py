@@ -45,6 +45,8 @@ def fake():
             code, payload = state["run"].pop(0) if len(state["run"]) > 1 else state["run"][0]
             if payload is None:
                 self._send(code, None, raw=b"not json")
+            elif isinstance(payload, bytes):
+                self._send(code, None, raw=payload)
             else:
                 self._send(code, payload)
 
@@ -150,10 +152,22 @@ def test_task_controlled_text_cannot_start_a_workflow_command(fake, tmp_path, ca
     assert not any(line.startswith(("::stop-commands", "::add-mask::b")) for line in lines)
 
 
-def test_a_malformed_task_id_is_not_echoed(fake, tmp_path, capsys):
-    fake["run"] = [(200, {"task_id": "x\n::stop-commands::t", "report": "ok", "errors": {}})]
-    assert run(env_for(fake, tmp_path)) == 0
-    assert "(malformed id)" in capsys.readouterr().out
+@pytest.mark.parametrize("task_id", ["x\n::stop-commands::t", "0123456789ab\n", "0123456789AB", 12345, None], ids=repr)
+def test_a_malformed_task_id_fails_the_step_and_never_reaches_an_output(fake, tmp_path, capsys, task_id):
+    fake["run"] = [(200, {"task_id": task_id, "report": "ok", "errors": {}})]
+    assert run(env_for(fake, tmp_path)) == 1
+    assert outputs(tmp_path)["task-id"] == ""
+    assert "no well-formed task id" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("code", [200, 202])
+@pytest.mark.parametrize("body", [b"", b"[]", b"null", b'"ok"'], ids=repr)
+def test_a_success_without_a_json_object_fails_the_step(fake, tmp_path, capsys, code, body):
+    fake["run"] = [(code, body)]
+    assert run(env_for(fake, tmp_path)) == 1
+    assert "without a JSON object body" in capsys.readouterr().out
+    assert not (tmp_path / "out").exists()
+    assert [r[0] for r in fake["requests"]].count("run") == 1  # not retried
 
 
 def test_an_error_reason_cannot_start_a_workflow_command(fake, tmp_path, capsys):

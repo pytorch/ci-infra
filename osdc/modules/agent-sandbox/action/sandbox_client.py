@@ -40,7 +40,7 @@ HEALTHZ_TIMEOUT_S = 10
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
-TASK_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+TASK_ID_RE = re.compile(r"[0-9a-f]{12}")  # always fullmatch: `$` also accepts a trailing newline
 
 
 class ClientError(RuntimeError):
@@ -136,8 +136,7 @@ def call_run(
         )
         try:
             with opener.open(request, timeout=RUN_TIMEOUT_S) as response:
-                payload = json.loads(response.read(MAX_RESPONSE_BYTES) or b"{}")
-                return response.status, payload if isinstance(payload, dict) else {}
+                status, raw = response.status, response.read(MAX_RESPONSE_BYTES)
         except urllib.error.HTTPError as exc:
             payload = _error_payload(exc)
             if exc.code != 429:
@@ -150,6 +149,19 @@ def call_run(
             sleep(wait)
             retrying = True
             delay = min(delay * 2, 120.0)
+            continue
+        # A success with no readable result is a failure, not an empty success: a
+        # connection that closes after the headers reads as b"" here, and the task has
+        # probably run. Not retried, for the same reason as any post-admission failure.
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            raise ClientError(
+                f"/run returned HTTP {status} without a JSON object body; the task may have run, but its result was lost"
+            )
+        return status, payload
 
 
 def _error_payload(exc: urllib.error.HTTPError) -> dict:
@@ -201,8 +213,12 @@ def main(env: dict | None = None, opener=None, token_opener=None) -> int:
     fd, result_file = tempfile.mkstemp(prefix="agent-sandbox-", suffix=".json", dir=env.get("RUNNER_TEMP") or None)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
-    task_id = str(payload.get("task_id", ""))
-    outputs = {"task-id": task_id, "result-file": result_file}
+    # The id is task-controlled on a waited run (the result is spread over it), so only a
+    # well-formed one reaches an output or the log: a caller may interpolate the output
+    # into a script.
+    task_id = payload.get("task_id")
+    well_formed = isinstance(task_id, str) and TASK_ID_RE.fullmatch(task_id) is not None
+    outputs = {"task-id": task_id if well_formed else "", "result-file": result_file}
     if status == 200:
         outputs["report"] = str(payload.get("report", ""))
     output_path = env.get("GITHUB_OUTPUT")
@@ -213,9 +229,10 @@ def main(env: dict | None = None, opener=None, token_opener=None) -> int:
     if status == 200 and errors:
         print(f"::error::{_command_data('the task reported errors: ' + json.dumps(errors))}", flush=True)
         return 1
-    # The id is task-controlled too; only a well-formed one is echoed.
-    shown = task_id if TASK_ID_RE.match(task_id) else "(malformed id)"
-    print(f"task {shown} {'finished' if status == 200 else 'accepted'}", flush=True)
+    if not well_formed:
+        print("::error::/run returned no well-formed task id; the result was not trusted", flush=True)
+        return 1
+    print(f"task {task_id} {'finished' if status == 200 else 'accepted'}", flush=True)
     return 0
 
 
