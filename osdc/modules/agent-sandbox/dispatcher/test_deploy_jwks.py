@@ -18,7 +18,7 @@ DEPLOY_SH = Path(__file__).resolve().parent.parent / "deploy.sh"
 FAKE_KUBECTL = """#!/usr/bin/env bash
 case "$1 $2" in
   "create job") exit "${FAKE_CREATE:-0}" ;;
-  "wait --for=condition=complete") exit "${FAKE_WAIT:-0}" ;;
+  "wait --for=condition=complete") echo "$*" >> "${FAKE_WAIT_LOG:-/dev/null}"; exit "${FAKE_WAIT:-0}" ;;
   "delete job") exit 0 ;;
   "get configmap")
     [[ "${FAKE_GET:-0}" == 0 ]] || exit "$FAKE_GET"
@@ -44,7 +44,13 @@ def run_block(tmp_path, **fake) -> subprocess.CompletedProcess:
     kubectl = tmp_path / "kubectl"
     kubectl.write_text(FAKE_KUBECTL)
     kubectl.chmod(0o755)
-    script = "set -euo pipefail\nNAMESPACE=ai-sandbox\n" + _jwks_block() + "echo REACHED_END\n"
+    # The block records a fatal key problem in JWKS_FATAL; the end of deploy.sh (tested
+    # separately) turns it into the failing exit.
+    script = (
+        "set -euo pipefail\nNAMESPACE=ai-sandbox\n"
+        + _jwks_block()
+        + '[[ -z "$JWKS_FATAL" ]] || exit 1\necho REACHED_END\n'
+    )
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", **{k.upper(): v for k, v in fake.items()}}
     return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False)
 
@@ -98,3 +104,34 @@ def test_an_unreadable_configmap_is_not_mistaken_for_either_case(tmp_path):
     done = run_block(tmp_path, fake_wait="1", fake_get="1")
     assert done.returncode == 1
     assert "could not be read" in done.stderr
+
+
+def test_a_recorded_key_problem_fails_the_deploy_before_the_rollout_waits():
+    """The exit sits after the prune and IRSA-revocation steps and before the rollouts."""
+    text = DEPLOY_SH.read_text()
+    exit_at = text.index('if [[ -n "$JWKS_FATAL" ]]; then\n  echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2\n  exit 1')
+    assert text.index("# --- Prune objects") < exit_at
+    assert text.index("# --- Revoke the sandbox's own AWS identity") < exit_at
+    assert exit_at < text.index("kubectl rollout status")
+
+
+def test_the_block_itself_never_exits(tmp_path):
+    """Cleanup below must run even when the keys are unusable."""
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(FAKE_KUBECTL)
+    kubectl.chmod(0o755)
+    script = "set -euo pipefail\nNAMESPACE=ai-sandbox\n" + _jwks_block() + 'echo "FATAL=[$JWKS_FATAL]"\n'
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_WAIT": "1"}
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0
+    assert "holds no signing keys" in done.stdout
+
+
+def test_the_wait_outlasts_the_fetch_jobs_own_deadline(tmp_path):
+    """The refresher Job may run 300 s (activeDeadlineSeconds, retries included)."""
+    log = tmp_path / "wait.log"
+    run_block(tmp_path, fake_wait_log=str(log))
+    timeout = int(log.read_text().split("--timeout=")[1].split("s")[0])
+    oidc = (DEPLOY_SH.parent / "kubernetes/base/oidc.yaml").read_text()
+    deadline = int(oidc.split("activeDeadlineSeconds:")[1].split()[0])
+    assert timeout > deadline
