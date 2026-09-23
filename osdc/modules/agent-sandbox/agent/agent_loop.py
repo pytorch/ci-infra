@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 
 MAX_TURNS = 24
@@ -30,6 +31,15 @@ MAX_TOOL_CALLS = 120
 # The whole serialized request, re-sent every turn. Far below Bedrock's 25 MB request
 # limit, and a conversation this large has stopped being useful anyway.
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
+# The byte budgets above do not bound tokens: source runs a few bytes per token, so 768 KiB
+# of tool output alone can fill a 200K-token window. Tools therefore also stop on the
+# model's own count (`usage` in each response) with room left for the next result and the
+# answer. The window is the smallest of the models a manifest can select (Haiku 4.5).
+CONTEXT_WINDOW_TOKENS = 200_000
+CONTEXT_RESERVE_TOKENS = MAX_TOKENS + 16_384
+# Every token is at least one byte, so counting one token per byte cannot undercount,
+# whatever the content (dense or non-ASCII text can run well under 2 bytes per token).
+MIN_BYTES_PER_TOKEN = 1
 MAX_SEARCH_MATCHES = 100
 MAX_PATH_CHARS = 4096
 TOOL_TIMEOUT_S = 60
@@ -330,7 +340,58 @@ def _well_formed(content) -> bool:
     return len(ids) == len(set(ids))
 
 
-def run_agent(invoke, model: str, prompt: str, tools: RepoTools, clock=time.monotonic) -> dict:
+def prompt_budget_bytes() -> int:
+    """Largest first prompt that fits the window at one token per byte, with the system
+    prompt, tool definitions and the answer's reserve accounted for. There is no `usage`
+    before the first call, so this floor is the only bound on it."""
+    fixed = len(json.dumps({"system": SYSTEM, "tools": TOOLS}).encode()) + 1024
+    return (CONTEXT_WINDOW_TOKENS - CONTEXT_RESERVE_TOKENS) * MIN_BYTES_PER_TOKEN - fixed
+
+
+class _Overran(Exception):
+    """A model call still running when the loop's wall-clock deadline passed."""
+
+
+def _call_within(invoke, model: str, fields: dict, remaining: float) -> dict:
+    """`invoke`, bounded by wall-clock time as a whole.
+
+    `timeout` inside invoke is a per-socket-operation limit, so waiting for headers and
+    then for a slow body can each take nearly all of it. The call runs on a daemon thread
+    and is abandoned at the deadline; the task prints its result and exits, which ends
+    the thread with the process.
+    """
+    box: dict = {}
+
+    def target():
+        try:
+            box["value"] = invoke(model, fields, timeout=remaining)
+        except BaseException as exc:  # re-raised on the caller's thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, name="model-call", daemon=True)
+    thread.start()
+    thread.join(max(0.0, remaining))
+    if thread.is_alive():
+        raise _Overran
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def _context_tokens(response: dict, fields: dict) -> int:
+    """How much of the window the next request starts with: the model's own count of this
+    request plus its reply, or a deliberately high byte estimate when `usage` is missing."""
+    usage = response.get("usage")
+    keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+    if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int):
+        return sum(v for k in keys if isinstance(v := usage.get(k), int) and not isinstance(v, bool) and v > 0)
+    size = len(json.dumps(fields)) + len(json.dumps(response.get("content")))
+    return size // MIN_BYTES_PER_TOKEN
+
+
+def run_agent(
+    invoke, model: str, prompt: str, tools: RepoTools, clock=time.monotonic, time_limit_s: float = LOOP_DEADLINE_S
+) -> dict:
     """Loop model -> tools -> model until the model answers. Returns report, turns,
     tool_calls, and `error` when the loop did not end in a complete answer.
 
@@ -338,10 +399,18 @@ def run_agent(invoke, model: str, prompt: str, tools: RepoTools, clock=time.mono
     response; its timeout is capped by what is left of the deadline. Only
     `end_turn`/`stop_sequence` with text is an answer; `max_tokens` is a truncated one,
     and anything else is an error, so a partial report is never passed off as complete.
+
+    `time_limit_s` is at most LOOP_DEADLINE_S; the caller lowers it to what is left of
+    the task's own deadline, so the loop reports before Kubernetes kills the pod.
     """
-    deadline = clock() + LOOP_DEADLINE_S
+    time_limit_s = min(time_limit_s, LOOP_DEADLINE_S)
+    deadline = clock() + time_limit_s
     messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
     text, calls, spent = "", 0, 0
+    # Set once any call was refused for budget: the model was told to answer, and gets one
+    # more turn to do it. Asking for tools again ends the loop, so refusals cannot keep
+    # growing the conversation toward the window.
+    final = False
 
     def done(turns, error=None):
         outcome = {"report": text, "turns": turns, "tool_calls": calls}
@@ -352,15 +421,24 @@ def run_agent(invoke, model: str, prompt: str, tools: RepoTools, clock=time.mono
     for turn in range(1, MAX_TURNS + 1):
         remaining = deadline - clock()
         if remaining < 1:
-            return done(turn - 1, f"time limit of {LOOP_DEADLINE_S}s reached")
+            return done(turn - 1, f"time limit of {max(0, int(time_limit_s))}s reached")
         fields = {"system": SYSTEM, "messages": messages, "tools": TOOLS, "max_tokens": MAX_TOKENS}
         if len(json.dumps(fields)) > MAX_REQUEST_BYTES:
             return done(turn - 1, f"the conversation grew past {MAX_REQUEST_BYTES} bytes")
-        response = invoke(model, fields, timeout=remaining)
+        if turn == 1 and len(prompt.encode()) > prompt_budget_bytes():
+            return done(0, "the prompt is too large for the model's context window")
+        try:
+            response = _call_within(invoke, model, fields, remaining)
+        except _Overran:
+            return done(turn - 1, f"time limit of {max(0, int(time_limit_s))}s reached during a model call")
         content = response.get("content") or []
         if not _well_formed(content):
             return done(turn, "unexpected model response (malformed content)")
+        # Before the reply joins `messages`: `fields` shares that list, and the fallback
+        # estimate adds the reply itself.
+        room = CONTEXT_WINDOW_TOKENS - CONTEXT_RESERVE_TOKENS - _context_tokens(response, fields)
         messages.append({"role": "assistant", "content": content})
+        room_bytes = room * MIN_BYTES_PER_TOKEN
         text = "".join(c.get("text", "") for c in content if c.get("type") == "text")
         uses = [c for c in content if c.get("type") == "tool_use"]
         stop = response.get("stop_reason")
@@ -372,16 +450,23 @@ def run_agent(invoke, model: str, prompt: str, tools: RepoTools, clock=time.mono
             return done(turn, f"the answer was cut at {MAX_TOKENS} tokens")
         if stop != "tool_use" or not uses:
             return done(turn, f"unexpected model response (stop_reason={stop!r})")
+        if final:
+            return done(turn, "the model kept calling tools after its budget ran out")
         results = []
         for use in uses:
             remaining = deadline - clock()
-            if remaining <= 0 or calls >= MAX_TOOL_CALLS or spent >= MAX_TRANSCRIPT_TOOL_BYTES:
+            # A result is at most MAX_TOOL_OUTPUT_BYTES plus a short note, so a call runs
+            # only while one more worst-case result still fits the context window.
+            no_room = room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
+            if remaining <= 0 or calls >= MAX_TOOL_CALLS or spent >= MAX_TRANSCRIPT_TOOL_BYTES or no_room:
                 output = "error: tool budget exhausted — answer now with what you have read"
+                final = True
             else:
                 calls += 1
                 tools.timeout = max(1, min(TOOL_TIMEOUT_S, int(remaining)))
                 output = tools.run(use.get("name"), use.get("input"))
                 spent += len(output.encode())
+            room_bytes -= len(output.encode()) + 256  # the result and its framing
             results.append({"type": "tool_result", "tool_use_id": use.get("id", ""), "content": output})
         messages.append({"role": "user", "content": results})
     return done(MAX_TURNS, f"turn limit of {MAX_TURNS} reached")

@@ -34,6 +34,7 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BODY_BYTES = 8 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 # How much of a diff reaches the prompt. Beyond it the model is told the diff was cut.
+# run_task cuts it further if the whole first prompt would not fit the context window.
 MAX_DIFF_BYTES = 200 * 1024
 # Bytes the changed-file list may take in the prompt.
 MAX_PROMPT_FILE_BYTES = 32 * 1024
@@ -253,6 +254,13 @@ def bedrock_error_summary(exc: urllib.error.HTTPError) -> str:
     return f"{exc} ({code})" if code else str(exc)
 
 
+class BedrockHTTPError(RuntimeError):
+    """An HTTP error from Bedrock, already summarised (bedrock_error_summary).
+
+    Summarised inside the call, not by the caller: reading the error body can block, and
+    the agent loop bounds a model call's wall-clock time only while it is running."""
+
+
 def invoke_model(model: str, fields: dict, timeout: float = BEDROCK_TIMEOUT_S) -> dict:
     """One Bedrock InvokeModel (Messages API) call through the sigv4 proxy — unsigned in,
     signed out — returning the parsed response."""
@@ -278,8 +286,11 @@ def invoke_model(model: str, fields: dict, timeout: float = BEDROCK_TIMEOUT_S) -
     )
     timeout = min(timeout, BEDROCK_TIMEOUT_S)
     deadline = time.monotonic() + timeout
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-        payload = json.loads(_read_bounded(resp, MAX_RESPONSE_BYTES, deadline))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            payload = json.loads(_read_bounded(resp, MAX_RESPONSE_BYTES, deadline))
+    except urllib.error.HTTPError as exc:
+        raise BedrockHTTPError(bedrock_error_summary(exc)) from None
     if not isinstance(payload, dict):
         raise ValueError("bedrock returned a non-object response")
     return payload
@@ -355,6 +366,24 @@ def _str_field(spec: dict, key: str, default: str) -> str:
     return value if isinstance(value, str) and value else default
 
 
+# Left between the agent loop's end and the task's hard deadline, for printing the result
+# and for clock skew between the dispatcher's node and this one.
+RESULT_MARGIN_S = 30
+
+
+def loop_time_limit(deadline, now: float) -> float:
+    """Seconds the agent loop may run: LOOP_DEADLINE_S, or less when the task's own
+    deadline (epoch seconds from the dispatcher, SANDBOX_DEADLINE) is nearer. Scheduling,
+    the fetch and the diff have already spent part of it."""
+    try:
+        at = float(deadline)
+    except (TypeError, ValueError):
+        return agent_loop.LOOP_DEADLINE_S
+    if at != at or at in (float("inf"), float("-inf")):  # NaN or infinite: ignore it
+        return agent_loop.LOOP_DEADLINE_S
+    return max(0.0, min(agent_loop.LOOP_DEADLINE_S, at - now - RESULT_MARGIN_S))
+
+
 def run_task(spec: dict) -> dict:
     """Clone the repo, then (optionally) ask Bedrock about it. Never raises —
     each stage's failure is captured so callers see exactly what worked."""
@@ -402,13 +431,32 @@ def run_task(spec: dict) -> dict:
         result["top_level_total"] = len(entries)
 
         prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
+        # The first request has no token count to go on, so it must fit the window at one
+        # token per byte. The diff is the part that can give way; the loop refuses a
+        # prompt still too large after that.
+        budget = agent_loop.prompt_budget_bytes()
+        if change and change["patch"] and len(prompt.encode()) > budget:
+            # Marked first: the TRUNCATED note itself takes a few bytes of the budget.
+            change["truncated"] = True
+            result["diff_truncated"] = True
+            prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
+            excess = len(prompt.encode()) - budget
+            if excess > 0:
+                patch = change["patch"].encode()
+                change["patch"] = patch[: max(0, len(patch) - excess)].decode(errors="ignore")
+                prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
         try:
-            outcome = agent_loop.run_agent(invoke_model, model, prompt, agent_loop.RepoTools(workdir))
+            limit = loop_time_limit(spec.get("deadline"), time.time())
+            outcome = agent_loop.run_agent(
+                invoke_model, model, prompt, agent_loop.RepoTools(workdir), time_limit_s=limit
+            )
             result["report"] = outcome["report"]
             result["turns"] = outcome["turns"]
             result["tool_calls"] = outcome["tool_calls"]
             if "error" in outcome:
                 result["errors"]["agent"] = outcome["error"]
+        except BedrockHTTPError as exc:
+            result["errors"]["bedrock"] = str(exc)
         except urllib.error.HTTPError as exc:
             result["errors"]["bedrock"] = bedrock_error_summary(exc)
         except (OSError, http.client.HTTPException, KeyError, TypeError, ValueError, RecursionError) as exc:

@@ -29,6 +29,7 @@ SPEC_ENV = {
     "SANDBOX_TASK": "task",
     "SANDBOX_MODEL": "model",
     "SANDBOX_BASE": "base",
+    "SANDBOX_DEADLINE": "deadline",
 }
 
 

@@ -516,7 +516,7 @@ class TestRunTask:
         monkeypatch.setattr(
             sandbox.agent_loop,
             "run_agent",
-            lambda invoke, model, prompt, tools: {
+            lambda invoke, model, prompt, tools, **kw: {
                 "report": sandbox.invoke_bedrock(model, prompt),
                 "turns": 1,
                 "tool_calls": 0,
@@ -536,6 +536,20 @@ class TestRunTask:
         assert result["head_sha"] == "f" * 40
         for expected in ("+x = 1", "TRUNCATED", "a.py"):
             assert expected in prompts[0]
+
+    def test_a_diff_too_large_for_the_window_is_cut_to_fit(self, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(sandbox.agent_loop, "prompt_budget_bytes", lambda: 4000)
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: ["README.md"])
+        monkeypatch.setattr(sandbox, "diff_against", lambda dest, base: (["a.py"], 1, "+" + "é" * 5000, False))
+        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: prompts.append(prompt) or "ok")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "base": "a" * 40})
+        assert len(prompts[0].encode()) <= 4000
+        assert "TRUNCATED" in prompts[0]
+        assert "+é" in prompts[0]
+        assert result["diff_truncated"] is True
+        assert result["errors"] == {}
 
     def test_a_diff_that_cannot_be_computed_stops_the_task(self, monkeypatch):
         def boom(dest, base):
@@ -687,6 +701,26 @@ class TestRunTask:
         result = sandbox.run_task({"repo": "org/repo", "model": "m"})
         assert "AccessDeniedException" in result["errors"]["bedrock"]
 
+    def test_invoke_model_summarises_an_http_error_inside_the_call(self, monkeypatch):
+        """The error body is read before invoke_model returns, so the loop's wall clock
+        covers it; run_task only formats the summary."""
+        reads = []
+
+        class Body(io.BytesIO):
+            def read(self, *a):
+                reads.append(a)
+                return super().read(*a)
+
+        def refuse(req, timeout):
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "Forbidden", {}, Body(json.dumps({"__type": "AccessDeniedException"}).encode())
+            )
+
+        monkeypatch.setattr(sandbox.urllib.request, "urlopen", refuse)
+        with pytest.raises(sandbox.BedrockHTTPError, match="AccessDeniedException"):
+            sandbox.invoke_model("m", {"messages": []})
+        assert reads, "the body was read inside the call"
+
     @pytest.mark.parametrize("ref", [None, 0, [], ""], ids=["null", "zero", "list", "empty"])
     def test_non_string_ref_falls_back_to_main(self, monkeypatch, ref):
         """`spec.get("ref", "main")` returns None for an explicit null, and None
@@ -706,10 +740,61 @@ class TestRunTask:
         assert result["errors"] == {}
 
 
+class TestLoopTimeLimit:
+    @pytest.mark.parametrize(
+        ("deadline", "now", "expected"),
+        [
+            (None, 0.0, 600),  # no deadline: the loop's own
+            ("", 0.0, 600),
+            ("junk", 0.0, 600),
+            ("nan", 0.0, 600),
+            ("inf", 0.0, 600),
+            ("1000900", 1000000.0, 600),  # 900 s left: the loop's own 600 s is nearer
+            ("1000900", 1000500.0, 370),  # 400 s left, less the result margin
+            ("1000900", 1000880.0, 0),  # already inside the margin
+            ("1000900", 1002000.0, 0),  # past it
+        ],
+    )
+    def test_the_loop_ends_before_the_task_deadline(self, deadline, now, expected):
+        assert sandbox.loop_time_limit(deadline, now) == expected
+
+
 class TestRunTaskLoop:
     @pytest.fixture(autouse=True)
     def no_real_git(self, monkeypatch):
         monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
+
+    def test_a_slow_error_body_is_bounded_by_the_loop_deadline(self, monkeypatch):
+        import time as _time
+
+        def refuse(req, timeout):
+            class Slow(io.BytesIO):
+                def read(self, *a):
+                    _time.sleep(5)
+                    return b"{}"
+
+            raise urllib.error.HTTPError(req.full_url, 500, "Error", {}, Slow())
+
+        monkeypatch.setattr(sandbox.urllib.request, "urlopen", refuse)
+        tools = sandbox.agent_loop.RepoTools("/nonexistent")
+        started = _time.monotonic()
+        out = sandbox.agent_loop.run_agent(sandbox.invoke_model, "m", "p", tools, time_limit_s=1.5)
+        assert _time.monotonic() - started < 4
+        assert "during a model call" in out["error"]
+
+    def test_run_task_passes_the_deadline_to_the_loop(self, monkeypatch):
+        seen = {}
+
+        def fake_loop(invoke, model, prompt, tools, time_limit_s=None):
+            seen["limit"] = time_limit_s
+            return {"report": "ok", "turns": 1, "tool_calls": 0}
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox.time, "time", lambda: 1_000_500.0)
+        monkeypatch.setattr(sandbox.agent_loop, "run_agent", fake_loop)
+        sandbox.run_task({"repo": "org/repo", "model": "m", "deadline": "1000900"})
+        assert seen["limit"] == 400 - sandbox.RESULT_MARGIN_S
 
     def test_run_task_drives_the_tool_loop(self, monkeypatch):
         calls = []
@@ -738,7 +823,7 @@ class TestRunTaskLoop:
         monkeypatch.setattr(
             sandbox.agent_loop,
             "run_agent",
-            lambda invoke, model, prompt, tools: {
+            lambda invoke, model, prompt, tools, **kw: {
                 "report": "partial",
                 "turns": 24,
                 "tool_calls": 40,
