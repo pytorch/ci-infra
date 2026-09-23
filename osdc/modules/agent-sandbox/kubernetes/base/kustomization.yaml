@@ -24,3 +24,17 @@ resources:
   - proxy-pdb.yaml
   - dispatcher.yaml
   - networkpolicy.yaml
+
+# Capability manifests (see dispatcher/manifest.py). The name hash suffix rolls the
+# dispatcher whenever a manifest changes, since it loads them once at startup. Every file
+# in capabilities/ must be listed here; test_manifest.py fails if one is missing.
+configMapGenerator:
+  - name: agent-capabilities
+    namespace: ai-sandbox
+    options:
+      labels:
+        osdc.io/module: agent-sandbox
+    files:
+      - capabilities/ciforge-experiments.yaml
+      - capabilities/ciforge-pr-review.yaml
+      - capabilities/osdc-integration-test.yaml

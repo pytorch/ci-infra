@@ -56,12 +56,19 @@ def a_grant(task="", ref="", model="", caller="unauthenticated"):
     rather than a request body, which is the layering rule made unavoidable."""
     return authorize.Grant(
         caller=caller,
+        manifest="",
         workflow_ref="",
         clone_repo="org/repo",
         model=model,
         task=task,
         ref=ref,
     )
+
+
+@pytest.fixture(autouse=True)
+def checked_in_manifests(monkeypatch):
+    """The dispatcher loads manifests from its mount; tests use the checked-in ones."""
+    monkeypatch.setattr(http_api, "_MANIFESTS", test_authorize.MANIFESTS)
 
 
 @pytest.fixture
@@ -269,9 +276,9 @@ class TestHTTPSurface:
         assert body["report"] == "ok"
         assert body["task_id"]
 
-    def test_the_caller_cannot_choose_the_repository(self, server):
-        """The repository to clone is policy, not request. A caller naming a different
-        one is refused outright rather than quietly given the policy's."""
+    def test_the_unauthenticated_caller_cannot_choose_the_repository(self, server):
+        """Without a manifest the repository is pinned. A caller naming a different one
+        is refused outright rather than quietly given the policy's."""
         with pytest.raises(urllib.error.HTTPError) as exc:
             _post(f"{server}/run", {"repo": "attacker/evil"})
         assert exc.value.code == 403
@@ -559,6 +566,23 @@ class TestServerShape:
         assert bound["handler"] is http_api.Handler
         assert bound["served"] is True
 
+    def test_main_refuses_to_start_without_manifests(self, monkeypatch, tmp_path):
+        """A dispatcher with no policy would deny every authenticated call and look
+        healthy doing it; crashlooping says why."""
+        monkeypatch.setattr(http_api, "_MANIFESTS", None)
+        monkeypatch.setattr(http_api.manifest, "MANIFEST_DIR", tmp_path)
+        with pytest.raises(http_api.manifest.ManifestError):
+            entrypoint.main()
+
+    def test_manifests_are_loaded_once(self, monkeypatch):
+        monkeypatch.setattr(http_api, "_MANIFESTS", None)
+        monkeypatch.setattr(
+            http_api.manifest, "MANIFEST_DIR", test_authorize.MODULE / "kubernetes" / "base" / "capabilities"
+        )
+        first = http_api.manifests()
+        assert http_api.manifests() is first
+        assert "ciforge-experiments" in first
+
     def test_binds_ipv6(self):
         """A default AF_INET listener binds 0.0.0.0 and is unreachable on the IPv6-only
         cluster — the readiness probe and the Service both target the pod's IPv6."""
@@ -659,17 +683,30 @@ class TestAuthenticatedSurface:
         )
         return json.loads(_opener.open(req, timeout=30).read())
 
+    def _run(self, **fields):
+        return {**test_authorize.GOOD_REQUEST, **fields}
+
     def _token(self, keys, **overrides):
         return test_oidc.a_token(keys, **{**test_authorize.GOOD_CLAIMS, **overrides})
 
     def test_a_real_token_from_the_allowed_caller_runs_a_task(self, server, signed):
-        assert self._authed_post(server, self._token(signed), {"task": "hello"})["report"] == "ok"
+        assert self._authed_post(server, self._token(signed), self._run(task="hello"))["report"] == "ok"
+
+    def test_a_token_without_a_manifest_is_403(self, server, signed):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            self._authed_post(server, self._token(signed), {"task": "hello"})
+        assert exc.value.code == 403
+
+    def test_an_authenticated_repo_outside_the_manifest_is_403(self, server, signed):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            self._authed_post(server, self._token(signed), self._run(repo="attacker/evil"))
+        assert exc.value.code == 403
 
     def test_a_token_from_another_repository_is_403(self, server, signed):
         """Authenticated but not authorized — a different code from a bad signature,
         because they are different problems for whoever is reading the log."""
         with pytest.raises(urllib.error.HTTPError) as exc:
-            self._authed_post(server, self._token(signed, repository_id="999"), {"task": "hello"})
+            self._authed_post(server, self._token(signed, repository_id="999"), self._run(task="hello"))
         assert exc.value.code == 403
 
     def test_a_forged_token_is_401_even_while_auth_is_optional(self, server, signed):
@@ -685,7 +722,7 @@ class TestAuthenticatedSurface:
             headers={"kid": test_oidc.KID},
         )
         with pytest.raises(urllib.error.HTTPError) as exc:
-            self._authed_post(server, forged, {"task": "hello"})
+            self._authed_post(server, forged, self._run(task="hello"))
         assert exc.value.code == 401
 
     def test_requiring_auth_refuses_a_request_with_no_token(self, server, monkeypatch):
@@ -717,9 +754,9 @@ class TestAuthenticatedSurface:
         test that fails if only one side changes.
         """
         token = self._token(signed)
-        task_id = self._authed_post(server, token, {"task": "hello", "wait": False})["task_id"]
+        task_id = self._authed_post(server, token, self._run(task="hello", wait=False))["task_id"]
         request = urllib.request.Request(  # noqa: S310
-            f"{server}/status/{task_id}", headers={"Authorization": f"Bearer {token}"}
+            f"{server}/status/{task_id}?manifest=ciforge-experiments", headers={"Authorization": f"Bearer {token}"}
         )
         payload = json.loads(_opener.open(request, timeout=30).read())
         assert payload["task_id"] == task_id
@@ -727,28 +764,52 @@ class TestAuthenticatedSurface:
 
         # ...and a task owned by somebody else stays invisible to this authenticated
         # caller, which is the half that would break if the two sides derived the owner
-        # differently. Note what this does NOT prove: two allow-list entries sharing a
-        # `name` would share results, and only test_every_allowed_caller_carries_its_own_
-        # workflow_prefix's uniqueness assertion stands between us and that.
+        # differently. Note what this does NOT prove: two client entries naming the same
+        # repository would share results; test_caller_keys_do_not_collide_across_
+        # repositories is what stands between us and that.
         tasks._finish(task_id, {"report": "mine"})
         other = tasks.start_task("someone-else")
         tasks._finish(other, {"report": "theirs"})
         with pytest.raises(urllib.error.HTTPError) as exc:
             _opener.open(
                 urllib.request.Request(  # noqa: S310
-                    f"{server}/status/{other}", headers={"Authorization": f"Bearer {token}"}
+                    f"{server}/status/{other}?manifest=ciforge-experiments",
+                    headers={"Authorization": f"Bearer {token}"},
                 ),
                 timeout=30,
             )
         assert exc.value.code == 404
 
+    def test_another_manifest_of_the_same_repo_cannot_read_the_task(self, server, signed):
+        """A pull_request token that ciforge-pr-review admits must not read a result
+        produced under ciforge-experiments, although both list pytorch/ciforge."""
+        task_id = self._authed_post(server, self._token(signed), self._run(task="hello", wait=False))["task_id"]
+        pr_token = self._token(signed, event_name="pull_request")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener.open(
+                urllib.request.Request(  # noqa: S310
+                    f"{server}/status/{task_id}?manifest=ciforge-pr-review",
+                    headers={"Authorization": f"Bearer {pr_token}"},
+                ),
+                timeout=30,
+            )
+        assert exc.value.code == 404
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener.open(
+                urllib.request.Request(  # noqa: S310
+                    f"{server}/status/{task_id}?manifest=ciforge-experiments",
+                    headers={"Authorization": f"Bearer {pr_token}"},
+                ),
+                timeout=30,
+            )
+        assert exc.value.code == 403, "ciforge-experiments does not admit pull_request"
+
     def test_status_applies_the_same_policy_as_run(self, server, signed):
-        """An identity-only check on /status let a token that /run had denied — wrong
-        event, unprotected ref, self-hosted runner — read every task owned by that
-        repository."""
-        denied = self._token(signed, event_name="pull_request")
+        """An identity-only check on /status let a token that /run had denied read every
+        task owned by that repository. issue_comment is a trigger no manifest lists."""
+        denied = self._token(signed, event_name="issue_comment")
         request = urllib.request.Request(  # noqa: S310
-            f"{server}/status/0123456789ab", headers={"Authorization": f"Bearer {denied}"}
+            f"{server}/status/0123456789ab?manifest=ciforge-experiments", headers={"Authorization": f"Bearer {denied}"}
         )
         with pytest.raises(urllib.error.HTTPError) as exc:
             _opener.open(request, timeout=10)

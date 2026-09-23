@@ -1,0 +1,15 @@
+# This module's own integration test: `test-agent-sandbox` in
+# osdc/integration-tests/workflows/integration-test.yaml.tpl, which run.py pushes to
+# pytorch/pytorch-canary and runs on pull_request. It is the one job that proves the
+# sandbox works end to end.
+name: osdc-integration-test
+owner: pytorch-dev-infra
+clients:
+  repos:
+    - repository: pytorch/pytorch-canary
+      repository_id: "398371105"
+      repository_owner_id: "21003710"
+  triggers: [pull_request]
+  workflows: [.github/workflows/integration-test.yaml]
+sandbox:
+  repos: [pytorch/pytorch]

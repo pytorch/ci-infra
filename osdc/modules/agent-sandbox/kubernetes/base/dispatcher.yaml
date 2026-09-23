@@ -105,6 +105,11 @@ spec:
             - name: oidc-jwks
               mountPath: /etc/agent-sandbox/jwks
               readOnly: true
+            # Capability manifests, read once at startup. A manifest change renames
+            # the generated ConfigMap, which rolls this Deployment.
+            - name: agent-capabilities
+              mountPath: /etc/agent-sandbox/capabilities
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -131,6 +136,9 @@ spec:
         - name: oidc-jwks
           configMap:
             name: oidc-jwks
+        - name: agent-capabilities
+          configMap:
+            name: agent-capabilities
 
 ---
 # Kept named sandbox-agent: it is the address arc-runners and the canary already use

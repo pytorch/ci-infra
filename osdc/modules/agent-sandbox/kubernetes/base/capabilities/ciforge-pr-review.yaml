@@ -1,0 +1,17 @@
+# Automatic PR review, developed in pytorch/ciforge. PR-triggered clients are allowed:
+# the manifest bounds what the run may do, so the client need not be trusted.
+# workflow_run covers the split pattern (an untrusted capture stage, then a
+# default-branch stage that calls the dispatcher).
+name: ciforge-pr-review
+owner: pytorch-dev-infra
+clients:
+  repos:
+    - repository: pytorch/ciforge
+      repository_id: "1133856973"
+      repository_owner_id: "21003710"
+  triggers: [pull_request, workflow_run, workflow_dispatch]
+model:
+  id: us.anthropic.claude-opus-5-5
+sandbox:
+  # Public repos only: the task pod clones anonymously and holds no credential.
+  repos: [pytorch/pytorch, pytorch/test-infra, pytorch/ci-infra]

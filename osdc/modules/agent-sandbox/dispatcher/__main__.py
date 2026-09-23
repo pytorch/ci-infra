@@ -38,9 +38,11 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 
 def main() -> None:
+    loaded = http_api.manifests()
     server = http_api.HTTPServerV6(("::", PORT), http_api.Handler)
     print(
-        f"[sandbox-dispatcher] listening on [::]:{PORT}, namespace={kube.NAMESPACE}, image={kube.AGENT_IMAGE}",
+        f"[sandbox-dispatcher] listening on [::]:{PORT}, namespace={kube.NAMESPACE}, image={kube.AGENT_IMAGE}, "
+        f"manifests={sorted(loaded)}",
         flush=True,
     )
     server.serve_forever()
