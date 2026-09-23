@@ -23,6 +23,10 @@ import urllib.request
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
+# Set to reach PRIVATE repositories: the proxy holds the GitHub credential this process
+# deliberately does not. Empty means clone github.com directly and anonymously, which is
+# the pre-proxy behaviour and reaches public repositories only.
+GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
@@ -44,8 +48,12 @@ def clone_repo(repo: str, ref: str, dest: str) -> int:
     needs a token, which this worker deliberately never holds, so that path wants
     mitmproxy in front of it the way Bedrock has the sigv4 proxy.
     """
+    # Plain HTTP to the proxy is deliberate and matches the Bedrock path: it is a
+    # ClusterIP inside the namespace, the NetworkPolicy admits only task pods, and the
+    # request carries no credential to protect — the proxy adds one on its way out.
+    url = f"http://{GIT_PROXY}/{repo}.git" if GIT_PROXY else f"https://github.com/{repo}.git"
     subprocess.run(
-        ["git", "clone", "--depth", "1", "--branch", ref, f"https://github.com/{repo}.git", dest],
+        ["git", "clone", "--depth", "1", "--branch", ref, url, dest],
         check=True,
         capture_output=True,
         text=True,

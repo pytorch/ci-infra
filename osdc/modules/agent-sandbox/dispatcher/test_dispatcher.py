@@ -175,6 +175,22 @@ class TestJobManifest:
         assert labels["app"] == "sandbox-task"
 
 
+class TestGitProxy:
+    def test_the_task_pod_is_told_where_the_proxy_is(self, monkeypatch):
+        """The credential lives in the proxy, so the pod needs its address and nothing
+        else — there is no token here to pass down."""
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
+        env = {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+        assert env["GIT_PROXY"] == "git-proxy.ai-sandbox.svc:8080"
+
+    def test_no_credential_reaches_the_task_pod(self, monkeypatch):
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
+        env = {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+        assert not any("TOKEN" in name.upper() or "SECRET" in name.upper() for name in env)
+
+
 class TestRunToCompletion:
     def test_creates_one_job_and_returns_the_parsed_result(self, fake_k8s):
         result = tasks._run_to_completion("abc123abc123", a_grant())
