@@ -311,6 +311,33 @@ class TestSigv4Proxy:
         assert "--verbose" not in args, "sigv4-proxy must not run --verbose — it logs the signed credential."
 
 
+class TestGitProxy:
+    """The proxy that holds the GitHub credential so task pods do not."""
+
+    def test_git_proxy_ready(self, all_deployments: dict) -> None:
+        """A crashlooping proxy is invisible from the deploy otherwise: private clones
+        fail at task time with a connection refused rather than at rollout."""
+        assert_deployment_ready(all_deployments, NAMESPACE, "git-proxy")
+
+    def test_git_proxy_service_exists(self, all_services: dict) -> None:
+        svcs = filter_services(all_services, namespace=NAMESPACE, name="git-proxy")
+        assert len(svcs) == 1, f"Expected Service 'git-proxy' in '{NAMESPACE}'."
+
+    def test_git_proxy_holds_no_kubernetes_identity(self) -> None:
+        """It holds a GitHub credential; it has no business holding a K8s one too."""
+        dep = _deployment(run_kubectl(["get", "deployments", "-n", NAMESPACE]), "git-proxy")
+        assert dep["spec"]["template"]["spec"].get("automountServiceAccountToken") is not True
+
+    def test_the_task_pods_never_receive_the_credential(self) -> None:
+        """The whole point: the pod learns the proxy's ADDRESS, never its token."""
+        dep = _deployment(run_kubectl(["get", "deployments", "-n", NAMESPACE]), "sandbox-dispatcher")
+        env = dep["spec"]["template"]["spec"]["containers"][0].get("env", [])
+        for entry in env:
+            assert "git-proxy-credentials" not in str(entry.get("valueFrom", "")), (
+                "the dispatcher must not mount the git credential; only git-proxy may"
+            )
+
+
 class TestSandboxDispatcher:
     """The callable entry point — a Deployment + Service reachable from arc-runners,
     like buildkitd. It creates one Job per request, so there is no standing worker: task
@@ -502,9 +529,15 @@ class TestAgentSandboxNetworkPolicies:
 
         pod_rules = [r for r in rules if any("podSelector" in t for t in r.get("to", []))]
         assert pod_rules, "task egress must allow the sigv4-proxy."
-        assert all(
-            t["podSelector"]["matchLabels"] == {"app": "sigv4-proxy"} for r in pod_rules for t in r.get("to", [])
-        ), f"the only pod-to-pod egress may be the sigv4-proxy; got {pod_rules}."
+        # Exactly the two credential-holding proxies, and an EQUALITY check rather than a
+        # subset one: this assertion exists to catch a third peer being added, so it has
+        # to fail when the set grows.
+        peers = {
+            t["podSelector"]["matchLabels"]["app"] for r in pod_rules for t in r.get("to", []) if "podSelector" in t
+        }
+        assert peers == {"sigv4-proxy", "git-proxy"}, (
+            f"task pods may reach only the sigv4 and git proxies; got {sorted(peers)}."
+        )
 
         # The clone path: NetworkPolicy can't name github.com, so this is the widest
         # rule in the namespace and must stay HTTPS-only.
