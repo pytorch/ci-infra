@@ -59,8 +59,15 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"ref"?,"task"?,"wait"?}` →
+- `POST /run` body `{"ref"?,"task"?,"wait"?,"pr"?}` →
   `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
+
+  **`"pr": <number>` checks out that pull request's head** (`refs/pull/<n>/head`) instead
+  of `ref`, which it overrides. Like `ref`, `pr` is a *selector*: it names a pull request
+  **of the policy-pinned repository**, so it cannot reach another repo. PR head refs live
+  in the base repository, so this reaches a fork's pull request without naming the fork.
+  The checkout is the whole of it for now — the model still gets the top-level listing,
+  not a diff.
 
   Waits for the task by default, so a caller sees the result on the same connection —
   budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
@@ -212,6 +219,11 @@ curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/
   -H 'Content-Type: application/json' \
   -d '{"ref":"main","task":"Summarize the build layout"}'
 
+# Check out a pull request head of the policy-pinned repo:
+curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{"pr":1234,"task":"What does this change touch?"}'
+
 # Or don't hold the connection open:
 TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -d '{"wait":false}' | jq -r .task_id)
@@ -221,6 +233,39 @@ curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
 and sending either is a `403` rather than a value that is quietly accepted and dropped.
 The model is `BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
 `agent_sandbox.default_model_id`; per-caller models arrive with the capability manifest.
+
+## Private repositories: the git credential proxy
+
+A task pod holds no GitHub credential, so an anonymous fetch reaches **public
+repositories only** — a private one fails with `could not read Username`. `git-proxy`
+is the answer, and it is the same shape as `sigv4-proxy`: the credential lives in the
+proxy, the agent sends an unauthenticated request, and the proxy authenticates it on
+the way out. The agent never learns the token.
+
+Two properties do the security work, and neither is the token's own scope:
+
+- **An allowlist**, a literal in `kubernetes/base/git-proxy.yaml`. A proxy that
+  forwarded any path with a token attached would let anything that can reach it read
+  every repo that token can. Add a repo there, in review, the way `ALLOWED_CALLERS`
+  works in `authorize.py`.
+- **Read only.** Only the two endpoints `git fetch` uses are routed; `git-receive-pack`
+  is not a location and `service=git-receive-pack` is refused, so a token that happens
+  to carry write access cannot push through it.
+
+The credential is **not** created by `deploy.sh` — it is a GitHub token, and the deploy
+has no business minting one. Create it out of band:
+
+```
+TOKEN=<a token with contents:read on the allowlisted repos>
+kubectl create secret generic git-proxy-credentials -n ai-sandbox \
+  --from-literal=basic-auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+```
+
+Pre-encoded because git over HTTPS authenticates with Basic and nginx cannot base64 at
+render time. A GitHub App installation token is the better source than a PAT — an hour
+long and scoped per repo — but it needs a refresher, which this does not yet have.
+Without the Secret the proxy does not start and private fetches fail; public ones are
+unaffected, because they never touch it.
 
 ## Capacity
 
