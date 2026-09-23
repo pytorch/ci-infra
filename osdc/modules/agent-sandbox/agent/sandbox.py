@@ -24,12 +24,16 @@ import urllib.request
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 # Set to reach PRIVATE repositories: the proxy holds the GitHub credential this process
-# deliberately does not. Empty means clone github.com directly and anonymously, which is
+# deliberately does not. Empty means fetch github.com directly and anonymously, which is
 # the pre-proxy behaviour and reaches public repositories only.
 GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
+# The fetch carries the whole tree, so it gets CLONE_TIMEOUT_S; init, checkout and
+# ls-files are local and near-instant, and a separate short budget keeps a wedged one
+# from spending the fetch's.
+GIT_STEP_TIMEOUT_S = 30
 # The proxy's response is caller-influenced (the prompt is), so bound it.
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BODY_BYTES = 8 * 1024
@@ -37,38 +41,47 @@ READ_CHUNK_BYTES = 64 * 1024
 
 
 def clone_repo(repo: str, ref: str, dest: str) -> int:
-    """Shallow, anonymous clone of a public repo. Returns the tracked-file count.
+    """Shallow, anonymous checkout of one ref of a public repo. Returns the tracked-file
+    count.
 
-    FIXME(prototype): `ref` is a branch or tag only, never a commit sha —
-    `git clone --branch` resolves nothing else, and a caller pinning a sha gets a
-    clone failure that doesn't say why. Accepting a sha means `git init` +
-    `fetch --depth 1 origin <ref>` + `checkout FETCH_HEAD`, and fetch-by-object-id
-    is a server-side setting that has to be confirmed per repo. Deferred with the
-    wider question of how the sandbox should check code out at all: a private repo
-    needs a token, which this worker deliberately never holds, so that path wants
-    mitmproxy in front of it the way Bedrock has the sigv4 proxy.
+    fetch-then-checkout rather than `git clone --branch`, because `--branch` resolves a
+    BRANCH OR TAG and nothing else — which left the two refs a review needs unreachable:
+    `refs/pull/<n>/head` and a commit sha. A fetch takes any of the four, and a pull
+    request's head ref lives in the BASE repository, so this reaches a fork's PR without
+    ever naming the fork.
+
+    A PRIVATE repository needs a credential, which this process never holds, so those
+    fetches go through GIT_PROXY — see kubernetes/base/git-proxy.yaml. Unset, this talks
+    to github.com anonymously and reaches public repositories only.
+
+    Fetching a bare sha needs the server to allow it (`uploadpack.allowReachableSHA1InWant`).
+    github.com does: verified 2026-09-23 by fetching a full commit sha of pytorch/ci-infra
+    into an empty repo. It is a server-side setting, so a future GitHub Enterprise or
+    mirror host may refuse — the failure is git's own "want ... not valid", captured as a
+    clone error like any other.
     """
+    url = f"http://{GIT_PROXY}/{repo}.git" if GIT_PROXY else f"https://github.com/{repo}.git"
     # Plain HTTP to the proxy is deliberate and matches the Bedrock path: it is a
     # ClusterIP inside the namespace, the NetworkPolicy admits only task pods, and the
     # request carries no credential to protect — the proxy adds one on its way out.
-    url = f"http://{GIT_PROXY}/{repo}.git" if GIT_PROXY else f"https://github.com/{repo}.git"
-    subprocess.run(
-        ["git", "clone", "--depth", "1", "--branch", ref, url, dest],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=CLONE_TIMEOUT_S,
-        # A private repo would otherwise make git prompt for a username and block
-        # until the clone timeout instead of failing.
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-    )
-    listing = subprocess.run(
-        ["git", "-C", dest, "ls-files"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    #
+    # GIT_TERMINAL_PROMPT=0 still matters with a proxy in front: a repo the proxy's
+    # allowlist refuses answers 403, and git would otherwise prompt for a username and
+    # block until the timeout instead of failing with the reason.
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+    def git(*args: str, timeout: int) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], check=True, capture_output=True, text=True, timeout=timeout, env=env)
+
+    git("init", "-q", dest, timeout=GIT_STEP_TIMEOUT_S)
+    # The URL is passed to fetch rather than configured as a remote: nothing here pushes
+    # or re-fetches, and an unconfigured remote is one less thing a later step can follow.
+    git("-C", dest, "fetch", "--depth", "1", url, ref, timeout=CLONE_TIMEOUT_S)
+    # Detached at FETCH_HEAD. There is no local branch and no `origin`, which is correct
+    # for a tree that is read once and thrown away with the pod.
+    git("-C", dest, "checkout", "-q", "FETCH_HEAD", timeout=GIT_STEP_TIMEOUT_S)
+
+    listing = git("-C", dest, "ls-files", timeout=GIT_STEP_TIMEOUT_S)
     return len([line for line in listing.stdout.splitlines() if line.strip()])
 
 
@@ -87,24 +100,27 @@ def top_level_entries(dest: str) -> list[str]:
     return [f"{n}/" if os.path.isdir(os.path.join(dest, n)) else n for n in names]
 
 
-def _read_bounded(resp, limit: int, deadline: float) -> bytes:
+def _read_bounded(resp, limit: int, deadline: float, what: str = "bedrock") -> bytes:
     """Read at most `limit` bytes, giving up at `deadline` (a monotonic timestamp).
 
-    BEDROCK_TIMEOUT_S is urllib's per-operation socket timeout, not a wall clock: a
-    proxy that trickles one byte at a time resets it on every chunk and would hold
-    the single task slot — and grow this pod's memory — for as long as it likes.
+    A socket timeout is urllib's PER-OPERATION budget, not a wall clock: a peer that
+    trickles one byte at a time resets it on every chunk and would hold the single task
+    slot — and grow this pod's memory — for as long as it likes.
+
+    `what` names the peer in the two errors, because this now guards two of them and
+    "bedrock response exceeded" on a GitHub diff sends the reader to the wrong service.
     """
     chunks: list[bytes] = []
     total = 0
     while True:
         if time.monotonic() > deadline:
-            raise TimeoutError(f"bedrock response incomplete after {BEDROCK_TIMEOUT_S}s")
+            raise TimeoutError(f"{what} response incomplete before deadline")
         chunk = resp.read(READ_CHUNK_BYTES)
         if not chunk:
             return b"".join(chunks)
         total += len(chunk)
         if total > limit:
-            raise ValueError(f"bedrock response exceeded {limit} bytes")
+            raise ValueError(f"{what} response exceeded {limit} bytes")
         chunks.append(chunk)
 
 
@@ -200,14 +216,39 @@ def _str_field(spec: dict, key: str, default: str) -> str:
     return value if isinstance(value, str) and value else default
 
 
+def _pr_field(spec: dict) -> int:
+    """The pull request number, or 0 for "not a review".
+
+    Arrives as a STRING from task.py, which reads env vars, and as an int from a direct
+    caller (tests, canary). Anything else is 0 rather than an exception: run_task never
+    raises, and a spec the dispatcher already type-checked cannot get here malformed.
+    """
+    value = spec.get("pr")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
 def run_task(spec: dict) -> dict:
-    """Clone the repo, then (optionally) ask Bedrock about it. Never raises —
+    """Check out a ref (or a pull request head) and ask Bedrock about it. Never raises —
     each stage's failure is captured so callers see exactly what worked."""
     repo = spec["repo"]
     ref = _str_field(spec, "ref", "main")
     task = _str_field(spec, "task", "Summarize this repository.")
     model = _str_field(spec, "model", DEFAULT_MODEL)
+    pr = _pr_field(spec)
     result: dict = {"cloned": False, "file_count": 0, "top_level": [], "report": "", "errors": {}}
+
+    if pr:
+        # A pull request is just another ref to check out, and it wins over `ref`: the two
+        # name different commits, and silently reviewing the branch a caller also sent
+        # would be the wrong tree with no sign that anything was ignored.
+        ref = f"refs/pull/{pr}/head"
+        result["pr"] = pr
 
     with tempfile.TemporaryDirectory() as workdir:
         try:

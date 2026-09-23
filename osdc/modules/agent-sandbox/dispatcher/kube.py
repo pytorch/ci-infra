@@ -27,7 +27,7 @@ NAMESPACE = os.environ.get("NAMESPACE", "ai-sandbox")
 AGENT_IMAGE = os.environ.get("AGENT_IMAGE", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
-# Empty by default: without it the task pod clones github.com anonymously, which is the
+# Empty by default: without it the task pod fetches github.com anonymously, which is the
 # pre-proxy behaviour and reaches public repositories only. dispatcher.yaml sets it.
 GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
@@ -171,6 +171,11 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "SANDBOX_REF", "value": grant.ref},
                                 {"name": "SANDBOX_TASK", "value": grant.task},
                                 {"name": "SANDBOX_MODEL", "value": grant.model},
+                                # Empty rather than "0" when there is no review, so
+                                # task.py's "skip the empty ones" rule drops it and the
+                                # agent sees no `pr` key at all — the same shape a
+                                # pre-review dispatcher produced.
+                                {"name": "SANDBOX_PR", "value": str(grant.pr) if grant.pr else ""},
                             ],
                             "securityContext": {
                                 "runAsNonRoot": True,
