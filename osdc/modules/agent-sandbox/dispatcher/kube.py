@@ -27,6 +27,9 @@ NAMESPACE = os.environ.get("NAMESPACE", "ai-sandbox")
 AGENT_IMAGE = os.environ.get("AGENT_IMAGE", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
+# Empty by default: without it the task pod fetches github.com anonymously, which is the
+# pre-proxy behaviour and reaches public repositories only. dispatcher.yaml sets it.
+GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 
 # A task is a clone plus an invoke, each bounded at 120s in the task image, plus pod
@@ -162,6 +165,7 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "PYTHONUNBUFFERED", "value": "1"},
                                 {"name": "AWS_REGION", "value": REGION},
                                 {"name": "SIGV4_PROXY", "value": SIGV4_PROXY},
+                                {"name": "GIT_PROXY", "value": GIT_PROXY},
                                 {"name": "BEDROCK_DEFAULT_MODEL_ID", "value": DEFAULT_MODEL},
                                 {"name": "SANDBOX_REPO", "value": grant.clone_repo},
                                 {"name": "SANDBOX_REF", "value": grant.ref},
