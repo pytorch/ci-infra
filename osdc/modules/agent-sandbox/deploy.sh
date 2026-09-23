@@ -173,11 +173,13 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 # the wrong amount of time to wait after a first deploy. Named per run so repeated
 # deploys do not collide.
 #
-# BOTH steps are guarded, and that is the point: under `set -euo pipefail` an unguarded
-# `kubectl create job` aborts the whole deploy, which is not what a failed key fetch
-# deserves — everything else has already applied and the CronJob retries on its own. An
-# earlier revision guarded only the wait and claimed in this comment that a failure
-# warns; it did not.
+# A failed fetch is fatal only when the ConfigMap holds no keys yet (a first deploy):
+# with REQUIRE_AUTH on, the dispatcher then answers 401 to every call until some later
+# refresh lands, up to 6 hours, and a deploy that reports success in that state is lying.
+# On a cluster that already has keys, the old set stays mounted (the dispatcher accepts it
+# for 24h from its fetch) and the CronJob retries, so a failure only warns — after checking
+# that set is one the dispatcher would still accept. Both kubectl
+# steps are guarded so that decision is made here rather than by `set -e`.
 #
 # This Job is owned by NOBODY: the CronJob's successfulJobsHistoryLimit only reaps Jobs
 # the CronJob itself created, so without the delete below every deploy would leave a Job
@@ -186,16 +188,74 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 # history limits for the scheduled Jobs — kube-linter rejects exactly that. Deleting only
 # on SUCCESS is the better trade anyway: a Job that did not complete is the one whose logs
 # you want. Residual: a deploy interrupted between create and delete leaks one Job.
+# Prints how long an existing key set stays acceptable, or why it is not (exit 1).
+# Checks what can go wrong with a set after it was written: its age (the dispatcher
+# refuses one older than 24h or more than 300s in the future; this also wants an hour left
+# so the set outlives the rest of the deploy) and its shape. Key material
+# is not re-validated here: the refresher is the only writer (its Role can patch only this
+# ConfigMap) and it parses every set with the dispatcher's own PyJWT before writing it,
+# which a deploy host without PyJWT cannot repeat.
+JWKS_USABLE_PY='
+import json, sys, time
+MAX_AGE_S, FUTURE_SKEW_S = 24 * 3600, 300
+# The rollout waits below can take 15 min; a set that expires before this script ends
+# would make "Deployed" a lie. A healthy set, refreshed every 6h, has about 18h left.
+MIN_LEFT_S = 3600
+def bad(why):
+    print(why)
+    sys.exit(1)
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    bad("not valid JSON")
+if not isinstance(doc, dict):
+    bad("not a JSON object")
+fetched = doc.get("fetched_at")
+if isinstance(fetched, bool) or not isinstance(fetched, (int, float)):
+    bad("no fetched_at")
+jwks = doc.get("jwks")
+keys = jwks.get("keys") if isinstance(jwks, dict) else None
+if not isinstance(keys, list) or not keys:
+    bad("no keys")
+age = time.time() - fetched
+if age > MAX_AGE_S:
+    bad(f"{int(age)}s old, past the 24h limit")
+if age < -FUTURE_SKEW_S:
+    bad(f"timestamped {int(-age)}s in the future")
+if MAX_AGE_S - age < MIN_LEFT_S:
+    bad(f"{int(age)}s old, expiring within the hour")
+print(f"{int((MAX_AGE_S - age) // 60)} min")
+'
 JWKS_JOB="jwks-refresher-deploy-$(date +%s)"
 echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
+jwks_failure=""
 if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresher -n "$NAMESPACE"; then
   if kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s; then
     kubectl delete job "$JWKS_JOB" -n "$NAMESPACE" --ignore-not-found
   else
-    echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — kept for inspection; check its logs before enabling REQUIRE_AUTH."
+    jwks_failure="${JWKS_JOB} did not complete in 120s (kept for inspection; check its logs)"
   fi
 else
-  echo "[agent-sandbox] Warning: could not start ${JWKS_JOB}; the CronJob will attempt another refresh within 6h."
+  jwks_failure="could not start ${JWKS_JOB}"
+fi
+if [[ -n "$jwks_failure" ]]; then
+  # A failed read is not "no keys": it stops the deploy with its own message.
+  if ! existing_keys=$(kubectl get configmap oidc-jwks -n "$NAMESPACE" -o jsonpath='{.data.jwks\.json}'); then
+    echo "[agent-sandbox] ERROR: ${jwks_failure}, and oidc-jwks could not be read to tell whether signing keys are present." >&2
+    exit 1
+  fi
+  if [[ -z "$existing_keys" ]]; then
+    echo "[agent-sandbox] ERROR: ${jwks_failure}, and oidc-jwks holds no signing keys yet, so the dispatcher refuses every /run and /status call. Fix the fetch and re-run the deploy." >&2
+    exit 1
+  fi
+  # Present is not usable: the dispatcher also refuses a malformed document, an empty key
+  # set and keys older than 24h (dispatcher/oidc.py). Same checks here, so the warning
+  # below is only printed when the old set really is still accepted.
+  if ! keys_left=$(printf '%s' "$existing_keys" | python3 -c "$JWKS_USABLE_PY"); then
+    echo "[agent-sandbox] ERROR: ${jwks_failure}, and the signing keys in oidc-jwks cannot carry this deploy (${keys_left}): the dispatcher refuses every call once they are stale or if they are malformed. Fix the fetch and re-run the deploy." >&2
+    exit 1
+  fi
+  echo "[agent-sandbox] Warning: ${jwks_failure}. The previous signing keys stay in use for about ${keys_left} more; the CronJob retries every 6h."
 fi
 
 # --- Prune objects earlier designs left behind (idempotent) ---
