@@ -156,7 +156,23 @@ else
   K8S_API_CIDR="${K8S_API_IP}/32"
 fi
 
-# --- Apply manifests (substitute both images, region, model, role ARN, API CIDR) ---
+# --- kube-dns address for the git proxy's nginx resolver ---
+# nginx resolves its upstream ONCE at startup without a `resolver`, pinning a GitHub IP
+# until the pod restarts. The address is the cluster's DNS Service, which differs per
+# cluster and is IPv6 here.
+KUBE_DNS_IP=$(kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')
+if [[ -z "$KUBE_DNS_IP" ]]; then
+  echo "[agent-sandbox] ERROR: could not read the kube-dns Service ClusterIP" >&2
+  exit 1
+fi
+# nginx needs an IPv6 literal in brackets; an unbracketed one parses as host:port.
+if [[ "$KUBE_DNS_IP" == *:* ]]; then
+  KUBE_DNS_RESOLVER="[${KUBE_DNS_IP}]"
+else
+  KUBE_DNS_RESOLVER="${KUBE_DNS_IP}"
+fi
+
+# --- Apply manifests (substitute both images, region, model, role ARN, API CIDR, DNS) ---
 echo "[agent-sandbox] Applying base manifests (task image: ${AGENT_IMAGE}, dispatcher: ${DISPATCHER_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
 kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
   | sed -e "s|__AGENT_IMAGE__|${AGENT_IMAGE}|g" \
@@ -165,6 +181,7 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
     -e "s|__BEDROCK_DEFAULT_MODEL_ID__|${BEDROCK_DEFAULT_MODEL_ID}|g" \
     -e "s|__SIGV4_ROLE_ARN__|${SIGV4_ROLE_ARN}|g" \
     -e "s|__K8S_API_CIDR__|${K8S_API_CIDR}|g" \
+    -e "s|__KUBE_DNS_IP__|${KUBE_DNS_RESOLVER}|g" \
   | kubectl_apply_if_changed -f -
 
 # --- Populate the OIDC signing keys now, not at the CronJob's next tick ---
@@ -240,6 +257,10 @@ fi
 # wait for — task pods only exist while a request is in flight.
 echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
+# git-proxy too, and this is also what catches an absent git-proxy-credentials Secret:
+# the pod would otherwise sit in CreateContainerConfigError behind a green deploy, and
+# the first symptom would be a private clone failing inside a task.
+kubectl rollout status deployment/git-proxy -n "$NAMESPACE" --timeout=5m
 kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=10m
 
 echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd;"
