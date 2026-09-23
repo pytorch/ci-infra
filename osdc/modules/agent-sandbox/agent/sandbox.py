@@ -23,6 +23,10 @@ import urllib.request
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
+# Set to reach PRIVATE repositories: the proxy holds the GitHub credential this process
+# deliberately does not. Empty means fetch github.com directly and anonymously, which is
+# the pre-proxy behaviour and reaches public repositories only.
+GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
@@ -46,15 +50,24 @@ def clone_repo(repo: str, ref: str, dest: str) -> int:
     request's head ref lives in the BASE repository, so this reaches a fork's PR without
     ever naming the fork.
 
+    A PRIVATE repository needs a credential, which this process never holds, so those
+    fetches go through GIT_PROXY — see kubernetes/base/git-proxy.yaml. Unset, this talks
+    to github.com anonymously and reaches public repositories only.
+
     Fetching a bare sha needs the server to allow it (`uploadpack.allowReachableSHA1InWant`).
     github.com does: verified 2026-09-23 by fetching a full commit sha of pytorch/ci-infra
     into an empty repo. It is a server-side setting, so a future GitHub Enterprise or
     mirror host may refuse — the failure is git's own "want ... not valid", captured as a
     clone error like any other.
     """
-    url = f"https://github.com/{repo}.git"
-    # A private repo would otherwise make git prompt for a username and block until the
-    # timeout instead of failing.
+    url = f"http://{GIT_PROXY}/{repo}.git" if GIT_PROXY else f"https://github.com/{repo}.git"
+    # Plain HTTP to the proxy is deliberate and matches the Bedrock path: it is a
+    # ClusterIP inside the namespace, the NetworkPolicy admits only task pods, and the
+    # request carries no credential to protect — the proxy adds one on its way out.
+    #
+    # GIT_TERMINAL_PROMPT=0 still matters with a proxy in front: a repo the proxy's
+    # allowlist refuses answers 403, and git would otherwise prompt for a username and
+    # block until the timeout instead of failing with the reason.
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
     def git(*args: str, timeout: int) -> subprocess.CompletedProcess:

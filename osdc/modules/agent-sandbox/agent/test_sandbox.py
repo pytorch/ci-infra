@@ -98,6 +98,37 @@ class TestCloneRepo:
         assert sandbox.clone_repo("org/repo", "other", str(dest)) == 4
         assert (dest / "only-on-other.txt").exists()
 
+    def test_a_git_proxy_replaces_the_github_url(self, local_github, tmp_path, monkeypatch):
+        """A private repo needs a credential this process must never hold, so the fetch
+        goes to the proxy that does. The agent still sends nothing authenticated."""
+        captured = {}
+        real_run = subprocess.run
+
+        def spy(cmd, **kwargs):
+            if "fetch" in cmd:
+                captured["cmd"] = cmd
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(sandbox, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        monkeypatch.setattr(sandbox.subprocess, "run", spy)
+        with pytest.raises(subprocess.CalledProcessError):
+            sandbox.clone_repo("org/repo", "main", str(tmp_path / "dest"))
+        assert "http://git-proxy.ai-sandbox.svc:8080/org/repo.git" in captured["cmd"]
+
+    def test_without_a_git_proxy_it_talks_to_github(self, local_github, tmp_path, monkeypatch):
+        captured = {}
+        real_run = subprocess.run
+
+        def spy(cmd, **kwargs):
+            if "fetch" in cmd:
+                captured["cmd"] = cmd
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(sandbox, "GIT_PROXY", "")
+        monkeypatch.setattr(sandbox.subprocess, "run", spy)
+        sandbox.clone_repo("org/repo", "main", str(tmp_path / "dest"))
+        assert "https://github.com/org/repo.git" in captured["cmd"]
+
     def test_terminal_prompts_stay_disabled(self, local_github, tmp_path, monkeypatch):
         """A credential prompt would hang the worker forever instead of failing."""
         captured = {}
