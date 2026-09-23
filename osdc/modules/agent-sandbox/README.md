@@ -270,6 +270,31 @@ repository a manifest grants must be in `PRIVATE_REPOS` and in the nginx allowli
 granted but not routed fetches anonymously and 404s, routed but not allowlisted gets a
 403 (`test_authorize` and `test_dispatcher` check both pairings).
 
+## Calling it from a workflow
+
+`action/` is a composite action that mints the job's OIDC token, calls `/run` under a
+manifest, and exposes `task-id`, `report` and `result-file` as outputs. It retries only a
+`429` (jittered backoff under `max-wait` seconds), never a failure after the task was
+admitted. Pin it by commit sha; it runs with the calling job's identity.
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: pytorch/ci-infra/osdc/modules/agent-sandbox/action@<sha>
+    id: sandbox
+    with:
+      manifest: ciforge-pr-review
+      repo: pytorch/pytorch
+      ref: main
+      task: "Summarize the build system."
+  # The report is model output: write it to the step summary, never echo it into the
+  # log, where a line starting with `::` would be read as a workflow command.
+  - run: printf '%s\n' "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+    env:
+      REPORT: ${{ steps.sandbox.outputs.report }}
+```
+
 ## Capacity
 
 A sandbox slot is **2 vCPU / 4 GiB / 20 GiB disk with requests == limits** (Guaranteed QoS), so
