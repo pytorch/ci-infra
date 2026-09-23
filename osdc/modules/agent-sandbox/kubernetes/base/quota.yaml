@@ -7,8 +7,17 @@
 # a dispatcher is buggy or someone runs a second one.
 #
 # Sized for 12 task slots (2 vCPU / 4 GiB / 20 GiB each = 24 / 48Gi / 240Gi) plus the
-# standing pods: 2 dispatchers (200m/256Mi, 500m/512Mi limits) and 2 sigv4-proxies
-# (100m/128Mi, 500m/256Mi limits). 12 slots is 4 fleet nodes at 3 per node.
+# standing pods: 2 dispatchers (200m/256Mi, 500m/512Mi limits), 2 sigv4-proxies and
+# 2 git-proxies (100m/128Mi, 500m/256Mi limits each). 12 slots is 4 fleet nodes at 3
+# per node.
+#
+# `limits.cpu` carries ONE rollout surge of headroom on top of that, and the arithmetic
+# is why it is not a round number: 24 (tasks) + 1 (dispatchers) + 1 (sigv4) + 1
+# (git-proxy) = 27 steady, + 500m for the one surging replica = 27.5, rounded up. Adding
+# git-proxy without moving this consumed the headroom, and the symptom is nasty: at 12
+# running tasks a deploy cannot create its surge pod and the rollout stalls. Worse, a
+# task Job over quota is CREATED and only its POD refused, so the caller hangs to its
+# 900s deadline instead of getting a clean 429.
 #
 # Raising the task slot size or the fleet's node_disk_size means redoing these numbers —
 # a quota that rejects pods is indistinguishable from a fleet that cannot schedule them
@@ -26,6 +35,6 @@ spec:
     requests.cpu: "25"
     requests.memory: "50Gi"
     requests.ephemeral-storage: "245Gi"
-    limits.cpu: "27"
+    limits.cpu: "28"
     limits.memory: "51Gi"
     limits.ephemeral-storage: "245Gi"
