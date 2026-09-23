@@ -403,7 +403,7 @@ def prompt_budget_bytes() -> int:
     """Largest first prompt that fits the window at one token per byte, with the system
     prompt, tool definitions and the answer's reserve accounted for. There is no `usage`
     before the first call, so this floor is the only bound on it."""
-    fixed = len(json.dumps({"system": SYSTEM, "tools": TOOLS}).encode()) + 1024
+    fixed = len(json.dumps({"system": SYSTEM, "tools": [*TOOLS, PROPOSE_EFFECT]}).encode()) + 1024
     return (CONTEXT_WINDOW_TOKENS - CONTEXT_RESERVE_TOKENS) * MIN_BYTES_PER_TOKEN - fixed
 
 
@@ -470,6 +470,7 @@ def run_agent(
     # more turn to do it. Asking for tools again ends the loop, so refusals cannot keep
     # growing the conversation toward the window.
     final = False
+    proposed_after_refusal = False
 
     def done(turns, error=None):
         outcome = {"report": text, "turns": turns, "tool_calls": calls}
@@ -509,15 +510,31 @@ def run_agent(
             return done(turn, f"the answer was cut at {MAX_TOKENS} tokens")
         if stop != "tool_use" or not uses:
             return done(turn, f"unexpected model response (stop_reason={stop!r})")
-        if final:
+        # Proposing is how the model delivers its answer when it may write, so ONE turn of
+        # proposals is still accepted after the read budget ran out; it is small (capped
+        # count and bytes), and the context reserve covers it and the answer after it.
+        # Asking to read again, or proposing again after that turn, ends the loop.
+        proposing = [u for u in uses if u.get("name") == "propose_effect" and tools.effects]
+        if final and (len(proposing) < len(uses) or proposed_after_refusal):
             return done(turn, "the model kept calling tools after its budget ran out")
+        # A budget can be spent without any read being refused (a proposal-only turn once
+        # the window is nearly full), so exhaustion is checked here, not only per read.
+        # (Time needs no check here: the top of the loop ends it once time is out.)
+        exhausted = (
+            calls >= MAX_TOOL_CALLS or spent >= MAX_TRANSCRIPT_TOOL_BYTES or room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
+        )
+        if final or exhausted:
+            final = True
+            proposed_after_refusal = proposed_after_refusal or bool(proposing)
         results = []
         for use in uses:
             remaining = deadline - clock()
             # A result is at most MAX_TOOL_OUTPUT_BYTES plus a short note, so a call runs
             # only while one more worst-case result still fits the context window.
             no_room = room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
-            if remaining <= 0 or calls >= MAX_TOOL_CALLS or spent >= MAX_TRANSCRIPT_TOOL_BYTES or no_room:
+            if use in proposing and remaining > 0:
+                output = tools.run(use.get("name"), use.get("input"))
+            elif remaining <= 0 or calls >= MAX_TOOL_CALLS or spent >= MAX_TRANSCRIPT_TOOL_BYTES or no_room:
                 output = "error: tool budget exhausted — answer now with what you have read"
                 final = True
             else:
