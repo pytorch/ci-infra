@@ -135,6 +135,22 @@ def api_request(method: str, path: str, body: dict | None = None, raw: bool = Fa
         raise ApiError(f"{method} {path} -> unparseable response: {exc}") from None
 
 
+def effects_env(grant) -> str:
+    """The writes this run may propose, as JSON for the task: it offers the agent a
+    propose_effect tool only when this is non-empty. Informational for the pod — the
+    dispatcher re-checks every proposal against the Grant when the task returns."""
+    return json.dumps(
+        [
+            {
+                "effect": e.kind,
+                "max_bytes": e.max_bytes,
+                **({"conclusions": sorted(e.conclusions)} if e.conclusions else {}),
+            }
+            for e in grant.effects
+        ]
+    )
+
+
 def job_manifest(task_id: str, grant) -> dict:
     """The Job for one task: the task image under gVisor, with no identity.
 
@@ -197,6 +213,7 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "SANDBOX_REPO", "value": grant.clone_repo},
                                 {"name": "SANDBOX_REF", "value": grant.ref},
                                 {"name": "SANDBOX_BASE", "value": grant.base},
+                                {"name": "SANDBOX_EFFECTS", "value": effects_env(grant)},
                                 {"name": "SANDBOX_TASK", "value": grant.task},
                                 {"name": "SANDBOX_MODEL", "value": grant.model},
                                 # Empty rather than "0" when there is no review, so
