@@ -136,10 +136,16 @@ class Grant:
     clone_repo: str
     model: str
     task: str
-    # The one field that is caller-controlled and stays so: which commit of the
-    # policy-pinned repository to read. It selects code to look at, not a capability —
-    # the repository itself is not negotiable, and neither is the model.
+    # The fields that are caller-controlled and stay so: which commit of the
+    # policy-pinned repository to read, and which of its pull requests to review. They
+    # select code to look at, not a capability — the repository itself is not
+    # negotiable, and neither is the model.
     ref: str
+    # Pull request number, or 0 for "not a review". Bounded by the same policy as `ref`:
+    # it names a PR OF THE PINNED REPOSITORY, so a caller cannot reach another repo's
+    # review by number. Zero rather than None so the Job template has one thing to
+    # stringify and the agent one thing to parse.
+    pr: int
 
 
 def _lookup_caller(claims: dict) -> dict | None:
@@ -216,6 +222,12 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
     if not isinstance(task, str) or not isinstance(ref, str):
         raise Denied("'task' and 'ref' must be strings")
 
+    # `isinstance(x, int)` is True for booleans, so `{"pr": true}` would otherwise become
+    # PR number 1 — a real review of a real pull request, from a request that named none.
+    pr = request.get("pr", 0)
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr < 0:
+        raise Denied("'pr' must be a non-negative integer")
+
     return Grant(
         caller=caller["name"],
         workflow_ref=workflow_ref,
@@ -223,4 +235,5 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
         model=model,
         task=task,
         ref=ref,
+        pr=pr,
     )
