@@ -9,8 +9,10 @@ manifest it is judged against, so the client itself can be untrusted.
 This module only PARSES. Matching a token against a manifest is an authorization
 decision and lives in authorize.py with the others.
 
-Strict on purpose: an unknown key anywhere is an error, so a mistyped constraint fails
-the deploy instead of silently granting more than its author meant. Regions follow the
+Strict on purpose: an unknown key anywhere is an error, and so is a key repeated within
+one mapping (plain YAML keeps the last value, so a later `workflows: []` would silently
+erase an earlier restriction). A mistyped constraint fails the deploy instead of silently
+granting more than its author meant. Regions follow the
 RFC's names (name, owner, clients, model, sandbox); the rest of the RFC schema arrives
 with the features that need it.
 """
@@ -142,6 +144,41 @@ def parse(document, expected_name: str) -> Manifest:
     )
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a repeated key and YAML merge keys (`<<`).
+
+    Merge keys are refused rather than supported because a merge is exactly an override
+    that the reader of the file does not see; a manifest is short enough to spell out.
+    So is a mapping read as a scalar (`!!str {=: "1", =: "2"}`): SafeLoader takes its `=`
+    value without ever calling construct_mapping, which would skip both checks.
+    """
+
+    def construct_scalar(self, node):
+        if isinstance(node, yaml.MappingNode):
+            raise yaml.constructor.ConstructorError(
+                None, None, "a mapping cannot stand in for a scalar", node.start_mark
+            )
+        return super().construct_scalar(node)
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            seen = set()
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    raise yaml.constructor.ConstructorError(
+                        None, None, "merge keys (<<) are not allowed", key_node.start_mark
+                    )
+                key = self.construct_object(key_node, deep=True)
+                try:
+                    duplicate = key in seen
+                except TypeError:  # unhashable: SafeLoader itself reports it below
+                    continue
+                if duplicate:
+                    raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", key_node.start_mark)
+                seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load_dir(directory: Path) -> dict[str, Manifest]:
     """Every *.yaml in `directory`, keyed by name. Raises ManifestError on any problem.
 
@@ -154,7 +191,7 @@ def load_dir(directory: Path) -> dict[str, Manifest]:
     manifests = {}
     for path in files:
         try:
-            document = yaml.safe_load(path.read_text())
+            document = yaml.load(path.read_text(), Loader=_StrictLoader)  # noqa: S506 - SafeLoader subclass
         except yaml.YAMLError as exc:
             raise ManifestError(f"{path.name}: not valid YAML: {exc}") from None
         manifests[path.stem] = parse(document, path.stem)
