@@ -63,16 +63,14 @@ def _flag(name: str, default: str) -> bool:
 # presented is always verified and authorized whatever this says, so a forged or denied
 # token is rejected either way.
 #
-# BE CLEAR ABOUT WHAT THAT DOES AND DOES NOT BUY. While this is false, authentication is
-# optional, and an unauthenticated caller can therefore do MORE than a caller whose real
-# token was denied — it simply omits the header. This is a migration window, not a
-# security posture, and it is only tolerable because /run is already reachable
-# unauthenticated by the whole arc-runners namespace today; it is strictly not worse than
-# the status quo, and strictly better once flipped.
+# Setting it false is a rollback switch, not a posture: authentication becomes optional,
+# an unauthenticated caller can then do MORE than a caller whose real token was denied
+# (it simply omits the header), and /run reopens to the whole arc-runners namespace.
 #
-# It ships false because today's caller sends no token. The Deployment must flip it once
-# the GHA client does. See the module README.
-REQUIRE_AUTH = _flag("REQUIRE_AUTH", "false")
+# The default is true, so a Deployment that loses the variable fails closed. See the
+# module README.
+REQUIRE_AUTH_DEFAULT = "true"
+REQUIRE_AUTH = _flag("REQUIRE_AUTH", REQUIRE_AUTH_DEFAULT)
 
 TASK_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -195,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
 
         Literally _grant_for's answer for an empty request under the named manifest, so
         /status applies exactly the rules /run does. The unauthenticated identity is a
-        real key rather than None: during the migration window unauthenticated callers
+        real key rather than None: if REQUIRE_AUTH is rolled back, unauthenticated callers
         can read each other's results, and nobody else's.
         """
         return self._grant_for({"manifest": manifest_name} if manifest_name else {}).owner
@@ -208,9 +206,8 @@ class Handler(BaseHTTPRequestHandler):
         """
         header = self.headers.get("Authorization")
         if header is None and not REQUIRE_AUTH:
-            # The migration window. Unauthenticated callers get the v1 policy's Grant,
-            # which is the same clone target and model an authorized caller would get —
-            # so flipping REQUIRE_AUTH changes who may call, never what a call can do.
+            # The rollback path. Unauthenticated callers get the v1 policy's Grant:
+            # pytorch/pytorch, the default model, and no effects.
             return authorize.Grant(
                 caller="unauthenticated",
                 manifest="",

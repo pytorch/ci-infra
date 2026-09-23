@@ -2083,22 +2083,61 @@ jobs:
   # ── AI Agent Sandbox ──────────────────────────────────────────────────
   # Call the sandbox over the network from a regular runner — exactly like a
   # runner calls buildkitd. Proves: (1) the sandbox Service is reachable from
-  # arc-runners (NetworkPolicy allow, no RBAC), (2) it clones a public repo
-  # anonymously with no token on the runner or in the agent, (3) it really
-  # invokes Bedrock — through sigv4-proxy, which holds the AWS credential so the
-  # sandbox holds none at all — and (4) concurrent requests each get their own
-  # gVisor pod, which is what makes the fleet scale out instead of queueing.
+  # arc-runners (NetworkPolicy allow, no RBAC), (2) the dispatcher refuses a caller
+  # with no OIDC token and admits this job under the osdc-integration-test manifest,
+  # (3) it clones a public repo anonymously with no GitHub credential on the runner or
+  # in the agent, (4) it really invokes Bedrock — through sigv4-proxy, which holds the
+  # AWS credential so the sandbox holds none at all — and (5) concurrent requests
+  # each get their own gVisor pod, which is what makes the fleet scale out instead of
+  # queueing.
   test-agent-sandbox:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    # id-token: the job authenticates to the dispatcher with its OIDC token. That token
+    # is an identity for the dispatcher, not a GitHub credential.
+    permissions:
+      id-token: write
+      contents: read
     container:
       image: ghcr.io/actions/actions-runner:latest
     env:
       SANDBOX: http://sandbox-agent.ai-sandbox.svc.cluster.local:8080
+      MANIFEST: osdc-integration-test
     steps:
       - name: Install curl
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends curl
+      # A fresh token per request: they expire within minutes, and the burst below can
+      # outlast one. A JWT has no double quotes, so the sed cannot cut one short.
+      - name: Token helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/token.sh" <<'EOF'
+          oidc_token() {
+            curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=agent-service" \
+              | sed -n 's/.*"value" *: *"\([^"]*\)".*/\1/p'
+          }
+          EOF
+          . "$RUNNER_TEMP/token.sh"
+          if [ -z "$(oidc_token)" ]; then
+            echo "FAIL: could not mint an OIDC token (does the job have id-token: write?)"
+            exit 1
+          fi
+          echo "PASS: minted an OIDC token for audience agent-service"
+      - name: Auth is enforced (no token is 401)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' -m 60 -X POST "$SANDBOX/run" \
+            -H 'Content-Type: application/json' \
+            -d "{\"manifest\":\"$MANIFEST\",\"task\":\"Should not run.\"}")
+          if [ "$CODE" != "401" ]; then
+            echo "FAIL: a request with no token got HTTP $CODE, expected 401 (is REQUIRE_AUTH true?)"
+            exit 1
+          fi
+          echo "PASS: the dispatcher refuses a caller with no token"
       - name: Health check (reachable from a regular runner, like buildkitd)
         shell: bash
         run: |
@@ -2110,9 +2149,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          . "$RUNNER_TEMP/token.sh"
+          TOKEN=$(oidc_token)
           RESP=$(curl -fsS -m 300 -X POST "$SANDBOX/run" \
             -H 'Content-Type: application/json' \
-            -d '{"repo":"pytorch/pytorch","ref":"main","task":"List the top-level files."}')
+            -H "Authorization: Bearer $TOKEN" \
+            -d "{\"manifest\":\"$MANIFEST\",\"repo\":\"pytorch/pytorch\",\"ref\":\"main\",\"task\":\"List the top-level files.\"}")
           echo "Response: $RESP"
           if ! echo "$RESP" | grep -q '"cloned": *true'; then
             echo "FAIL: sandbox did not clone the repo"
@@ -2153,6 +2195,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          . "$RUNNER_TEMP/token.sh"
           N=4
           WORK=$(mktemp -d)
 
@@ -2171,9 +2214,11 @@ jobs:
 
           START=$SECONDS
           for i in $(seq 1 "$N"); do
+            TOKEN=$(oidc_token)
             curl -fsS -m 900 -X POST "$SANDBOX/run" \
               -H 'Content-Type: application/json' \
-              -d "{\"repo\":\"pytorch/pytorch\",\"ref\":\"main\",\"task\":\"Task $i: list the top-level files.\"}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -d "{\"manifest\":\"$MANIFEST\",\"repo\":\"pytorch/pytorch\",\"ref\":\"main\",\"task\":\"Task $i: list the top-level files.\"}" \
               > "$WORK/resp-$i.json" &
             echo "$!" >> "$WORK/pids"
           done

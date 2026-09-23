@@ -242,10 +242,7 @@ echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
 kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=10m
 
-echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd;"
-echo "each call runs in its own gVisor pod, up to the namespace quota:"
-echo "    curl -sf -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \\"
-echo "      -d '{\"ref\":\"main\",\"task\":\"...\"}'   # the repo to clone is policy, not a field"
-echo "  or, without holding the connection open:"
-echo "    curl -sf -X POST .../run -d '{\"wait\":false}'   # -> {\"task_id\": ...}"
-echo "    curl -sf .../status/<task_id>"
+echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd,"
+echo "by a job presenting its GitHub OIDC token under a capability manifest; each call runs"
+echo "in its own gVisor pod, up to the namespace quota. See the module README (Use it) or"
+echo "the composite action in action/."

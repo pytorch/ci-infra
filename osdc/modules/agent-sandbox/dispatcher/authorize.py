@@ -7,11 +7,10 @@ Grant from the rest of it. Nothing about the caller's own branch is trusted — 
 edited in a pull request has no effect until it is merged and deployed, which is why the
 client can be untrusted (framework RFC, "How a run works").
 
-One decision is deliberately NOT here, and you have to read http_api.py for it: while
-`REQUIRE_AUTH` is false, a request carrying no Authorization header at all is never shown
-to this file — `http_api._grant_for` hands it the unauthenticated Grant directly. That is
-the migration window, it is the only path that skips this file, and it disappears when
-the flag flips.
+One decision is deliberately NOT here, and you have to read http_api.py for it: if
+`REQUIRE_AUTH` is set to false (a rollback; it ships true), a request carrying no
+Authorization header at all is never shown to this file — `http_api._grant_for` hands it
+the unauthenticated Grant directly. It is the only path that skips this file.
 
 JOB CONSTRUCTION consumes only the Grant. `kube.job_manifest` never sees the request
 body; http_api reads `wait` to pick a response shape and compares a supplied `model`
@@ -23,8 +22,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# What an unauthenticated caller gets during the migration window. Authenticated callers
-# get their manifest's values instead.
+# What an unauthenticated caller gets if REQUIRE_AUTH is rolled back to false.
+# Authenticated callers get their manifest's values instead.
 V1_CLONE_REPO = "pytorch/pytorch"
 V1_MODEL = ""  # empty means "the dispatcher's configured default"
 
