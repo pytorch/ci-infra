@@ -61,90 +61,81 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"ref"?,"task"?,"wait"?,"pr"?}` →
+- `POST /run` body `{"manifest"?,"repo"?,"ref"?,"pr"?,"task"?,"wait"?}` →
   `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`,
   plus `"pr":int` echoed back when the request carried one — so a caller reading a
   result out of `/status` can tell which pull request it is about.
 
   **`"pr": <number>` checks out that pull request's head** (`refs/pull/<n>/head`) instead
   of `ref`, which it overrides. Like `ref`, `pr` is a *selector*: it names a pull request
-  **of the policy-pinned repository**, so it cannot reach another repo. PR head refs live
-  in the base repository, so this reaches a fork's pull request without naming the fork.
-  The checkout is the whole of it for now — the model still gets the top-level listing,
-  not a diff.
+  **of the repository the Grant clones**, so it cannot reach another repo. PR head refs
+  live in the base repository, so this reaches a fork's pull request without naming the
+  fork. The checkout is the whole of it for now — the model still gets the top-level
+  listing, not a diff.
 
-  Waits for the task by default, so a caller sees the result on the same connection —
-  budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
-  returns `202 {"task_id"}` instead. `repo` and `model` are still *parsed* — a non-string
-  is a `400` — but neither reaches the Job: the Grant decides both. Supplying either is
-  checked rather than ignored, so a `repo` that matches policy is accepted and one that
-  does not is a `403`. **`model` is a `403` whatever you send**, because v1's policy model
-  is the empty string meaning "the dispatcher's configured default" — including `""`,
-  which is compared like any other value rather than skipped. Send neither. See *Who may
-  call* below.
+  `manifest` names the capability manifest the call is made under; it is required with a
+  token. `repo` chooses among the repositories that manifest allows (the first is the
+  default); the model is the manifest's, and a `model` that disagrees is a `403`.
+  Waits for the task by default — budget for a cold fleet, where the pod waits on a
+  Karpenter node. `"wait": false` returns `202 {"task_id"}` instead.
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
-- `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
-  Results are kept in memory for an hour after the task finishes. A task belonging to
-  another caller answers `404`, not `403` — otherwise the endpoint would confirm that
-  other callers are running tasks.
+- `GET /status/<task_id>?manifest=<name>` → `{"state":"running"}` or
+  `{"state":"done", …result}`. Results are kept in memory for an hour after the task
+  finishes. A task is owned by its caller *and* manifest; one belonging to anyone else
+  answers `404`, not `403`, so the endpoint does not confirm that other tasks exist.
 
 ## Who may call, and what a call can do
 
 `/run` authenticates the caller with a **GitHub Actions OIDC token** in an
-`Authorization: Bearer` header, and authorizes it against a policy that lives in code —
-`dispatcher/authorize.py`, not an env var, because it is the answer to "who may spend our
-Bedrock budget" and belongs in git history and review.
+`Authorization: Bearer` header and authorizes it against a **capability manifest**: one
+YAML file per use case in `kubernetes/base/capabilities/`, deployed as a ConfigMap and
+parsed by `dispatcher/manifest.py`. The request names the manifest; `authorize.py` checks
+the token against that manifest's `clients` region and builds the Grant from the rest.
 
-v1 admits two callers: a workflow in **`pytorch/ciforge`**, and one in
-**`pytorch/ci-infra`** (this module's own `test-agent-sandbox` integration job, the only
-thing that calls `/run` today). Either must be on a protected ref, on a **self-hosted**
-runner, on an event not in a denied set. The *repository* is matched on
-`repository_id`/`repository_owner_id` rather than on its name, because a repository can be
-renamed and its old name re-registered by someone else — the two workflow refs are still
-matched on a name prefix, so a rename breaks authorization even though the ids resolve.
+```yaml
+name: ciforge-pr-review
+owner: pytorch-dev-infra
+clients:
+  repos:                     # matched on the immutable ids, not the name
+    - repository: pytorch/ciforge
+      repository_id: "1133856973"
+      repository_owner_id: "21003710"
+  triggers: [pull_request, workflow_run, workflow_dispatch]   # the token's event_name
+  workflows: []              # optional: workflow files allowed to call; empty = any
+model:
+  id: us.anthropic.claude-opus-5-5   # optional; empty = the dispatcher's default
+sandbox:
+  repos: [pytorch/ciforge, pytorch/pytorch]   # repos the task may clone; first = default
+```
 
-`self-hosted` is a **shape** check, not a trust boundary: `/run` is a ClusterIP reachable
-only from `arc-runners`, so that is simply what a caller who can connect reports. It is not
-a defence against untrusted code minting a token — **the client is untrusted by design**,
-any job with `id-token: write` can mint one on either kind of runner, and the dispatcher's
-job is to validate the token and bound what the validated identity may do. That bound is
-the Grant. One residual to keep in view: the event check is a **denylist**, so an event
-type GitHub adds later is allowed by default — again bounded by the Grant, not by the set.
+**The manifest is the trust anchor, not the client.** A manifest changes only through a
+reviewed commit on this repository's default branch plus a deploy, so a pull request
+cannot edit the manifest it is judged against. That is why a PR-triggered client is
+allowed where its manifest lists `pull_request`, and why the caller's own branch need not
+be protected: the Grant bounds what any admitted caller can do — same repositories, same
+model, same limits — whoever wrote the workflow. The loader is strict (unknown keys, empty
+lists and integer ids are errors) and the dispatcher refuses to start without manifests.
 
-**The request decides less than it looks like it does.** Verification produces a frozen
-`Grant`, and the Job is built from the Grant alone — never from the request body. The
-repository to clone and the model are policy, so a caller cannot name either; passing a
-`repo` or a `model` that disagrees with policy is refused outright rather than quietly
-substituted. The caller contributes the prompt and the commit to read.
+Both workflow refs in the token must be inside the client repository, and `job_workflow_ref`
+is required, so an allowed repository cannot delegate its identity to a reusable workflow
+living elsewhere. The token must also say `runner_environment: self-hosted`; that is a
+**shape** check (`/run` is a ClusterIP reachable only from `arc-runners`), not a trust
+boundary, and it goes away with a public endpoint.
 
 Two residuals worth knowing:
 
-- **The prompt is caller-controlled**, and `workflow_run` is an allowed event, so a
-  workflow that reads pull-request content can shape what the agent is asked to do. The
-  Grant is what bounds the damage — same repo, same model, same limits.
-- **Tokens are replayable until they expire.** `jti` is neither required nor consumed, so
-  a stolen token can submit requests until `exp`. Consuming it needs state shared across
-  dispatcher replicas, which v1 does not have; the concurrency cap and the namespace quota
-  are what bound the damage in the meantime. PyPI's Warehouse solves this with a `jti`
-  table, which is the shape to copy if this matters later.
+- **The prompt is caller-controlled**, so a workflow that reads pull-request content can
+  shape what the agent is asked to do. The Grant is what bounds the damage.
+- **Tokens are replayable until they expire.** `jti` is neither required nor consumed;
+  the concurrency cap and the namespace quota bound the damage meanwhile.
 
 ### Enabling enforcement
 
-`REQUIRE_AUTH` still ships **`false`**, but the policy now admits a caller that can
-actually reach the endpoint, so flipping it is a real next step rather than an outage. Two
-things have to be true first, and neither is code in this repo's dispatcher:
-
-- The **`test-agent-sandbox`** job must send a token. It needs `id-token: write`, a token
-  minted for this dispatcher's audience, and an `Authorization: Bearer` header on its
-  `curl`. It sends none today, so it would get a `401` the moment the flag flips.
-- Any **`pytorch/ciforge`** caller must run on an `arc-runners` runner. Every workflow in
-  that repo is `ubuntu-latest`/`ubuntu-24.04` today, and a github-hosted runner cannot
-  route to a ClusterIP in this cluster at all.
-
-`test_an_admissible_caller_can_actually_reach_run` asserts the policy and the NetworkPolicy
-still describe an overlapping set, so the disjointness that made an earlier revision
-unsatisfiable cannot come back unnoticed.
+`REQUIRE_AUTH` still ships **`false`**. Before flipping it, the **`test-agent-sandbox`**
+integration job must send a token (it needs `id-token: write` and the
+`osdc-integration-test` manifest, which already admits it on `pull_request`); it sends
+none today and would get a `401`.
 
 ### What the flag does
 
@@ -223,7 +214,7 @@ curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/
   -H 'Content-Type: application/json' \
   -d '{"ref":"main","task":"Summarize the build layout"}'
 
-# Check out a pull request head of the policy-pinned repo. The prompt asks about the
+# Check out a pull request head of the Grant's repository. The prompt asks about the
 # tree, not about the change: the agent gets a listing of the PR head and no diff, so
 # "what does this change touch?" is a question it can only answer by guessing.
 curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
@@ -235,10 +226,10 @@ TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/
   -d '{"wait":false}' | jq -r .task_id)
 curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
 ```
-**The caller no longer picks the repository or the model.** Both come from the `Grant`,
-and sending either is a `403` rather than a value that is quietly accepted and dropped.
-The model is `BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
-`agent_sandbox.default_model_id`; per-caller models arrive with the capability manifest.
+**The caller does not pick the model**, and picks the repository only among those its
+manifest allows. The model is the manifest's `model.id`, or `BEDROCK_DEFAULT_MODEL_ID`
+(set at deploy time from `clusters.yaml` → `agent_sandbox.default_model_id`) when the
+manifest leaves it empty or the call is unauthenticated.
 
 ## Private repositories: the git credential proxy
 
@@ -252,8 +243,8 @@ Two properties do the security work, and neither is the token's own scope:
 
 - **An allowlist**, a literal in `kubernetes/base/git-proxy.yaml`. A proxy that
   forwarded any path with a token attached would let anything that can reach it read
-  every repo that token can. Add a repo there, in review, the way `ALLOWED_CALLERS`
-  works in `authorize.py`.
+  every repo that token can. Add a repo there, in review, the way a manifest grants
+  one.
 - **Read only.** Only the two endpoints `git fetch` uses are routed; `git-receive-pack`
   is not a location and `service=git-receive-pack` is refused, so a token that happens
   to carry write access cannot push through it.
@@ -270,12 +261,13 @@ kubectl create secret generic git-proxy-credentials -n ai-sandbox \
 Pre-encoded because git over HTTPS authenticates with Basic and nginx cannot base64 at
 render time. A GitHub App installation token is the better source than a PAT — an hour
 long and scoped per repo — but it needs a refresher, which this does not yet have.
-`pytorch/ciforge` is granted to its own caller in `ALLOWED_CALLERS` and listed in
+`pytorch/ciforge` is granted by both ciforge manifests and listed in
 `kube.PRIVATE_REPOS`, so an authenticated ciforge caller clones it through the proxy.
 Only repositories in `PRIVATE_REPOS` are routed that way — a public clone goes straight
-to github.com, so the proxy being down or unconfigured cannot break one. Those two lists
-and the nginx allowlist must name the same repos: granted but not routed fetches
-anonymously and 404s, routed but not allowlisted gets a 403.
+to github.com, so the proxy being down or unconfigured cannot break one. Every private
+repository a manifest grants must be in `PRIVATE_REPOS` and in the nginx allowlist:
+granted but not routed fetches anonymously and 404s, routed but not allowlisted gets a
+403 (`test_authorize` and `test_dispatcher` check both pairings).
 
 ## Capacity
 

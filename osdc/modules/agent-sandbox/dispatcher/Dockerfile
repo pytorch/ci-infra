@@ -29,11 +29,12 @@ RUN apt-get update \
         python3 \
         python3-cryptography \
         python3-jwt \
+        python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 # The modules are listed rather than globbed so the image cannot pick up a test file,
 # and so adding one is a visible line in review.
-COPY __main__.py http_api.py tasks.py kube.py oidc.py authorize.py jwks_refresh.py \
+COPY __main__.py http_api.py tasks.py kube.py oidc.py authorize.py manifest.py jwks_refresh.py \
      /usr/local/lib/sandbox-dispatcher/
 
 # UID 1000, non-root. The pod securityContext enforces this too.

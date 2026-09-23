@@ -31,8 +31,10 @@ SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.
 # proxy path entirely.
 GIT_PROXY = os.environ.get("GIT_PROXY", "")
 # The repositories that NEED the proxy, because they are private and an anonymous fetch
-# of them 404s. A module constant for the reason ALLOWED_CALLERS is one: it is the list
-# of repos whose contents leave the cluster under our credential.
+# of them 404s. Code in git, like the manifests: it is the list of repos whose contents
+# leave the cluster under our credential. Deployment topology, not policy — a manifest
+# decides WHETHER a caller may read a repo, this decides HOW the pod reaches it
+# (test_authorize checks every private repo a manifest grants is listed here).
 #
 # Opt-in per repo rather than "proxy everything". Sending public clones through it would
 # make the proxy a hard dependency of every task — one missing Secret and nothing runs —
@@ -135,8 +137,8 @@ def job_manifest(task_id: str, grant) -> dict:
 
     Takes a `Grant`, never a request body, and that signature is the layering rule made
     unavoidable: by the time execution reaches this function every decision has been
-    made, and there is nothing here to make one from. A future capability manifest
-    changes where the Grant's values come from and leaves this function untouched.
+    made, and there is nothing here to make one from. The capability manifest decides the
+    Grant's values in authorize.py; this function never sees it.
 
     It does read one thing besides the Grant — `PRIVATE_REPOS`, to decide whether to hand
     the pod the proxy's address. That is deployment topology ("which repos need a
