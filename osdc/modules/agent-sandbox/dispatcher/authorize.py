@@ -27,14 +27,6 @@ from dataclasses import dataclass
 V1_CLONE_REPO = "pytorch/pytorch"
 V1_MODEL = ""  # empty means "the dispatcher's configured default"
 
-# self-hosted, because `/run` is a ClusterIP that `sandbox-agent-ingress` opens to the
-# `arc-runners` namespace only: every caller that can REACH it mints a self-hosted token.
-# A SHAPE check ("the caller runs where the service is reachable from"), not a trust
-# boundary: any job with `id-token: write` can mint a token on either kind of runner.
-# Trust comes from the signature, the manifest match and the Grant. Goes away with the
-# public endpoint.
-ALLOWED_RUNNER_ENVIRONMENTS = frozenset({"self-hosted"})
-
 
 class Denied(RuntimeError):
     """The caller is authenticated but not allowed to do this."""
@@ -133,7 +125,11 @@ def admit(manifest, claims: dict):
     if manifest.workflows and not {entry, job} <= manifest.workflows:
         raise Denied(f"workflow is not listed in manifest {manifest.name}")
 
-    if claims.get("runner_environment") not in ALLOWED_RUNNER_ENVIRONMENTS:
+    # A SHAPE check ("the caller runs where the service is reachable from"), not a trust
+    # boundary. Trust comes from the signature, the manifest match and the Grant. The
+    # manifest says which runners; self-hosted unless it opts in to github-hosted, which
+    # is only reachable once there is a public endpoint (docs/public-endpoint.md).
+    if claims.get("runner_environment") not in manifest.runner_environments:
         raise Denied("runner environment is not allowed to dispatch agent tasks")
     return client
 

@@ -130,9 +130,11 @@ lists and integer ids are errors) and the dispatcher refuses to start without ma
 
 Both workflow refs in the token must be inside the client repository, and `job_workflow_ref`
 is required, so an allowed repository cannot delegate its identity to a reusable workflow
-living elsewhere. The token must also say `runner_environment: self-hosted`; that is a
-**shape** check (`/run` is a ClusterIP reachable only from `arc-runners`), not a trust
-boundary, and it goes away with a public endpoint.
+living elsewhere. The token's `runner_environment` must be one the manifest lists in
+`clients.runner_environments` (default `[self-hosted]`). That is a **shape** check
+(`/run` is a ClusterIP reachable only from `arc-runners`), not a trust boundary; a
+manifest opts in to `github-hosted` once there is a public endpoint
+([docs/public-endpoint.md](docs/public-endpoint.md)).
 
 Two residuals worth knowing:
 

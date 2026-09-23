@@ -34,6 +34,9 @@ ID_RE = re.compile(r"^[0-9]+$")
 WORKFLOW_RE = re.compile(r"^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$")
 CHECK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./-]{0,99}$")
 CHECK_CONCLUSIONS = frozenset({"success", "failure", "neutral"})
+# The token's runner_environment. A SHAPE check, not a trust boundary: any job with
+# `id-token: write` can mint a token on either kind of runner.
+RUNNER_ENVIRONMENTS = frozenset({"self-hosted", "github-hosted"})
 # GitHub's own limits: a comment body and a check-run summary are both capped near 64 KiB.
 MAX_EFFECT_BYTES = 65536
 
@@ -78,6 +81,9 @@ class Manifest:
     sandbox_repos: tuple[str, ...]
     # Writes the run may propose. Empty: a read-only manifest, the default.
     effects: tuple[EffectSpec, ...] = ()
+    # Runners a caller may run on. Self-hosted by default, because /run is reachable only
+    # from the OSDC arc-runners until there is a public endpoint.
+    runner_environments: frozenset[str] = frozenset({"self-hosted"})
 
 
 def _mapping(value, where: str, allowed: set[str], required: set[str]) -> dict:
@@ -159,12 +165,26 @@ def parse(document, expected_name: str) -> Manifest:
     if name != expected_name:
         raise ManifestError(f"name {name!r} must match its file name {expected_name!r}")
 
-    clients = _mapping(top["clients"], f"{name}.clients", {"repos", "triggers", "workflows"}, {"repos", "triggers"})
+    clients = _mapping(
+        top["clients"],
+        f"{name}.clients",
+        {"repos", "triggers", "workflows", "runner_environments"},
+        {"repos", "triggers"},
+    )
     if not isinstance(clients["repos"], list) or not clients["repos"]:
         raise ManifestError(f"{name}.clients.repos: must be a non-empty list (default-deny)")
     repos = tuple(_client_repo(e, f"{name}.clients.repos[{i}]") for i, e in enumerate(clients["repos"]))
     if len({r.repository_id for r in repos}) != len(repos):
         raise ManifestError(f"{name}.clients.repos: a repository is listed twice")
+
+    runners = frozenset({"self-hosted"})
+    if "runner_environments" in clients:
+        runners = frozenset(_string_list(clients["runner_environments"], f"{name}.clients.runner_environments"))
+        if not runners <= RUNNER_ENVIRONMENTS:
+            raise ManifestError(
+                f"{name}.clients.runner_environments: {sorted(runners - RUNNER_ENVIRONMENTS)} not in "
+                f"{sorted(RUNNER_ENVIRONMENTS)}"
+            )
 
     model = ""
     if "model" in top:
@@ -193,6 +213,7 @@ def parse(document, expected_name: str) -> Manifest:
         model=model,
         sandbox_repos=tuple(_string_list(sandbox["repos"], f"{name}.sandbox.repos", REPO_RE)),
         effects=effects,
+        runner_environments=runners,
     )
 
 
