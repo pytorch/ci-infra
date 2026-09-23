@@ -29,6 +29,10 @@ inputs:
     description: Branch, tag or commit to read
     required: false
     default: ""
+  base:
+    description: Optional base commit sha; the task is given the diff from it to ref (pass the merge base)
+    required: false
+    default: ""
   wait:
     description: "true: wait for the result; false: return the task id at once"
     required: false
@@ -63,6 +67,7 @@ runs:
         INPUT_TASK: ${{ inputs.task }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_REF: ${{ inputs.ref }}
+        INPUT_BASE: ${{ inputs.base }}
         INPUT_WAIT: ${{ inputs.wait }}
         INPUT_ENDPOINT: ${{ inputs.endpoint }}
         INPUT_MAX_WAIT: ${{ inputs.max-wait }}

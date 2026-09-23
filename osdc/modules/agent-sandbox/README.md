@@ -59,8 +59,17 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"manifest"?,"repo"?,"ref"?,"task"?,"wait"?}` →
-  `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
+- `POST /run` body `{"manifest"?,"repo"?,"ref"?,"base"?,"task"?,"wait"?}` →
+  `{"task_id":str,"cloned":bool,"head_sha":str,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
+  plus `changed_files`, `changed_files_total` and `diff_truncated` when `base` is
+  given. Name lists are cut to 256 KiB each (`top_level_total` / `changed_files_total`
+  carry the real counts) so the result always fits the 1 MiB log it travels in.
+
+  `ref` is a branch, tag or commit sha, fetched at depth 1 (a name as an explicit
+  `refs/heads/…`, then `refs/tags/…`); names follow `git check-ref-format --branch`. `base` is an optional full
+  commit sha: the task fetches it too and puts `git diff base ref` (bounded) in front of
+  the model, so for a pull request pass the merge base. A diff that cannot be computed
+  stops the task with `errors.diff` rather than producing a review of nothing.
 
   `manifest` names the capability manifest the call is made under; it is required with a
   token. `repo` chooses among the repositories that manifest allows (the first is the
