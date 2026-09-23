@@ -25,6 +25,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import agent_loop
+
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 # Set to reach PRIVATE repositories: the proxy holds the GitHub credential this process
@@ -304,21 +306,16 @@ def bedrock_error_summary(exc: urllib.error.HTTPError) -> str:
     return f"{exc} ({code})" if code else str(exc)
 
 
-def invoke_bedrock(model: str, prompt: str) -> str:
-    """Call Bedrock InvokeModel through the sigv4 proxy (unsigned in, signed out)."""
-    body = json.dumps(
-        {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        }
-    ).encode()
+def invoke_model(model: str, fields: dict, timeout: float = BEDROCK_TIMEOUT_S) -> dict:
+    """One Bedrock InvokeModel (Messages API) call through the sigv4 proxy — unsigned in,
+    signed out — returning the parsed response."""
+    body = json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 1024, **fields}).encode()
     # The model id is one path segment and has to be encoded as one: an inference
     # profile or foundation model ARN is a documented identifier and contains "/",
     # which would otherwise split the path so the request no longer names an invoke.
-    # It also stops a caller-supplied id (the /run body sets it) from steering the
-    # path the proxy signs — the proxy runs with no --name and forwards whatever path
-    # it is handed, leaving only its IRSA policy behind this.
+    # It also stops a model id from steering the path the proxy signs — the proxy runs
+    # with no --name and forwards whatever path it is handed, leaving only its IRSA
+    # policy behind this.
     #
     # ":" is left alone deliberately, though botocore would encode it: it is a legal
     # path character, and every model id in use here ends in "…-v1:0", so encoding it
@@ -332,10 +329,23 @@ def invoke_bedrock(model: str, prompt: str) -> str:
             "Content-Type": "application/json",
         },
     )
-    deadline = time.monotonic() + BEDROCK_TIMEOUT_S
-    with urllib.request.urlopen(req, timeout=BEDROCK_TIMEOUT_S) as resp:  # noqa: S310
+    timeout = min(timeout, BEDROCK_TIMEOUT_S)
+    deadline = time.monotonic() + timeout
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
         payload = json.loads(_read_bounded(resp, MAX_RESPONSE_BYTES, deadline))
-    content = payload.get("content") or []
+    if not isinstance(payload, dict):
+        raise ValueError("bedrock returned a non-object response")
+    return payload
+
+
+def invoke_bedrock(model: str, prompt: str) -> str:
+    """One prompt in, the first text block out."""
+    content = (
+        invoke_model(model, {"messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]}).get(
+            "content"
+        )
+        or []
+    )
     return content[0]["text"] if content else ""
 
 
@@ -351,11 +361,11 @@ def build_prompt(
     a pull request head is authored by whoever opened it, including from a fork, so a
     file named to read as an instruction is now attacker-supplied rather than merely
     caller-supplied. Nothing here filters it, and quoting or fencing would not help —
-    the model reads the whole prompt either way. What bounds it is that the model has no
-    tools and no credentials: the worst outcome is a misleading report handed back to
-    the caller that asked for it. It stops being bounded the moment the agent can act on
-    its own output, which is the gate for the agentic option in the README. The diff in
-    `change` is the same kind of content, authored by the same person.
+    the model reads the whole prompt either way. What bounds it is that the model's tools
+    only read the checked-out commit and it holds no credentials: the worst outcome is a
+    misleading report handed back to the caller that asked for it. It stops being bounded
+    the moment the agent can act on its own output. The diff in `change`, and every file
+    the tools return, is the same kind of content, authored by the same person.
     """
     lines = [
         f"You are inspecting a checkout of {repo} at ref {ref}.",
@@ -381,8 +391,9 @@ def build_prompt(
         "",
         f"Task: {task}",
         "",
-        "Answer only from what is shown above. If it doesn't contain the answer, say so "
-        "instead of guessing — do not invent paths.",
+        "Use the list_dir, read_file and search tools to read what you need. Answer only "
+        "from what is shown above and what the tools return. If that is not enough, say so "
+        "instead of guessing — do not invent paths or file contents.",
     ]
     return "\n".join(lines)
 
@@ -488,16 +499,22 @@ def run_task(spec: dict) -> dict:
 
         prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
         try:
-            result["report"] = invoke_bedrock(model, prompt)
+            outcome = agent_loop.run_agent(invoke_model, model, prompt, agent_loop.RepoTools(workdir))
+            result["report"] = outcome["report"]
+            result["turns"] = outcome["turns"]
+            result["tool_calls"] = outcome["tool_calls"]
+            if "error" in outcome:
+                result["errors"]["agent"] = outcome["error"]
         except urllib.error.HTTPError as exc:
             result["errors"]["bedrock"] = bedrock_error_summary(exc)
-        except (OSError, http.client.HTTPException, KeyError, TypeError, ValueError) as exc:
+        except (OSError, http.client.HTTPException, KeyError, TypeError, ValueError, RecursionError) as exc:
             # OSError covers URLError and TimeoutError; HTTPException covers the
             # truncated body (IncompleteRead) and the reset status line
             # (RemoteDisconnected) that a proxy restart produces mid-response.
             # Anything escaping here closes the connection on the caller, which
             # cannot be told apart from the pod being gone — the single answer this
-            # endpoint exists to avoid giving.
+            # endpoint exists to avoid giving. RecursionError: a deeply nested response
+            # overflows json.loads.
             result["errors"]["bedrock"] = str(exc)
 
     return result

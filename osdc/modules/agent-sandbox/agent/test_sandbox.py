@@ -610,6 +610,21 @@ class TestRunTask:
         """clone_repo is faked in these tests, so there is no checkout to read a sha from."""
         monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
 
+    @pytest.fixture(autouse=True)
+    def one_turn_agent(self, monkeypatch):
+        """These tests are about stages, not the loop: a one-turn agent that asks
+        `invoke_bedrock` (which each test patches) keeps them readable. The loop is
+        tested in test_agent_loop.py and TestRunTaskLoop."""
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools: {
+                "report": sandbox.invoke_bedrock(model, prompt),
+                "turns": 1,
+                "tool_calls": 0,
+            },
+        )
+
     def test_a_base_puts_the_diff_in_the_prompt(self, monkeypatch):
         prompts = []
         monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
@@ -688,7 +703,11 @@ class TestRunTask:
         monkeypatch.setattr(sandbox, "clone_repo", fake_clone)
         monkeypatch.setattr(sandbox, "diff_against", fake_diff)
         monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
-        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "ok")
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools: {"report": "ok", "turns": 1, "tool_calls": 0},
+        )
         result = sandbox.run_task({"repo": "org/repo", "model": "m", "pr": 7, "base": "a" * 40})
         assert seen == {"ref": "refs/pull/7/head", "base": "a" * 40}
         assert result["pr"] == 7
@@ -831,7 +850,11 @@ class TestPullRequestCheckout:
 
         monkeypatch.setattr(sandbox, "clone_repo", fake_clone)
         monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
-        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "report")
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools: {"report": "report", "turns": 1, "tool_calls": 0},
+        )
         result = sandbox.run_task({"repo": "org/repo", "model": "m", **spec})
         return seen.get("ref"), result
 
@@ -862,3 +885,60 @@ class TestPullRequestCheckout:
         ref, result = self._ref_used(monkeypatch, {"ref": "v2.9.0"})
         assert ref == "v2.9.0"
         assert "pr" not in result
+
+
+class TestRunTaskLoop:
+    @pytest.fixture(autouse=True)
+    def no_real_git(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
+
+    def test_run_task_drives_the_tool_loop(self, monkeypatch):
+        calls = []
+
+        def fake_invoke(model, fields, timeout=None):
+            calls.append(json.loads(json.dumps(fields)))  # a snapshot; the loop keeps appending
+            if len(calls) == 1:
+                return {
+                    "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "list_dir", "input": {}}],
+                }
+            return {"stop_reason": "end_turn", "content": [{"type": "text", "text": "all read"}]}
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox, "invoke_model", fake_invoke)
+        monkeypatch.setattr(sandbox.agent_loop.RepoTools, "run", lambda self, name, args: "README.md")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m"})
+        assert result["report"] == "all read"
+        assert (result["turns"], result["tool_calls"]) == (2, 1)
+        assert calls[1]["messages"][-1]["content"][0]["content"] == "README.md"
+
+    def test_a_budget_exhausted_by_the_loop_is_reported(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools: {
+                "report": "partial",
+                "turns": 24,
+                "tool_calls": 40,
+                "error": "turn limit",
+            },
+        )
+        result = sandbox.run_task({"repo": "org/repo", "model": "m"})
+        assert result["report"] == "partial"
+        assert result["errors"]["agent"] == "turn limit"
+
+    def test_a_deeply_nested_model_response_is_an_error_not_a_crash(self, monkeypatch):
+        """json.loads raises RecursionError on deep enough nesting; that must become an
+        error in the result, not a pod that exits without one."""
+
+        def fake_invoke(model, fields, timeout=None):
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox, "invoke_model", fake_invoke)
+        result = sandbox.run_task({"repo": "org/repo", "model": "m"})
+        assert "recursion" in result["errors"]["bedrock"]

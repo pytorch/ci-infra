@@ -70,6 +70,11 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   checked out: a branch or a pull request head can move, so pin to it, not to what you
   asked for.
 
+  The model works in a loop (`agent/agent_loop.py`) with three read-only tools over the
+  checked-out commit — `list_dir`, `read_file`, `search` — until it answers, or 24 turns
+  or 600 s run out (`errors.agent`). Tools read through git (`HEAD:<path>`), never the
+  filesystem. The result also carries `turns` and `tool_calls`.
+
   `ref` is a branch, a tag, `refs/pull/<n>/head` or a commit sha, fetched at depth 1. A
   sha must be the full 40 hex characters — an abbreviated one is fetched as a ref name
   and fails. Anything that is not a plain ref name (a refspec, a range, an option) is a
@@ -475,13 +480,14 @@ token.
   `429` — a refusal rather than a hang, but still a denial of service. There is no
   per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
 - **A pull request head is untrusted content, and it reaches the prompt.** The
-  top-level listing and the diff fed to the model come out of the checked-out tree, so
-  with `pr` set, content authored by whoever opened the pull request — a fork
-  contributor, not a caller — is in the prompt verbatim. Nothing filters it; fencing it
-  would not help, because the model reads the whole prompt either way. What bounds it is
-  that the model has no tools and no credentials, so the worst outcome is a misleading
-  report returned to the caller that asked for it. It stops being bounded once the agent
-  can act on its own output.
+  top-level listing, the diff and every file the agent's tools read come out of the
+  checked-out tree, so with `pr` set, content authored by whoever opened the pull
+  request — a fork contributor, not a caller — is in front of the model verbatim.
+  Nothing filters it; fencing it would not help, because the model reads the whole
+  prompt either way. What bounds it is that the tools only read the checked-out commit
+  and the agent holds no credentials, so the worst outcome is a misleading report
+  returned to the caller that asked for it. It stops being bounded once the agent can act
+  on its own output.
 - **git-proxy authorizes on repository, not on caller.** `repo_allowed` matches the URL
   path, and `git-proxy-ingress` admits every pod labelled `app: sandbox-task` — which is
   every task pod, whatever `Grant.clone_repo` its caller was issued. So a task dispatched
