@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Sandbox task library: check out a repository, then ask Bedrock about it.
+"""Sandbox task library: check out a repository, then ask Bedrock about it — given a base
+commit, about the diff from it.
 
 Imported by task.py, which runs it once per pod. It holds NO credentials — and that
 stays true for a PRIVATE repository: public ones it fetches from github.com anonymously,
@@ -41,6 +42,17 @@ GIT_STEP_TIMEOUT_S = 30
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BODY_BYTES = 8 * 1024
 READ_CHUNK_BYTES = 64 * 1024
+# How much of a diff reaches the prompt. Beyond it the model is told the diff was cut.
+MAX_DIFF_BYTES = 200 * 1024
+# Bytes the changed-file list may take in the prompt.
+MAX_PROMPT_FILE_BYTES = 32 * 1024
+
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+# The result travels in the pod log, of which the dispatcher reads 1 MiB. Every
+# unbounded field gets a share: each name list 256 KiB of JSON (see bounded_names), each
+# error message 8 KiB. The report is bounded by max_tokens.
+MAX_RESULT_FILE_BYTES = 256 * 1024
+MAX_ERROR_CHARS = 8 * 1024
 
 
 # What `ref` is allowed to look like. A fetch argument is a REFSPEC, not a ref: git reads
@@ -55,14 +67,41 @@ READ_CHUNK_BYTES = 64 * 1024
 # `release/2.9`); `:`, `*`, `+`, `^`, `?`, `~`, whitespace and everything else are out.
 # `..` is excluded separately so a ref cannot spell a range, and a leading `-` so it
 # cannot look like an option even where `--` is missing.
+#
+# The dispatcher applies the same rule at its boundary (dispatcher/http_api.py), so a bad
+# ref is a 400 there; test_ref_rules_match_the_task_pod keeps the two copies identical.
+# A commit sha must be the full 40 hex characters: an abbreviated one passes this check
+# but is fetched as a ref NAME, and fails with "couldn't find remote ref".
 REF_ALLOWED = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
+
+
+def plain_ref(ref: str) -> bool:
+    """A sha, `refs/pull/<n>/head`, or a branch or tag name — never a refspec or an option."""
+    return bool(REF_ALLOWED.match(ref)) and ".." not in ref and "//" not in ref and not ref.endswith(("/", ".lock"))
 
 
 def _check_ref(ref: str) -> str:
     """The ref, if it is a ref. Raises ValueError if it is a refspec or an option."""
-    if not REF_ALLOWED.match(ref) or ".." in ref or "//" in ref or ref.endswith(("/", ".lock")):
+    if not plain_ref(ref):
         raise ValueError(f"refusing to fetch {ref!r}: not a plain ref name")
     return ref
+
+
+def _repo_url(repo: str) -> str:
+    """Where to fetch `repo` from: through GIT_PROXY when set, else github.com.
+
+    Plain HTTP to the proxy is deliberate and matches the Bedrock path: it is a ClusterIP
+    inside the namespace, the NetworkPolicy admits only task pods, and the request carries
+    no credential to protect — the proxy adds one on its way out.
+    """
+    return f"http://{GIT_PROXY}/{repo}.git" if GIT_PROXY else f"https://github.com/{repo}.git"
+
+
+def _git_env() -> dict:
+    # GIT_TERMINAL_PROMPT=0 still matters with a proxy in front: a repo the proxy's
+    # allowlist refuses answers 403, and git would otherwise prompt for a username and
+    # block until the timeout instead of failing with the reason.
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
 
 def clone_repo(repo: str, ref: str, dest: str) -> int:
@@ -85,15 +124,8 @@ def clone_repo(repo: str, ref: str, dest: str) -> int:
     mirror host may refuse — the failure is git's own "want ... not valid", captured as a
     clone error like any other.
     """
-    url = f"http://{GIT_PROXY}/{repo}.git" if GIT_PROXY else f"https://github.com/{repo}.git"
-    # Plain HTTP to the proxy is deliberate and matches the Bedrock path: it is a
-    # ClusterIP inside the namespace, the NetworkPolicy admits only task pods, and the
-    # request carries no credential to protect — the proxy adds one on its way out.
-    #
-    # GIT_TERMINAL_PROMPT=0 still matters with a proxy in front: a repo the proxy's
-    # allowlist refuses answers 403, and git would otherwise prompt for a username and
-    # block until the timeout instead of failing with the reason.
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    url = _repo_url(repo)
+    env = _git_env()
 
     def git(*args: str, timeout: int) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], check=True, capture_output=True, text=True, timeout=timeout, env=env)
@@ -119,19 +151,99 @@ def clone_repo(repo: str, ref: str, dest: str) -> int:
     return len([line for line in listing.stdout.splitlines() if line.strip()])
 
 
+def head_sha(dest: str) -> str:
+    return subprocess.run(
+        ["git", "-C", dest, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=GIT_STEP_TIMEOUT_S,
+        env=_git_env(),
+    ).stdout.strip()
+
+
+def _git_to_file(args: list[str], cwd: str, path: str, timeout: int = CLONE_TIMEOUT_S) -> None:
+    """Run git with stdout going to a file. Memory stays flat however large the output,
+    the timeout and exit status are enforced by subprocess.run, and stderr is kept for
+    the error message."""
+    with open(path, "wb") as out:
+        subprocess.run(
+            ["git", *args], cwd=cwd, check=True, stdout=out, stderr=subprocess.PIPE, timeout=timeout, env=_git_env()
+        )
+
+
+def diff_against(repo: str, dest: str, base: str) -> tuple[list[str], int, str, bool]:
+    """(changed files, total changed, diff text, truncated) from commit `base` to HEAD.
+
+    Two shallow commits are enough: `git diff A B` compares trees and needs no history.
+    The caller passes the merge base for a PR-shaped diff. `base` is fetched from the
+    same place the checkout came from, so a private repository's goes through GIT_PROXY
+    too. Output goes to files outside the checkout and only a bounded prefix is read back,
+    because the diff goes into the prompt. The trailing `--` keeps a tracked file named
+    like a revision from making the arguments ambiguous. Raises on any git failure: a
+    review of an empty diff it could not compute would look like a clean review.
+    """
+    if not isinstance(base, str) or not SHA_RE.fullmatch(base):
+        raise ValueError(f"base must be a full 40-character lowercase commit sha, got {base!r}")
+    subprocess.run(
+        ["git", "-C", dest, "fetch", "-q", "--depth", "1", "--", _repo_url(repo), base],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=CLONE_TIMEOUT_S,
+        env=_git_env(),
+    )
+    with tempfile.TemporaryDirectory() as scratch:
+        names_path, patch_path = os.path.join(scratch, "names"), os.path.join(scratch, "patch")
+        _git_to_file(["diff", "--name-only", "-z", base, "HEAD", "--"], dest, names_path)
+        _git_to_file(["diff", "--no-color", "--no-ext-diff", base, "HEAD", "--"], dest, patch_path)
+        with open(names_path, "rb") as handle:
+            files = [f.decode(errors="backslashreplace") for f in handle.read().split(b"\0") if f]
+        with open(patch_path, "rb") as handle:
+            patch = handle.read(MAX_DIFF_BYTES + 1)
+    # backslashreplace, not ignore: a non-UTF-8 byte must stay visible, or `café` changed
+    # to `cafè` in a Latin-1 file reads as no change at all. Escaping can quadruple a
+    # byte, so the cap is applied again to the text that actually reaches the prompt.
+    text = patch[:MAX_DIFF_BYTES].decode(errors="backslashreplace")
+    capped = text.encode()[:MAX_DIFF_BYTES].decode(errors="ignore")
+    truncated = len(patch) > MAX_DIFF_BYTES or len(capped) < len(text)
+    return files, len(files), capped, truncated
+
+
+def bounded_names(files: list[str], budget: int = MAX_RESULT_FILE_BYTES) -> list[str]:
+    """As many leading names as fit in `budget` bytes of result JSON. The dispatcher reads
+    at most 1 MiB of the pod log, and a result cut short is no result at all."""
+    kept, used = [], 2
+    for name in files:
+        used += len(json.dumps(name)) + 2
+        if used > budget:
+            break
+        kept.append(name)
+    return kept
+
+
 def top_level_entries(dest: str) -> list[str]:
     """Top-level tracked entries (`dir/` for trees). Grounding for the prompt: with
     only a file *count* the model invents a plausible listing, so the report says
     nothing about the repo the agent actually cloned."""
-    listing = subprocess.run(
-        ["git", "-C", dest, "ls-tree", "--name-only", "HEAD"],
+    # Raw bytes, and the entry type from git itself: text mode would turn a CR in a name
+    # into LF, and an escaped non-UTF-8 name is not a path isdir() can check.
+    raw = subprocess.run(
+        ["git", "ls-tree", "-z", "HEAD"],
+        cwd=dest,
         check=True,
         capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    names = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
-    return [f"{n}/" if os.path.isdir(os.path.join(dest, n)) else n for n in names]
+        timeout=GIT_STEP_TIMEOUT_S,
+        env=_git_env(),
+    ).stdout
+    entries = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        meta, _, name = record.partition(b"\t")
+        display = name.decode(errors="backslashreplace")
+        entries.append(f"{display}/" if meta.split(b" ")[1:2] == [b"tree"] else display)
+    return entries
 
 
 def _read_bounded(resp, limit: int, deadline: float) -> bytes:
@@ -214,7 +326,9 @@ def invoke_bedrock(model: str, prompt: str) -> str:
     return content[0]["text"] if content else ""
 
 
-def build_prompt(repo: str, ref: str, task: str, file_count: int, entries: list[str]) -> str:
+def build_prompt(
+    repo: str, ref: str, task: str, file_count: int, entries: list[str], change: dict | None = None
+) -> str:
     """Prompt the model with what the agent actually observed in the clone, and
     tell it not to fill gaps — an ungrounded answer looks identical to a correct
     one, which would make the canary's 'Bedrock returned a report' assertion
@@ -227,22 +341,46 @@ def build_prompt(repo: str, ref: str, task: str, file_count: int, entries: list[
     the model reads the whole prompt either way. What bounds it is that the model has no
     tools and no credentials: the worst outcome is a misleading report handed back to
     the caller that asked for it. It stops being bounded the moment the agent can act on
-    its own output, which is the gate for the agentic option in the README.
+    its own output, which is the gate for the agentic option in the README. The diff in
+    `change` is the same kind of content, authored by the same person.
     """
     lines = [
         f"You are inspecting a checkout of {repo} at ref {ref}.",
         f"It has {file_count} tracked files.",
     ]
     if entries:
-        lines += ["", "Top-level entries (complete list, `/` marks a directory):", *(f"  {e}" for e in entries)]
+        shown = bounded_names(entries, MAX_PROMPT_FILE_BYTES)
+        complete = "complete list" if len(shown) == len(entries) else f"first {len(shown)} of {len(entries)}"
+        lines += ["", f"Top-level entries ({complete}, `/` marks a directory):", *(f"  {e}" for e in shown)]
+    if change:
+        files = change["files"]
+        lines += ["", f"The change under review, against base {change['base']}: {len(files)} file(s) changed."]
+        shown = bounded_names(files, MAX_PROMPT_FILE_BYTES)
+        lines += [f"  {f}" for f in shown]
+        if len(files) > len(shown):
+            lines.append(f"  ... and {len(files) - len(shown)} more")
+        lines += [
+            "",
+            "Diff:" + (" (TRUNCATED — only the beginning is shown)" if change["truncated"] else ""),
+            change["patch"],
+        ]
     lines += [
         "",
         f"Task: {task}",
         "",
-        "Answer only from the listing above. If it doesn't contain the answer, say so "
+        "Answer only from what is shown above. If it doesn't contain the answer, say so "
         "instead of guessing — do not invent paths.",
     ]
     return "\n".join(lines)
+
+
+def _error_text(exc: Exception) -> str:
+    """A stage failure as text for `errors`: git's stderr when there is some (it may be
+    bytes), else the exception. Bytes here would make the result unserializable."""
+    stderr = getattr(exc, "stderr", None)
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    return (stderr or str(exc))[:MAX_ERROR_CHARS]
 
 
 def _str_field(spec: dict, key: str, default: str) -> str:
@@ -284,6 +422,7 @@ def run_task(spec: dict) -> dict:
     task = _str_field(spec, "task", "Summarize this repository.")
     model = _str_field(spec, "model", DEFAULT_MODEL)
     pr = _pr_field(spec)
+    base = _str_field(spec, "base", "")
     result: dict = {"cloned": False, "file_count": 0, "top_level": [], "report": "", "errors": {}}
 
     if pr:
@@ -297,12 +436,29 @@ def run_task(spec: dict) -> dict:
         try:
             result["file_count"] = clone_repo(repo, ref, workdir)
             result["cloned"] = True
+            # The commit actually reviewed. A branch or a pull request head moves, so a
+            # caller acting on the result pins to this, not to what it asked for.
+            result["head_sha"] = head_sha(workdir)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
             # ValueError is _check_ref rejecting the ref. Reported like any other clone
             # failure rather than raised: run_task's contract is that it never does, and
             # an exception here would leave task.py printing no result JSON at all.
-            result["errors"]["clone"] = getattr(exc, "stderr", None) or str(exc)
+            result["errors"]["clone"] = _error_text(exc)
             return result
+
+        change = None
+        if base:
+            try:
+                files, total, patch, truncated = diff_against(repo, workdir, base)
+                change = {"base": base, "files": files, "patch": patch, "truncated": truncated}
+                result["changed_files"] = bounded_names(files)
+                result["changed_files_total"] = total
+                result["diff_truncated"] = truncated
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
+                # A diff we cannot compute is reported, and the task stops: answering a
+                # review request without the change would look like a review.
+                result["errors"]["diff"] = _error_text(exc)
+                return result
 
         if not model:
             result["errors"]["bedrock"] = "no model configured (set BEDROCK_DEFAULT_MODEL_ID or pass 'model')"
@@ -312,11 +468,12 @@ def run_task(spec: dict) -> dict:
             entries = top_level_entries(workdir)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             # Grounding is best-effort — a repo we can't list is still worth asking about.
-            result["errors"]["listing"] = getattr(exc, "stderr", None) or str(exc)
+            result["errors"]["listing"] = _error_text(exc)
             entries = []
-        result["top_level"] = entries
+        result["top_level"] = bounded_names(entries)
+        result["top_level_total"] = len(entries)
 
-        prompt = build_prompt(repo, ref, task, result["file_count"], entries)
+        prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
         try:
             result["report"] = invoke_bedrock(model, prompt)
         except urllib.error.HTTPError as exc:

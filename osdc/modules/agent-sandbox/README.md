@@ -61,17 +61,29 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"manifest"?,"repo"?,"ref"?,"pr"?,"task"?,"wait"?}` →
-  `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`,
-  plus `"pr":int` echoed back when the request carried one — so a caller reading a
-  result out of `/status` can tell which pull request it is about.
+- `POST /run` body `{"manifest"?,"repo"?,"ref"?,"pr"?,"base"?,"task"?,"wait"?}` →
+  `{"task_id":str,"cloned":bool,"head_sha":str,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`,
+  plus `"pr":int` echoed back when the request carried one, and `changed_files`,
+  `changed_files_total` and `diff_truncated` when `base` is given. Name lists are cut to
+  256 KiB each (`top_level_total` / `changed_files_total` carry the real counts) so the
+  result always fits the 1 MiB log it travels in. `head_sha` is the commit actually
+  checked out: a branch or a pull request head can move, so pin to it, not to what you
+  asked for.
 
-  **`"pr": <number>` checks out that pull request's head** (`refs/pull/<n>/head`) instead
-  of `ref`, which it overrides. Like `ref`, `pr` is a *selector*: it names a pull request
-  **of the repository the Grant clones**, so it cannot reach another repo. PR head refs
-  live in the base repository, so this reaches a fork's pull request without naming the
-  fork. The checkout is the whole of it for now — the model still gets the top-level
-  listing, not a diff.
+  `ref` is a branch, a tag, `refs/pull/<n>/head` or a commit sha, fetched at depth 1. A
+  sha must be the full 40 hex characters — an abbreviated one is fetched as a ref name
+  and fails. Anything that is not a plain ref name (a refspec, a range, an option) is a
+  `400`. **`"pr": <number>` checks out that pull request's head** (`refs/pull/<n>/head`)
+  instead of `ref`, which it overrides. Like `ref`, `pr` is a *selector*: it names a pull
+  request **of the repository the Grant clones**, so it cannot reach another repo. PR head
+  refs live in the base repository, so this reaches a fork's pull request without naming
+  the fork.
+
+  `base` is an optional full, lowercase commit sha: the task fetches it too and puts
+  `git diff base <checked-out commit>` (bounded) in front of the model, so for a pull
+  request pass the merge base. Without it the model gets only the top-level listing. A
+  diff that cannot be computed stops the task with `errors.diff` rather than producing a
+  review of nothing.
 
   `manifest` names the capability manifest the call is made under; it is required with a
   token. `repo` chooses among the repositories that manifest allows (the first is the
@@ -215,12 +227,11 @@ curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/
   -H 'Content-Type: application/json' \
   -d '{"ref":"main","task":"Summarize the build layout"}'
 
-# Check out a pull request head of the Grant's repository. The prompt asks about the
-# tree, not about the change: the agent gets a listing of the PR head and no diff, so
-# "what does this change touch?" is a question it can only answer by guessing.
+# Review a pull request of the Grant's repository: `pr` checks out its head, and `base`
+# (the merge base) hands the agent the diff; without `base` it sees the tree only.
 curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -H 'Content-Type: application/json' \
-  -d '{"pr":1234,"task":"Which top-level areas of the repo does this branch contain?"}'
+  -d '{"pr":1234,"base":"<merge-base sha>","task":"What does this change touch?"}'
 
 # Or don't hold the connection open:
 TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
@@ -463,13 +474,13 @@ token.
   `429` — a refusal rather than a hang, but still a denial of service. There is no
   per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
 - **A pull request head is untrusted content, and it reaches the prompt.** The
-  top-level listing fed to the model comes out of the checked-out tree, so with `pr` set
-  a filename authored by whoever opened the pull request — a fork contributor, not a
-  caller — is in the prompt verbatim. Nothing filters it; fencing it would not help,
-  because the model reads the whole prompt either way. What bounds it is that the model
-  has no tools and no credentials, so the worst outcome is a misleading report returned
-  to the caller that asked for it. It stops being bounded once the agent can act on its
-  own output.
+  top-level listing and the diff fed to the model come out of the checked-out tree, so
+  with `pr` set, content authored by whoever opened the pull request — a fork
+  contributor, not a caller — is in the prompt verbatim. Nothing filters it; fencing it
+  would not help, because the model reads the whole prompt either way. What bounds it is
+  that the model has no tools and no credentials, so the worst outcome is a misleading
+  report returned to the caller that asked for it. It stops being bounded once the agent
+  can act on its own output.
 - **git-proxy authorizes on repository, not on caller.** `repo_allowed` matches the URL
   path, and `git-proxy-ingress` admits every pod labelled `app: sandbox-task` — which is
   every task pod, whatever `Grant.clone_repo` its caller was issued. So a task dispatched
