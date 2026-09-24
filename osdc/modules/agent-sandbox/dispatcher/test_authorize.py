@@ -235,3 +235,38 @@ def test_an_unparseable_require_auth_value_crashes_rather_than_disabling_auth(mo
     monkeypatch.setenv("REQUIRE_AUTH", "tru")
     with pytest.raises(RuntimeError, match="REQUIRE_AUTH"):
         http_api._flag("REQUIRE_AUTH", "false")
+
+
+class TestPullRequestSelector:
+    """`pr` is a SELECTOR, like `ref`: it picks what to look at inside the
+    policy-pinned repository, so it comes from the request and is bounded by the fact
+    that the repository itself does not."""
+
+    @POLICIES
+    def test_a_pull_request_number_reaches_the_grant(self, policy):
+        assert authorize_fn(claims(), {"pr": 42}, policy).pr == 42
+
+    @POLICIES
+    def test_no_pull_request_is_zero_not_none(self, policy):
+        """Zero rather than None so the Job template has one thing to stringify."""
+        assert authorize_fn(claims(), {}, policy).pr == 0
+
+    @POLICIES
+    def test_a_boolean_is_refused_rather_than_read_as_pull_request_one(self, policy):
+        """isinstance(True, int) is True, so an unguarded check turns a caller that
+        sent {"pr": true} into a real review of a real pull request it never named."""
+        with pytest.raises(Denied, match="pr"):
+            authorize_fn(claims(), {"pr": True}, policy)
+
+    @POLICIES
+    @pytest.mark.parametrize("value", [-1, "7", 1.5, [7]], ids=["negative", "string", "float", "list"])
+    def test_a_non_integer_is_refused(self, policy, value):
+        with pytest.raises(Denied, match="pr"):
+            authorize_fn(claims(), {"pr": value}, policy)
+
+    @POLICIES
+    def test_the_repository_is_still_policy(self, policy):
+        """The selector does not widen what it selects from: a PR number names a pull
+        request OF THE PINNED REPO, so it cannot reach another repository's review."""
+        grant = authorize_fn(claims(), {"pr": 42}, policy)
+        assert grant.clone_repo == authorize.V1_CLONE_REPO

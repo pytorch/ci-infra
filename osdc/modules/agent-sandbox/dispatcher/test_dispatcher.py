@@ -51,9 +51,11 @@ def _load_entrypoint():
 entrypoint = _load_entrypoint()
 
 
-def a_grant(task="", ref="", model="", caller="unauthenticated"):
+def a_grant(task="", ref="", model="", caller="unauthenticated", pr=0):
     """The Grant an unauthenticated caller gets today. job_manifest takes one of these
-    rather than a request body, which is the layering rule made unavoidable."""
+    rather than a request body, which is the layering rule made unavoidable.
+
+    `pr` defaults to 0, the not-a-review case, so the review tests have to ask for it."""
     return authorize.Grant(
         caller=caller,
         workflow_ref="",
@@ -61,6 +63,7 @@ def a_grant(task="", ref="", model="", caller="unauthenticated"):
         model=model,
         task=task,
         ref=ref,
+        pr=pr,
     )
 
 
@@ -205,6 +208,55 @@ class TestGitProxy:
         spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
         env = {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
         assert not any("TOKEN" in name.upper() or "SECRET" in name.upper() for name in env)
+
+
+class TestPullRequestReview:
+    """The PR number's journey from request body to task pod."""
+
+    def _env(self, grant):
+        spec = kube.job_manifest("abc123abc123", grant)["spec"]["template"]["spec"]
+        return {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+
+    def test_the_pull_request_number_reaches_the_pod(self):
+        assert self._env(a_grant(pr=42))["SANDBOX_PR"] == "42"
+
+    def test_no_review_sends_an_empty_value(self):
+        """Empty rather than "0": task.py drops empty env vars, so the agent sees no
+        `pr` key at all and takes exactly the pre-review code path."""
+        assert self._env(a_grant())["SANDBOX_PR"] == ""
+
+    def test_a_non_integer_pr_is_400(self, server):
+        """A type error is the request's fault, so it answers 400 here rather than
+        reaching authorize() and coming back as 403 "you may not have that"."""
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"pr": "42"})
+        assert exc.value.code == 400
+        assert "pr" in json.loads(exc.value.read())["error"]
+
+    def test_a_boolean_pr_is_400_not_pull_request_one(self, server):
+        """isinstance(True, int) is True, so without an explicit bool guard {"pr": true}
+        is admitted and becomes a real review of pull request #1."""
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"pr": True})
+        assert exc.value.code == 400
+        assert "pr" in json.loads(exc.value.read())["error"]
+
+    def test_a_negative_pr_is_400_on_the_unauthenticated_path_too(self, server):
+        """authorize() rejects pr < 0, but the migration window builds its Grant inline
+        without calling it. Checked only there, an unauthenticated {"pr": -1} became
+        SANDBOX_PR="-1", failed isdecimal() in the agent, fell back to 0, and quietly
+        reviewed the default branch — while the same body from an authenticated caller
+        was a 403."""
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"pr": -1})
+        assert exc.value.code == 400
+
+    def test_a_reviewed_pull_request_reaches_the_job(self, server, fake_k8s):
+        """End to end over the real socket: request body to Job env, which is the only
+        path production uses and the one the two unit tests above cannot see."""
+        _post(f"{server}/run", {"pr": 42})
+        env = fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]
+        assert {"name": "SANDBOX_PR", "value": "42"} in env
 
 
 class TestRunToCompletion:
