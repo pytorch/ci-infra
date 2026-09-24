@@ -27,6 +27,19 @@ NAMESPACE = os.environ.get("NAMESPACE", "ai-sandbox")
 AGENT_IMAGE = os.environ.get("AGENT_IMAGE", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
+# Where the git credential proxy listens. dispatcher.yaml sets it; empty disables the
+# proxy path entirely.
+GIT_PROXY = os.environ.get("GIT_PROXY", "")
+# The repositories that NEED the proxy, because they are private and an anonymous fetch
+# of them 404s. A module constant for the reason ALLOWED_CALLERS is one: it is the list
+# of repos whose contents leave the cluster under our credential.
+#
+# Opt-in per repo rather than "proxy everything". Sending public clones through it would
+# make the proxy a hard dependency of every task — one missing Secret and nothing runs —
+# and would push a 250 MB shallow clone of pytorch/pytorch through two nginx pods for no
+# benefit. It must agree with the allowlist in kubernetes/base/git-proxy.yaml: a repo
+# here but not there fetches and gets 403.
+PRIVATE_REPOS = frozenset({"pytorch/ciforge"})
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 
 # A task is a clone plus an invoke, each bounded at 120s in the task image, plus pod
@@ -162,6 +175,13 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "PYTHONUNBUFFERED", "value": "1"},
                                 {"name": "AWS_REGION", "value": REGION},
                                 {"name": "SIGV4_PROXY", "value": SIGV4_PROXY},
+                                # Only for a repo that needs a credential — see PRIVATE_REPOS.
+                                # A public clone goes straight to github.com, so the proxy
+                                # being down or unconfigured cannot break it.
+                                {
+                                    "name": "GIT_PROXY",
+                                    "value": GIT_PROXY if grant.clone_repo in PRIVATE_REPOS else "",
+                                },
                                 {"name": "BEDROCK_DEFAULT_MODEL_ID", "value": DEFAULT_MODEL},
                                 {"name": "SANDBOX_REPO", "value": grant.clone_repo},
                                 {"name": "SANDBOX_REF", "value": grant.ref},
