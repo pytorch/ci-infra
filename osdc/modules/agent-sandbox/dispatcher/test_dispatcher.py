@@ -168,6 +168,7 @@ class TestJobManifest:
         env = {e["name"]: e["value"] for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
         assert env["SANDBOX_REPO"] == "org/repo"
         assert env["SANDBOX_REF"] == "v1"
+        assert env["SANDBOX_BASE"] == ""
         assert env["SANDBOX_MODEL"] == "us.x"
         assert env["SANDBOX_TASK"] == "", "an omitted task must arrive empty so run_task applies its default"
 
@@ -296,6 +297,48 @@ class TestHTTPSurface:
         """The existing caller sends repo explicitly; it keeps working as long as it
         agrees with policy."""
         assert _post(f"{server}/run", {"repo": authorize.V1_CLONE_REPO})["report"] == "ok"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"ref": "--upload-pack=x"},
+            {"ref": "a b"},
+            {"ref": "a..b"},
+            {"ref": "main\n"},
+            {"base": "main"},
+            {"base": "0" * 39},
+            {"base": "0" * 40 + "\n"},
+        ],
+        ids=["ref-option", "ref-space", "ref-dotdot", "ref-newline", "base-branch", "base-short", "base-newline"],
+    )
+    def test_a_malformed_ref_or_base_is_400(self, server, body):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", body)
+        assert exc.value.code == 400
+
+    def test_a_branch_with_a_hash_or_accent_is_accepted(self, server, fake_k8s):
+        """Previously valid git names keep working: `feature/#123` and `café` are both
+        accepted by `git check-ref-format --branch`."""
+        for ref in ("feature/#123", "café"):
+            _post(f"{server}/run", {"ref": ref})
+
+    def test_ref_rules_match_the_task_pod(self):
+        """The dispatcher and the task pod validate the same way; a name one accepts and
+        the other refuses fails late, inside the pod."""
+
+        def source(path):
+            text = path.read_text()
+            start = text.index("def valid_ref(")
+            return text[start : text.index("\n\n\n", start)]
+
+        here = Path(__file__).parent
+        assert source(here / "http_api.py") == source(here.parent / "agent" / "sandbox.py")
+
+    def test_a_sha_ref_and_base_reach_the_job(self, server, fake_k8s):
+        _post(f"{server}/run", {"ref": "b" * 40, "base": "a" * 40})
+        env = {e["name"]: e["value"] for e in fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]}
+        assert env["SANDBOX_REF"] == "b" * 40
+        assert env["SANDBOX_BASE"] == "a" * 40
 
     @pytest.mark.parametrize("body", [[], None, 3, "text"], ids=["list", "null", "number", "string"])
     def test_non_object_body_is_400(self, server, body):

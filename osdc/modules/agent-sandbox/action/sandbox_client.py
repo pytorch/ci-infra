@@ -91,7 +91,7 @@ def build_body(env: dict) -> dict:
     if wait not in ("true", "false"):
         raise ClientError(f"input `wait` must be true or false, got {wait!r}")
     body = {"manifest": manifest, "task": task, "wait": wait == "true"}
-    for key in ("repo", "ref"):
+    for key in ("repo", "ref", "base"):
         value = env.get(f"INPUT_{key.upper()}", "").strip()
         if value:
             body[key] = value

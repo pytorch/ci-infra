@@ -165,6 +165,7 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "BEDROCK_DEFAULT_MODEL_ID", "value": DEFAULT_MODEL},
                                 {"name": "SANDBOX_REPO", "value": grant.clone_repo},
                                 {"name": "SANDBOX_REF", "value": grant.ref},
+                                {"name": "SANDBOX_BASE", "value": grant.base},
                                 {"name": "SANDBOX_TASK", "value": grant.task},
                                 {"name": "SANDBOX_MODEL", "value": grant.model},
                             ],

@@ -57,9 +57,11 @@ class Grant:
     clone_repo: str
     model: str
     task: str
-    # Caller-controlled: which commit of an allowed repository to read. It selects code
-    # to look at, not a capability.
+    # Caller-controlled: which branch, tag or commit of an allowed repository to read,
+    # and optionally a base commit to diff it against. They select code to look at, not
+    # a capability.
     ref: str
+    base: str = ""
 
     @property
     def owner(self) -> str:
@@ -76,7 +78,7 @@ class Grant:
 # `/`, and the suffix must be a full ref or a sha, so neither `listed.yml@other.yml@refs/...`
 # (read as listed.yml) nor a branch named `feature@v2` (split in the wrong place) confuses
 # which file is being named.
-_WORKFLOW_REF_RE = re.compile(r"^(\.github/workflows/[^@/]+\.ya?ml)@(?:refs/.+|[0-9a-f]{40})$")
+_WORKFLOW_REF_RE = re.compile(r"(\.github/workflows/[^@/]+\.ya?ml)@(?:refs/.+|[0-9a-f]{40})")
 
 
 def _workflow_path(ref: str, prefix: str) -> str | None:
@@ -84,7 +86,7 @@ def _workflow_path(ref: str, prefix: str) -> str | None:
     or None when the ref is not a workflow inside `prefix` (the client repository)."""
     if not ref.startswith(prefix):
         return None
-    match = _WORKFLOW_REF_RE.match(ref[len(prefix) :])
+    match = _WORKFLOW_REF_RE.fullmatch(ref[len(prefix) :])
     return match.group(1) if match else None
 
 
@@ -149,9 +151,10 @@ def authorize(claims: dict, request: dict, manifests: dict) -> Grant:
     # supplied `model` that disagrees with the Grant.
     task = request.get("task", "")
     ref = request.get("ref", "")
+    base = request.get("base", "")
     repo = request.get("repo", manifest.sandbox_repos[0])
-    if not all(isinstance(v, str) for v in (task, ref, repo)):
-        raise Denied("'task', 'ref' and 'repo' must be strings")
+    if not all(isinstance(v, str) for v in (task, ref, base, repo)):
+        raise Denied("'task', 'ref', 'base' and 'repo' must be strings")
     if repo not in manifest.sandbox_repos:
         raise Denied(f"manifest {manifest.name} does not allow cloning {repo}")
 
@@ -163,4 +166,5 @@ def authorize(claims: dict, request: dict, manifests: dict) -> Grant:
         model=manifest.model,
         task=task,
         ref=ref,
+        base=base,
     )

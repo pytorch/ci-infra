@@ -2,7 +2,9 @@
 
 Endpoints:
   GET  /healthz      -> {"status": "ok"}
-  POST /run          -> body {"manifest"?,"repo"?,"ref"?,"task"?,"wait"?}
+  POST /run          -> body {"manifest"?,"repo"?,"ref"?,"base"?,"task"?,"wait"?}
+                        `ref` is a branch, tag or commit sha; `base` an optional commit sha
+                        whose diff against `ref` the task is given.
                         `manifest` names the capability manifest; required with a token.
                         wait=true (default): blocks, returns the task result
                         wait=false: returns {"task_id": ...} immediately
@@ -73,6 +75,26 @@ def _flag(name: str, default: str) -> bool:
 REQUIRE_AUTH = _flag("REQUIRE_AUTH", "false")
 
 TASK_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+# `ref` and `base` become git arguments in the task pod, which re-checks them with the
+# same rules (agent/sandbox.py). Kept in step by test_ref_rules_match_the_task_pod.
+def valid_ref(name: str) -> bool:
+    """A branch or tag name git would accept (`git check-ref-format --branch` rules), or a
+    full commit sha. It becomes a git argument, so it may not start with `-`."""
+    if not isinstance(name, str) or not 0 < len(name) <= 1024:
+        return False
+    if SHA_RE.fullmatch(name):
+        return True
+    if name.startswith(("-", "/")) or name.endswith(("/", ".", ".lock")):
+        return False
+    if any(ord(c) < 0x20 or ord(c) == 0x7F or c in " ~^:?*[\\" for c in name):
+        return False
+    if ".." in name or "//" in name or "@{" in name or name == "@":
+        return False
+    return not any(part.startswith(".") or part.endswith(".lock") for part in name.split("/"))
+
 
 _MANIFESTS: dict | None = None
 
@@ -156,9 +178,13 @@ class Handler(BaseHTTPRequestHandler):
         # clone comes from the Grant. It is still type-checked, and still compared to the
         # Grant below — a caller that names a different repo is told so rather than
         # quietly getting the policy's one.
-        for key in ("manifest", "repo", "ref", "task", "model"):
+        for key in ("manifest", "repo", "ref", "base", "task", "model"):
             if key in spec and not isinstance(spec[key], str):
                 raise ValueError(f"'{key}' must be a string")
+        if spec.get("ref") and not valid_ref(spec["ref"]):
+            raise ValueError("'ref' must be a branch, tag or commit sha")
+        if spec.get("base") and not SHA_RE.fullmatch(spec["base"]):
+            raise ValueError("'base' must be a full 40-character commit sha")
         if "wait" in spec and not isinstance(spec["wait"], bool):
             raise ValueError("'wait' must be a boolean")
         return spec
@@ -193,6 +219,7 @@ class Handler(BaseHTTPRequestHandler):
                 model=authorize.V1_MODEL,
                 task=spec.get("task", ""),
                 ref=spec.get("ref", ""),
+                base=spec.get("base", ""),
             )
         claims = oidc.verify(oidc.bearer_token(header))
         return authorize.authorize(claims, spec, manifests())
