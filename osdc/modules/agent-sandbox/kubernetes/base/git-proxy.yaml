@@ -39,9 +39,9 @@ data:
   # Rendered by the nginx image's envsubst entrypoint, which substitutes only names that
   # are actually env vars — `$uri` and `$repo_allowed` are nginx variables and survive.
   default.conf.template: |
-    # Resolve github.com at request time. Without a resolver nginx resolves the upstream
-    # ONCE at startup and pins the address, so a GitHub IP change breaks every fetch
-    # until the pod restarts.
+    # Required, not an optimisation: proxy_pass below interpolates variables, and nginx
+    # refuses to resolve such an upstream at all without a resolver — every request would
+    # 502. It also re-resolves on expiry rather than pinning one GitHub address forever.
     resolver ${GIT_PROXY_RESOLVER} valid=30s ipv6=on ipv4=off;
 
     map $uri $repo_allowed {
@@ -50,7 +50,12 @@ data:
     }
 
     server {
-        listen 8080;
+        # IPv6 ONLY. OSDC EKS is v6-only at the pod level, so the readiness probe and the
+        # Service both target the pod's v6 address; a bare `listen 8080` is AF_INET and
+        # nothing can reach it. nginx defaults `listen [::]` to ipv6only=on, which is what
+        # we want — there is no v4 address here worth binding. Same reasoning as
+        # dispatcher/http_api.py's HTTPServerV6.
+        listen [::]:8080;
         # A clone of a large repository is one long response; the default 60s read
         # timeout would cut it off mid-pack.
         proxy_read_timeout 300s;
@@ -161,6 +166,10 @@ spec:
         - key: CriticalAddonsOnly
           operator: Exists
           effect: NoSchedule
+      # Drain in-flight fetches before SIGTERM, as sigv4-proxy does: maxUnavailable: 0
+      # guarantees a Ready endpoint exists but does nothing for a clone already streaming
+      # through this pod, and the config below budgets 300s for one.
+      terminationGracePeriodSeconds: 45
       containers:
         - name: git-proxy
           # nginx-unprivileged, not the stock image. The stock one owns /etc/nginx/conf.d
@@ -172,6 +181,10 @@ spec:
           ports:
             - name: proxy
               containerPort: 8080
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 30
           env:
             # Pre-encoded `x-access-token:<token>`, because git over HTTPS authenticates
             # with Basic and nginx cannot base64 at render time. See the module README
@@ -181,8 +194,14 @@ spec:
                 secretKeyRef:
                   name: git-proxy-credentials
                   key: basic-auth
-            # kube-dns, read off the pod's own resolv.conf at deploy time. Hardcoding
+            # The kube-dns Service ClusterIP, read by deploy.sh at apply time. Hardcoding
             # the usual IPv6 ULA would break any cluster whose service CIDR differs.
+            # nginx's `worker_processes auto` counts HOST cores, not the cgroup quota, so
+            # on a 48-vCPU base node this 500m container would fork 48 workers — each with
+            # its own connection arrays and its own resolver cache. This entrypoint flag
+            # derives the count from the CPU limit instead (1 here).
+            - name: NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE
+              value: "1"
             - name: GIT_PROXY_RESOLVER
               value: "__KUBE_DNS_IP__"
           volumeMounts:
@@ -200,7 +219,7 @@ spec:
             periodSeconds: 5
           resources:
             # 500m to match sigv4-proxy, NOT a full core: the namespace quota allows
-            # limits.cpu 27, and 12 task slots + 2 dispatchers + 2 sigv4 + 2 git-proxy
+            # limits.cpu 28, and 12 task slots + 2 dispatchers + 2 sigv4 + 2 git-proxy
             # at 1 core each comes to 28. Over it, the 12th task's Job is created and
             # only its POD is refused, so the caller hangs to its deadline rather than
             # getting a clean 429.

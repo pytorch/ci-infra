@@ -14,7 +14,7 @@ set -euo pipefail
 #      API-server ClusterIP are substituted in.
 #
 # The AWS credential lives on the sigv4-proxy pod; task pods hold none. Public repos
-# are cloned directly, so there is no GitHub credential at all. Task pods are created
+# are cloned directly, so the only GitHub credential is the one git-proxy holds for private repos. Task pods are created
 # per request by the dispatcher, so there is no standing sandbox Deployment.
 
 CLUSTER="$1"
@@ -257,6 +257,12 @@ fi
 # wait for — task pods only exist while a request is in flight.
 echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
+# Force a roll first: git-proxy-config is a plain resource, not a configMapGenerator, so
+# it carries no content hash and an allowlist or TLS edit leaves the pod template
+# identical. nginx renders the template once at start and never re-reads it, so without
+# this the ConfigMap applies cleanly, rollout status returns immediately, and the running
+# pods keep the old config. Same pattern as modules/pypi-cache/deploy.sh.
+kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"
 # git-proxy too, and this is also what catches an absent git-proxy-credentials Secret:
 # the pod would otherwise sit in CreateContainerConfigError behind a green deploy, and
 # the first symptom would be a private clone failing inside a task.
