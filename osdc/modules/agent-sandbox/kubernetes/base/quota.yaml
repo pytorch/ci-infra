@@ -11,13 +11,19 @@
 # 2 git-proxies (100m/128Mi, 500m/256Mi limits each). 12 slots is 4 fleet nodes at 3
 # per node.
 #
-# `limits.cpu` carries ONE rollout surge of headroom on top of that, and the arithmetic
-# is why it is not a round number: 24 (tasks) + 1 (dispatchers) + 1 (sigv4) + 1
-# (git-proxy) = 27 steady, + 500m for the one surging replica = 27.5, rounded up. Adding
-# git-proxy without moving this consumed the headroom, and the symptom is nasty: at 12
-# running tasks a deploy cannot create its surge pod and the rollout stalls. Worse, a
-# task Job over quota is CREATED and only its POD refused, so the caller hangs to its
-# 900s deadline instead of getting a clean 429.
+# EVERY key carries rollout headroom on top of that, not just cpu. Three Deployments
+# surge by one pod each (maxSurge 1 / maxUnavailable 0) and the jwks-refresher CronJob
+# can fire during a deploy, so the steady figures below need room for ~4 extra pods:
+#
+#   pods                       12 + 2 + 2 + 2 = 18 steady, + 4 surge/refresher -> 24
+#   requests.cpu               24 + 0.4 + 0.2 + 0.1 = 24.7, + 350m of surge     -> 26
+#   limits.cpu                 24 + 1 + 1 + 1 = 27, + 500m for one surge        -> 28
+#   limits.ephemeral-storage   240 + 2 + 0 + 2 = 244Gi, + 3Gi of surge          -> 248Gi
+#
+# Getting this wrong is nasty rather than loud: at 12 running tasks a deploy cannot
+# create its surge pod and the rollout stalls, and a task Job over quota is CREATED with
+# only its POD refused — so the caller hangs to its 900s deadline instead of getting a
+# clean 429.
 #
 # Raising the task slot size or the fleet's node_disk_size means redoing these numbers —
 # a quota that rejects pods is indistinguishable from a fleet that cannot schedule them
@@ -31,10 +37,10 @@ metadata:
     osdc.io/module: agent-sandbox
 spec:
   hard:
-    pods: "20"
-    requests.cpu: "25"
+    pods: "24"
+    requests.cpu: "26"
     requests.memory: "50Gi"
-    requests.ephemeral-storage: "245Gi"
+    requests.ephemeral-storage: "248Gi"
     limits.cpu: "28"
     limits.memory: "51Gi"
-    limits.ephemeral-storage: "245Gi"
+    limits.ephemeral-storage: "248Gi"
