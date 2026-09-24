@@ -89,13 +89,10 @@ spec:
               value: "6"
             # Whether a request with NO Authorization header is refused. A token that IS
             # presented is always verified whatever this says, so this governs one case:
-            # the caller that authenticates with nothing.
-            #
-            # FLIP THIS TO "true" once the GHA client is sending tokens. It is the whole
-            # point of the OIDC work, and leaving it here as "false" indefinitely means
-            # /run stays open to every pod in arc-runners.
+            # the caller that authenticates with nothing. "false" is a rollback switch
+            # only: it reopens /run to every pod in arc-runners.
             - name: REQUIRE_AUTH
-              value: "false"
+              value: "true"
             - name: OIDC_AUDIENCE
               value: "agent-service"
           volumeMounts:

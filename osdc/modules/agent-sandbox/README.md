@@ -141,26 +141,19 @@ Two residuals worth knowing:
 - **Tokens are replayable until they expire.** `jti` is neither required nor consumed;
   the concurrency cap and the namespace quota bound the damage meanwhile.
 
-### Enabling enforcement
+### Enforcement
 
-`REQUIRE_AUTH` still ships **`false`**. Before flipping it, the **`test-agent-sandbox`**
-integration job must send a token (it needs `id-token: write` and the
-`osdc-integration-test` manifest, which already admits it on `pull_request`); it sends
-none today and would get a `401`.
+`REQUIRE_AUTH` in `kubernetes/base/dispatcher.yaml` ships **`true`**: a request with no
+`Authorization` header gets `401`. The **`test-agent-sandbox`** integration job sends a
+fresh token per request under the `osdc-integration-test` manifest, and asserts that a
+request without one is refused.
 
-### What the flag does
-
-`REQUIRE_AUTH` in `kubernetes/base/dispatcher.yaml` ships **`false`**. It governs exactly one case: a
-request with no `Authorization` header at all. A token that *is* presented is always
-verified and always authorized, whatever the flag says, so a forged or denied token is
-rejected either way.
-
-Be clear about what that does and does not buy. **While the flag is false, authentication
-is optional**, and an unauthenticated caller can therefore do *more* than a caller whose
-real token was denied — it simply omits the header. This is a migration window, not a
-security posture. It is tolerable only because `/run` is already reachable
-unauthenticated by the whole `arc-runners` namespace today, so it is strictly no worse
-than the status quo and strictly better once flipped.
+The flag governs exactly one case, a request with no `Authorization` header at all. A
+token that *is* presented is always verified and always authorized, whatever the flag
+says. Setting it to `"false"` is a rollback switch, not a posture: an unauthenticated
+caller then gets the v1 Grant (`authorize.V1_CLONE_REPO`, the default model), which is
+*more* than a caller whose real token was denied, and `/run` reopens to every pod in
+`arc-runners`.
 
 Unrecognised values abort at startup rather than defaulting to off: `REQUIRE_AUTH=tru`
 under a `== "true"` comparison is a security control disabled by a typo, with no signal
@@ -178,7 +171,10 @@ The manifest declares that ConfigMap with **no `data`** — the content belongs 
 refresher. That is load-bearing rather than tidy: seeding it in the manifest meant every
 `kubectl apply` put the seed back over live keys, so each deploy blanked them. `deploy.sh`
 runs a refresh immediately after applying, so the window with no keys is minutes rather
-than up to six hours, and the dispatcher fails closed throughout it. Minutes, not seconds,
+than up to six hours, and the dispatcher fails closed throughout it. If that refresh fails
+on a cluster with no keys yet, the deploy fails rather than report success while every
+call is refused; with a key set the dispatcher will still accept for at least another
+hour in place, it warns and keeps that set. Minutes, not seconds,
 and not a bound anyone has measured: the Job has to be scheduled and pull an image, the
 kubelet then notices the ConfigMap changed on its own sync period, and the dispatcher
 re-reads the mount only every `JWKS_RELOAD_INTERVAL_S`.
@@ -217,18 +213,26 @@ just deploy-module meta-staging-aws-ue1 nodepools-agent-sandbox   # gVisor fleet
 just deploy-module meta-staging-aws-ue1 agent-sandbox             # IRSA + proxy + dispatcher
 ```
 
-## Use it (from anywhere with cluster network access, e.g. a runner)
+## Use it (from a workflow job on an OSDC runner)
+
+Prefer the action below. By hand, from a job with `permissions: id-token: write` whose
+repository, trigger and workflow a manifest admits:
 
 ```
+SANDBOX=http://sandbox-agent.ai-sandbox.svc.cluster.local:8080
+token() {   # a fresh one per call: they expire within minutes
+  curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=agent-service" | jq -r .value
+}
 # -m 900: the call waits for the task, and a cold fleet waits for a Karpenter node.
-curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
+curl -fsS -m 900 -X POST "$SANDBOX/run" -H "Authorization: Bearer $(token)" \
   -H 'Content-Type: application/json' \
-  -d '{"ref":"main","task":"Summarize the build layout"}'
+  -d '{"manifest":"ciforge-experiments","ref":"main","task":"Summarize the build layout"}'
 
-# Or don't hold the connection open:
-TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
-  -d '{"wait":false}' | jq -r .task_id)
-curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
+# Or don't hold the connection open; /status needs the same identity and manifest:
+TASK=$(curl -fsS -X POST "$SANDBOX/run" -H "Authorization: Bearer $(token)" \
+  -d '{"manifest":"ciforge-experiments","wait":false}' | jq -r .task_id)
+curl -fsS -H "Authorization: Bearer $(token)" "$SANDBOX/status/$TASK?manifest=ciforge-experiments"
 ```
 **The caller does not pick the model**, and picks the repository only among those its
 manifest allows. The model is the manifest's `model.id`, or `BEDROCK_DEFAULT_MODEL_ID`
@@ -380,9 +384,11 @@ Runs as part of the standard canary flow, gated by the `AGENT_SANDBOX` tag
 just integration-test meta-staging-aws-ue1
 ```
 The `test-agent-sandbox` job runs on a normal runner and `curl`s the sandbox
-Service — asserting it is reachable from `arc-runners` (BuildKit parity) and that
-it clones a public repo (directly, anonymously) and reaches Bedrock through the
-signing proxy, without the runner or worker holding a token.
+Service — asserting it is reachable from `arc-runners` (BuildKit parity), that a call
+without an OIDC token is refused and one under `osdc-integration-test` is admitted, and
+that the task clones a public repo (directly, anonymously) and reaches Bedrock through
+the signing proxy. The runner holds only its OIDC token for the dispatcher; the task pod
+holds no credential at all.
 
 ## Limitations (prototype — read before trusting it)
 
@@ -436,11 +442,8 @@ signing proxy, without the runner or worker holding a token.
   `Thread.start()` that fails leaves the slot reserved with no thread to release it.
 - **The proxy image floats** (`aws-sigv4-proxy:latest`) — digest-pin before
   non-prototype use.
-- **Callers are unauthenticated in practice, and unbounded either way.** Caller identity
-  now exists — `dispatcher/authorize.py`, OIDC-verified — but it is not enforced:
-  `REQUIRE_AUTH` ships `false` until the admitted callers actually send tokens (see
-  *Enabling enforcement*), so today any pod in `arc-runners` can still call `/run` with no
-  token and the NetworkPolicy remains the only real gate.
+- **Callers are authenticated, but unbounded.** Every call carries a verified OIDC token
+  (see *Enforcement*).
   Quotas are a separate gap that authentication does not close: a caller looping `/run`
   holds slots for up to the task deadline (`TASK_DEADLINE_S`, 900 s) and keeps every other consumer on
   `429` — a refusal rather than a hang, but still a denial of service. There is no

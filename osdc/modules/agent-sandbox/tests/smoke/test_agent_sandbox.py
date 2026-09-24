@@ -363,9 +363,16 @@ class TestSandboxDispatcher:
             f"BEDROCK_DEFAULT_MODEL_ID must be a cross-region inference profile ID, got {model!r}."
         )
 
+    def test_auth_is_required(self, all_deployments: dict) -> None:
+        """A request with no OIDC token must be refused. "false" is a rollback switch; a
+        cluster left on it has /run open to every pod in arc-runners."""
+        dep = _deployment(all_deployments, "sandbox-dispatcher")
+        env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
+        assert env.get("REQUIRE_AUTH") == "true", f"REQUIRE_AUTH must be 'true'; got {env.get('REQUIRE_AUTH')!r}."
+
     def test_concurrency_is_capped(self, all_deployments: dict) -> None:
-        """/run is unauthenticated, so an uncapped dispatcher turns a caller loop into
-        unbounded Jobs and, through Karpenter, unbounded nodes."""
+        """Authentication bounds who may call, not how often, so an uncapped dispatcher
+        turns a caller loop into unbounded Jobs and, through Karpenter, unbounded nodes."""
         dep = _deployment(all_deployments, "sandbox-dispatcher")
         env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
         cap = env.get("MAX_CONCURRENT_TASKS", "")
