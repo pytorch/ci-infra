@@ -1,0 +1,69 @@
+# Composite action: run one agent-sandbox task under a capability manifest.
+#
+#   permissions:
+#     id-token: write          # the dispatcher authenticates this job's OIDC token
+#   steps:
+#     - uses: pytorch/ci-infra/osdc/modules/agent-sandbox/action@<commit sha>
+#       id: sandbox
+#       with:
+#         manifest: ciforge-pr-review
+#         task: "Review this change."
+#
+# Pin it by commit sha: it runs inside the calling job, with the caller's identity.
+# Needs python3 on the runner. The dispatcher is reachable only from the OSDC
+# arc-runners today, so run the job on an OSDC runner group.
+name: agent-sandbox
+description: Run a task in the OSDC agent sandbox under a capability manifest
+inputs:
+  manifest:
+    description: Capability manifest the task runs under
+    required: true
+  task:
+    description: The prompt
+    required: true
+  repo:
+    description: Repository to read; must be allowed by the manifest (default is its first)
+    required: false
+    default: ""
+  ref:
+    description: Branch, tag or commit to read
+    required: false
+    default: ""
+  wait:
+    description: "true: wait for the result; false: return the task id at once"
+    required: false
+    default: "true"
+  endpoint:
+    description: Dispatcher base URL
+    required: false
+    default: "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080"
+  max-wait:
+    description: Seconds to keep retrying while the dispatcher is at capacity (HTTP 429)
+    required: false
+    default: "900"
+outputs:
+  task-id:
+    description: The dispatcher's task id
+    value: ${{ steps.run.outputs.task-id }}
+  report:
+    description: The agent's report (only when wait is true)
+    value: ${{ steps.run.outputs.report }}
+  result-file:
+    description: Path to the full /run response as JSON
+    value: ${{ steps.run.outputs.result-file }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      # Inputs travel as env vars, never interpolated into the script: a task string is
+      # caller data and must not become shell.
+      env:
+        INPUT_MANIFEST: ${{ inputs.manifest }}
+        INPUT_TASK: ${{ inputs.task }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_WAIT: ${{ inputs.wait }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_MAX_WAIT: ${{ inputs.max-wait }}
+      run: python3 "$GITHUB_ACTION_PATH/sandbox_client.py"
