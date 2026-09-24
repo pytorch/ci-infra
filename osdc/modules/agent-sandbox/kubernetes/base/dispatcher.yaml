@@ -83,6 +83,10 @@ spec:
               value: "__AWS_REGION__"
             - name: BEDROCK_DEFAULT_MODEL_ID
               value: "__BEDROCK_DEFAULT_MODEL_ID__"
+            # Handed to every task pod, so the agent fetches private repos through the
+            # proxy that holds the credential instead of anonymously.
+            - name: GIT_PROXY
+              value: "git-proxy.ai-sandbox.svc.cluster.local:8080"
             - name: SIGV4_PROXY
               value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
             - name: MAX_CONCURRENT_TASKS

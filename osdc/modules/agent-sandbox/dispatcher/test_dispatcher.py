@@ -175,6 +175,38 @@ class TestJobManifest:
         assert labels["app"] == "sandbox-task"
 
 
+class TestGitProxy:
+    def _env(self, grant):
+        spec = kube.job_manifest("abc123abc123", grant)["spec"]["template"]["spec"]
+        return {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+
+    def test_a_private_repo_is_told_where_the_proxy_is(self, monkeypatch):
+        """The credential lives in the proxy, so the pod needs its address and nothing
+        else — there is no token here to pass down."""
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        monkeypatch.setattr(kube, "PRIVATE_REPOS", frozenset({"org/repo"}))
+        assert self._env(a_grant())["GIT_PROXY"] == "git-proxy.ai-sandbox.svc:8080"
+
+    def test_a_public_repo_goes_straight_to_github(self, monkeypatch):
+        """The proxy is opt-in per repo. Routing everything through it would make a
+        missing Secret break every task, including the public clones that worked before
+        it existed — and push a 250 MB pytorch/pytorch clone through nginx for nothing."""
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        monkeypatch.setattr(kube, "PRIVATE_REPOS", frozenset({"some/other-private-repo"}))
+        assert self._env(a_grant())["GIT_PROXY"] == ""
+
+    def test_the_default_policy_repo_is_not_proxied(self):
+        """The shipped pairing has to be self-consistent: v1 clones V1_CLONE_REPO, and
+        routing that through a proxy whose allowlist does not name it 403s every task."""
+        assert authorize.V1_CLONE_REPO not in kube.PRIVATE_REPOS
+
+    def test_no_credential_reaches_the_task_pod(self, monkeypatch):
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
+        env = {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+        assert not any("TOKEN" in name.upper() or "SECRET" in name.upper() for name in env)
+
+
 class TestRunToCompletion:
     def test_creates_one_job_and_returns_the_parsed_result(self, fake_k8s):
         result = tasks._run_to_completion("abc123abc123", a_grant())
