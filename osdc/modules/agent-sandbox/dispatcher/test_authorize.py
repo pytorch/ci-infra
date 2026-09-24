@@ -167,6 +167,15 @@ def test_an_unexpected_runner_environment_is_denied():
             authorize_fn(claims(runner_environment=value), request(), MANIFESTS)
 
 
+def test_a_manifest_can_admit_github_hosted_runners():
+    name = GOOD_REQUEST["manifest"]
+    opted_in = {name: dataclasses.replace(MANIFESTS[name], runner_environments=frozenset({"github-hosted"}))}
+    grant = authorize_fn(claims(runner_environment="github-hosted"), request(), opted_in)
+    assert grant.manifest == name
+    with pytest.raises(Denied, match="runner environment"):
+        authorize_fn(claims(runner_environment="self-hosted"), request(), opted_in)
+
+
 def test_the_request_chooses_only_among_the_manifests_repositories():
     pr = claims(event_name="pull_request")
     grant = authorize_fn(pr, request(manifest="ciforge-pr-review", repo="pytorch/test-infra"), MANIFESTS)
@@ -254,7 +263,8 @@ def test_an_admissible_caller_can_actually_reach_run():
     /run is reachable only from in-cluster namespaces, whose runners mint self-hosted
     tokens."""
     assert _ingress_namespaces(), "sandbox-agent-ingress admits no namespace this test can read"
-    assert "self-hosted" in authorize.ALLOWED_RUNNER_ENVIRONMENTS
+    for m in MANIFESTS.values():
+        assert "self-hosted" in m.runner_environments, f"{m.name}: no caller of it could reach /run"
 
 
 def test_the_integration_test_is_admitted_by_its_manifest():
