@@ -15,6 +15,7 @@ import functools
 import json
 import os
 import ssl
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -29,8 +30,10 @@ REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 
-# A task is a clone plus an invoke, each bounded at 120s in the task image, plus pod
-# scheduling — which includes a Karpenter node when the fleet is full or cold.
+# Covers pod scheduling (including a Karpenter node when the fleet is full or cold), the
+# fetch and diff (each git step bounded at 120s in the task image) and the agent loop
+# (at most 600s). The loop does not assume the rest was quick: the Job carries this
+# deadline as SANDBOX_DEADLINE, and the task ends the loop early enough to report.
 TASK_DEADLINE_S = int(os.environ.get("TASK_DEADLINE_S", "900"))
 # Finished Jobs are deleted as soon as their log is read; this is the backstop for a
 # dispatcher that died mid-wait, and has to outlast a plausible restart.
@@ -168,6 +171,9 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "SANDBOX_BASE", "value": grant.base},
                                 {"name": "SANDBOX_TASK", "value": grant.task},
                                 {"name": "SANDBOX_MODEL", "value": grant.model},
+                                # Epoch seconds when activeDeadlineSeconds fires (it counts
+                                # from Job start, which is about now).
+                                {"name": "SANDBOX_DEADLINE", "value": str(int(time.time()) + TASK_DEADLINE_S)},
                             ],
                             "securityContext": {
                                 "runAsNonRoot": True,

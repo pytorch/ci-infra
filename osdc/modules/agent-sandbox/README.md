@@ -65,6 +65,19 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   given. Name lists are cut to 256 KiB each (`top_level_total` / `changed_files_total`
   carry the real counts) so the result always fits the 1 MiB log it travels in.
 
+  The model works in a loop (`agent/agent_loop.py`) with three read-only tools over the
+  checked-out commit — `list_dir`, `read_file`, `search` — until it answers, or 24 turns
+  or 600 s run out (`errors.agent`). The 600 s shrinks to what is left of the task's own
+  deadline (`TASK_DEADLINE_S`, passed to the pod as `SANDBOX_DEADLINE`, less 30 s), so
+  time lost before the loop no longer lets the loop itself run into the Job deadline. It
+  does not protect the stages before the loop, and a node clock more than 30 s off can
+  defeat the margin. Tools also stop, and the model is told
+  to answer, once the conversation nears a 200K-token window by the model's own count;
+  asking for tools again after that ends the loop with `errors.agent`. The first prompt,
+  which has no count yet, is sized to fit at one token per byte (the diff is cut first),
+  and each model call is bounded by the loop's wall clock as a whole. Tools read through git (`HEAD:<path>`), never the
+  filesystem. The result also carries `turns` and `tool_calls`.
+
   `ref` is a branch, tag or commit sha, fetched at depth 1 (a name as an explicit
   `refs/heads/…`, then `refs/tags/…`); names follow `git check-ref-format --branch`. `base` is an optional full
   commit sha: the task fetches it too and puts `git diff base ref` (bounded) in front of
@@ -405,7 +418,7 @@ signing proxy, without the runner or worker holding a token.
   *Enabling enforcement*), so today any pod in `arc-runners` can still call `/run` with no
   token and the NetworkPolicy remains the only real gate.
   Quotas are a separate gap that authentication does not close: a caller looping `/run`
-  holds slots for up to the clone plus invoke timeout and keeps every other consumer on
+  holds slots for up to the task deadline (`TASK_DEADLINE_S`, 900 s) and keeps every other consumer on
   `429` — a refusal rather than a hang, but still a denial of service. There is no
   per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
 - **The clone reaches the internet directly.** `sandbox-task-egress` allows TCP 443

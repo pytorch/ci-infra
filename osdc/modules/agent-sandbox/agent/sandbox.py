@@ -22,6 +22,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import agent_loop
+
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
@@ -32,6 +34,7 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BODY_BYTES = 8 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 # How much of a diff reaches the prompt. Beyond it the model is told the diff was cut.
+# run_task cuts it further if the whole first prompt would not fit the context window.
 MAX_DIFF_BYTES = 200 * 1024
 # Bytes the changed-file list may take in the prompt.
 MAX_PROMPT_FILE_BYTES = 32 * 1024
@@ -251,21 +254,23 @@ def bedrock_error_summary(exc: urllib.error.HTTPError) -> str:
     return f"{exc} ({code})" if code else str(exc)
 
 
-def invoke_bedrock(model: str, prompt: str) -> str:
-    """Call Bedrock InvokeModel through the sigv4 proxy (unsigned in, signed out)."""
-    body = json.dumps(
-        {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        }
-    ).encode()
+class BedrockHTTPError(RuntimeError):
+    """An HTTP error from Bedrock, already summarised (bedrock_error_summary).
+
+    Summarised inside the call, not by the caller: reading the error body can block, and
+    the agent loop bounds a model call's wall-clock time only while it is running."""
+
+
+def invoke_model(model: str, fields: dict, timeout: float = BEDROCK_TIMEOUT_S) -> dict:
+    """One Bedrock InvokeModel (Messages API) call through the sigv4 proxy — unsigned in,
+    signed out — returning the parsed response."""
+    body = json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 1024, **fields}).encode()
     # The model id is one path segment and has to be encoded as one: an inference
     # profile or foundation model ARN is a documented identifier and contains "/",
     # which would otherwise split the path so the request no longer names an invoke.
-    # It also stops a caller-supplied id (the /run body sets it) from steering the
-    # path the proxy signs — the proxy runs with no --name and forwards whatever path
-    # it is handed, leaving only its IRSA policy behind this.
+    # It also stops a model id from steering the path the proxy signs — the proxy runs
+    # with no --name and forwards whatever path it is handed, leaving only its IRSA
+    # policy behind this.
     #
     # ":" is left alone deliberately, though botocore would encode it: it is a legal
     # path character, and every model id in use here ends in "…-v1:0", so encoding it
@@ -279,10 +284,26 @@ def invoke_bedrock(model: str, prompt: str) -> str:
             "Content-Type": "application/json",
         },
     )
-    deadline = time.monotonic() + BEDROCK_TIMEOUT_S
-    with urllib.request.urlopen(req, timeout=BEDROCK_TIMEOUT_S) as resp:  # noqa: S310
-        payload = json.loads(_read_bounded(resp, MAX_RESPONSE_BYTES, deadline))
-    content = payload.get("content") or []
+    timeout = min(timeout, BEDROCK_TIMEOUT_S)
+    deadline = time.monotonic() + timeout
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            payload = json.loads(_read_bounded(resp, MAX_RESPONSE_BYTES, deadline))
+    except urllib.error.HTTPError as exc:
+        raise BedrockHTTPError(bedrock_error_summary(exc)) from None
+    if not isinstance(payload, dict):
+        raise ValueError("bedrock returned a non-object response")
+    return payload
+
+
+def invoke_bedrock(model: str, prompt: str) -> str:
+    """One prompt in, the first text block out."""
+    content = (
+        invoke_model(model, {"messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]}).get(
+            "content"
+        )
+        or []
+    )
     return content[0]["text"] if content else ""
 
 
@@ -317,8 +338,9 @@ def build_prompt(
         "",
         f"Task: {task}",
         "",
-        "Answer only from what is shown above. If it doesn't contain the answer, say so "
-        "instead of guessing — do not invent paths.",
+        "Use the list_dir, read_file and search tools to read what you need. Answer only "
+        "from what is shown above and what the tools return. If that is not enough, say so "
+        "instead of guessing — do not invent paths or file contents.",
     ]
     return "\n".join(lines)
 
@@ -342,6 +364,24 @@ def _str_field(spec: dict, key: str, default: str) -> str:
     """
     value = spec.get(key)
     return value if isinstance(value, str) and value else default
+
+
+# Left between the agent loop's end and the task's hard deadline, for printing the result
+# and for clock skew between the dispatcher's node and this one.
+RESULT_MARGIN_S = 30
+
+
+def loop_time_limit(deadline, now: float) -> float:
+    """Seconds the agent loop may run: LOOP_DEADLINE_S, or less when the task's own
+    deadline (epoch seconds from the dispatcher, SANDBOX_DEADLINE) is nearer. Scheduling,
+    the fetch and the diff have already spent part of it."""
+    try:
+        at = float(deadline)
+    except (TypeError, ValueError):
+        return agent_loop.LOOP_DEADLINE_S
+    if at != at or at in (float("inf"), float("-inf")):  # NaN or infinite: ignore it
+        return agent_loop.LOOP_DEADLINE_S
+    return max(0.0, min(agent_loop.LOOP_DEADLINE_S, at - now - RESULT_MARGIN_S))
 
 
 def run_task(spec: dict) -> dict:
@@ -391,17 +431,42 @@ def run_task(spec: dict) -> dict:
         result["top_level_total"] = len(entries)
 
         prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
+        # The first request has no token count to go on, so it must fit the window at one
+        # token per byte. The diff is the part that can give way; the loop refuses a
+        # prompt still too large after that.
+        budget = agent_loop.prompt_budget_bytes()
+        if change and change["patch"] and len(prompt.encode()) > budget:
+            # Marked first: the TRUNCATED note itself takes a few bytes of the budget.
+            change["truncated"] = True
+            result["diff_truncated"] = True
+            prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
+            excess = len(prompt.encode()) - budget
+            if excess > 0:
+                patch = change["patch"].encode()
+                change["patch"] = patch[: max(0, len(patch) - excess)].decode(errors="ignore")
+                prompt = build_prompt(repo, ref, task, result["file_count"], entries, change)
         try:
-            result["report"] = invoke_bedrock(model, prompt)
+            limit = loop_time_limit(spec.get("deadline"), time.time())
+            outcome = agent_loop.run_agent(
+                invoke_model, model, prompt, agent_loop.RepoTools(workdir), time_limit_s=limit
+            )
+            result["report"] = outcome["report"]
+            result["turns"] = outcome["turns"]
+            result["tool_calls"] = outcome["tool_calls"]
+            if "error" in outcome:
+                result["errors"]["agent"] = outcome["error"]
+        except BedrockHTTPError as exc:
+            result["errors"]["bedrock"] = str(exc)
         except urllib.error.HTTPError as exc:
             result["errors"]["bedrock"] = bedrock_error_summary(exc)
-        except (OSError, http.client.HTTPException, KeyError, TypeError, ValueError) as exc:
+        except (OSError, http.client.HTTPException, KeyError, TypeError, ValueError, RecursionError) as exc:
             # OSError covers URLError and TimeoutError; HTTPException covers the
             # truncated body (IncompleteRead) and the reset status line
             # (RemoteDisconnected) that a proxy restart produces mid-response.
             # Anything escaping here closes the connection on the caller, which
             # cannot be told apart from the pod being gone — the single answer this
-            # endpoint exists to avoid giving.
+            # endpoint exists to avoid giving. RecursionError: a deeply nested response
+            # overflows json.loads.
             result["errors"]["bedrock"] = str(exc)
 
     return result
