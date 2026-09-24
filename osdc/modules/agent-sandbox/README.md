@@ -60,8 +60,15 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"ref"?,"task"?,"wait"?}` →
+- `POST /run` body `{"ref"?,"task"?,"wait"?,"pr"?}` →
   `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
+
+  **`"pr": <number>` checks out that pull request's head** (`refs/pull/<n>/head`) instead
+  of `ref`, which it overrides. Like `ref`, `pr` is a *selector*: it names a pull request
+  **of the policy-pinned repository**, so it cannot reach another repo. PR head refs live
+  in the base repository, so this reaches a fork's pull request without naming the fork.
+  The checkout is the whole of it for now — the model still gets the top-level listing,
+  not a diff.
 
   Waits for the task by default, so a caller sees the result on the same connection —
   budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
@@ -213,6 +220,11 @@ curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/
   -H 'Content-Type: application/json' \
   -d '{"ref":"main","task":"Summarize the build layout"}'
 
+# Check out a pull request head of the policy-pinned repo:
+curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{"pr":1234,"task":"What does this change touch?"}'
+
 # Or don't hold the connection open:
 TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -d '{"wait":false}' | jq -r .task_id)
@@ -253,10 +265,12 @@ kubectl create secret generic git-proxy-credentials -n ai-sandbox \
 Pre-encoded because git over HTTPS authenticates with Basic and nginx cannot base64 at
 render time. A GitHub App installation token is the better source than a PAT — an hour
 long and scoped per repo — but it needs a refresher, which this does not yet have.
-Only repositories in `kube.PRIVATE_REPOS` are routed through it — a public clone goes
-straight to github.com, so the proxy being down or unconfigured cannot break one. That
-list must agree with the nginx allowlist: a repo in one and not the other fetches and
+Nothing routes through it yet: the dispatcher starts sending private-repo clones here in
+a later change, and a public clone always goes straight to github.com so the proxy being
+down or unconfigured cannot break one. When that lands, the dispatcher's private-repo
+list must agree with the nginx allowlist — a repo in one and not the other fetches and
 gets a 403.
+
 ## Capacity
 
 A sandbox slot is **2 vCPU / 4 GiB / 20 GiB disk with requests == limits** (Guaranteed QoS), so

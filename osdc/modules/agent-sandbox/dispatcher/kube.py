@@ -187,6 +187,11 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "SANDBOX_REF", "value": grant.ref},
                                 {"name": "SANDBOX_TASK", "value": grant.task},
                                 {"name": "SANDBOX_MODEL", "value": grant.model},
+                                # Empty rather than "0" when there is no review, so
+                                # task.py's "skip the empty ones" rule drops it and the
+                                # agent sees no `pr` key at all — the same shape a
+                                # pre-review dispatcher produced.
+                                {"name": "SANDBOX_PR", "value": str(grant.pr) if grant.pr else ""},
                             ],
                             "securityContext": {
                                 "runAsNonRoot": True,
