@@ -31,6 +31,7 @@ actually holds (see *Limitations*).
    │ [UNTRUSTED] sandbox-task-<id>   Job, runtimeClassName: gvisor           │
    │   • one task then exits; no credentials, no K8s token                   │
    │   • http ─────────► sigv4-proxy (signs Bedrock with IRSA)               │
+   │   • http ─────────► git-proxy   (adds the GitHub token, private repos)  │
    │        pinned to the ai-sandbox gVisor fleet                            │
    └───────────────────────────────────────────────────────────────────────┘
      the credential never shares a node / gVisor sandbox with agent code, and
@@ -354,8 +355,9 @@ just integration-test meta-staging-aws-ue1
 ```
 The `test-agent-sandbox` job runs on a normal runner and `curl`s the sandbox
 Service — asserting it is reachable from `arc-runners` (BuildKit parity) and that
-it clones a public repo (directly, anonymously) and reaches Bedrock through the
-signing proxy, without the runner or worker holding a token.
+it clones a public repo (directly, anonymously — public clones do not use git-proxy)
+and reaches Bedrock through the signing proxy, without the runner or worker holding a
+token.
 
 ## Limitations (prototype — read before trusting it)
 
