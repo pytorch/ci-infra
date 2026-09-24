@@ -9,9 +9,9 @@ set -euo pipefail
 #      `osdc` project under content-hash tags (skipped if a tag already exists).
 #   2. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
 #   3. Applies the namespace, quota, gvisor RuntimeClass, service accounts, dispatcher
-#      RBAC, sigv4-proxy, the dispatcher + Service, and the NetworkPolicies. Both image
-#      tags, the region, the Bedrock model, the proxy's IRSA role ARN and the cluster's
-#      API-server ClusterIP are substituted in.
+#      RBAC, sigv4-proxy, git-proxy, the dispatcher + Service, and the NetworkPolicies.
+#      Both image tags, the region, the Bedrock model, the proxy's IRSA role ARN, the
+#      cluster's API-server ClusterIP and its kube-dns ClusterIP are substituted in.
 #
 # The AWS credential lives on the sigv4-proxy pod; task pods hold none. Public repos
 # are cloned directly, so the only GitHub credential is the one git-proxy holds for private repos. Task pods are created
