@@ -166,10 +166,16 @@ if [[ -z "$KUBE_DNS_IP" ]]; then
   exit 1
 fi
 # nginx needs an IPv6 literal in brackets; an unbracketed one parses as host:port.
+#
+# The surrounding DOUBLE QUOTES are not decoration. kustomize drops the quotes around
+# the `__KUBE_DNS_IP__` placeholder because a bare word needs none, so the substituted
+# value lands unquoted — and `value: [fd00::a]` is YAML flow-sequence syntax, which the
+# API server rejects with "cannot unmarshal array into ... EnvVar.value of type string".
+# Putting the quotes in the replacement is what keeps it a string.
 if [[ "$KUBE_DNS_IP" == *:* ]]; then
-  KUBE_DNS_RESOLVER="[${KUBE_DNS_IP}]"
+  KUBE_DNS_RESOLVER="\"[${KUBE_DNS_IP}]\""
 else
-  KUBE_DNS_RESOLVER="${KUBE_DNS_IP}"
+  KUBE_DNS_RESOLVER="\"${KUBE_DNS_IP}\""
 fi
 
 # --- Apply manifests (substitute both images, region, model, role ARN, API CIDR, DNS) ---
