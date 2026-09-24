@@ -48,8 +48,9 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   nothing carries over between tasks.
 - **Credential:** held by the proxy, never by a task. `aws-sigv4-proxy` signs AWS
   requests with a read-only IRSA role (terraform), pinned to Bedrock in this region
-  with `--host`/`--name`; tasks send unsigned HTTP. Public repos are cloned directly,
-  so there is no GitHub credential at all.
+  with `--host`/`--name`; tasks send unsigned HTTP. Public repos are cloned directly and
+  anonymously; the one GitHub credential lives in `git-proxy`, for private repos only —
+  see *Private repositories* below.
 - **Privilege:** the dispatcher can create Jobs in this namespace and nothing else —
   no ClusterRole, no write on pods, no secrets. Task pods run as `sandbox-agent`,
   which has no RBAC and no mounted token.
@@ -420,7 +421,8 @@ signing proxy, without the runner or worker holding a token.
 - **The clone reaches the internet directly.** `sandbox-task-egress` allows TCP 443
   to any address because `NetworkPolicy` selects on CIDR and GitHub's ranges move.
   Closing it means git behind a proxy the way Bedrock is, landing together with the
-  no-NAT subnet — neither exists, and either alone breaks cloning.
+  no-NAT subnet — the proxy now exists, the subnet does not, and the subnet alone
+  still breaks cloning.
 - **Repo context is shallow** — the prompt carries the file count and the
   top-level listing, enough to keep answers grounded, but no file contents. Real
   tasks need reading files (and a tool loop to choose which); today the Bedrock
