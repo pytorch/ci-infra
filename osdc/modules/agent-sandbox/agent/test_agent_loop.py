@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import subprocess
 import time
@@ -535,3 +536,114 @@ class TestLoop:
         out = agent_loop.run_agent(invoke, "m", "p", repo, clock=clock)
         assert out["tool_calls"] == 1
         assert "time limit" in out["error"]
+
+
+ALLOWED = [
+    {"effect": "pr_comment", "max_bytes": 50},
+    {"effect": "check_run", "max_bytes": 100, "conclusions": ["neutral"]},
+]
+
+
+class TestProposals:
+    def test_proposing_stays_open_after_the_read_budget_runs_out(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        tools = RepoTools(repo.dest, ALLOWED)
+        propose = tool_use("propose_effect", {"effect": "pr_comment", "body": "LGTM"}, id_="p")
+        invoke = scripted(tool_use("list_dir", {}), propose, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert "error" not in out
+        assert tools.proposals == [{"effect": "pr_comment", "body": "LGTM"}]
+
+    def test_reading_again_after_the_budget_ends_the_loop_even_with_a_proposal(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        tools = RepoTools(repo.dest, ALLOWED)
+        both = {
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "p",
+                    "name": "propose_effect",
+                    "input": {"effect": "pr_comment", "body": "x"},
+                },
+                {"type": "tool_use", "id": "r", "name": "list_dir", "input": {}},
+            ],
+        }
+        out = agent_loop.run_agent(scripted(tool_use("list_dir", {}), both), "m", "p", tools)
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+        assert tools.proposals == []
+
+    def test_the_first_prompt_budget_counts_the_propose_tool(self):
+        tools = [*agent_loop.TOOLS, agent_loop.PROPOSE_EFFECT]
+        fixed = len(json.dumps({"system": agent_loop.SYSTEM, "tools": tools}).encode()) + 1024
+        whole = (agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS) * agent_loop.MIN_BYTES_PER_TOKEN
+        assert agent_loop.prompt_budget_bytes() == whole - fixed
+
+    def test_proposal_only_turns_with_a_full_window_are_bounded_too(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        full = agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS - 1000
+        usage = {"input_tokens": full, "output_tokens": 0}
+        first = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "a"}, id_="p1"), usage=usage)
+        again = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "b"}, id_="p2"), usage=usage)
+        invoke = scripted(first, again, answer("never"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert len(invoke.seen) == 2
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+        assert tools.proposals == [{"effect": "pr_comment", "body": "a"}]
+
+    def test_only_one_turn_of_proposals_is_accepted_after_the_budget_runs_out(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        tools = RepoTools(repo.dest, ALLOWED)
+        first = tool_use("propose_effect", {"effect": "pr_comment", "body": "a"}, id_="p1")
+        again = tool_use("propose_effect", {"effect": "pr_comment", "body": "b"}, id_="p2")
+        invoke = scripted(tool_use("list_dir", {}), first, again, answer("never"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert len(invoke.seen) == 3
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+
+    def test_the_propose_tool_is_offered_only_when_effects_are_allowed(self, repo):
+        assert [t["name"] for t in repo.specs()] == ["list_dir", "read_file", "search"]
+        allowed = RepoTools(repo.dest, ALLOWED)
+        propose = allowed.specs()[-1]
+        assert propose["name"] == "propose_effect"
+        assert propose["input_schema"]["properties"]["effect"]["enum"] == ["check_run", "pr_comment"]
+        assert agent_loop.PROPOSE_EFFECT["input_schema"]["properties"]["effect"]["enum"] == [], (
+            "the template is not mutated"
+        )
+
+    def test_a_valid_proposal_is_recorded_not_performed(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        assert "proposed pr_comment" in tools.run("propose_effect", {"effect": "pr_comment", "body": "LGTM"})
+        assert tools.run(
+            "propose_effect", {"effect": "check_run", "body": "s", "conclusion": "neutral", "title": "T"}
+        ).startswith("proposed")
+        assert tools.proposals == [
+            {"effect": "pr_comment", "body": "LGTM"},
+            {"effect": "check_run", "body": "s", "title": "T", "conclusion": "neutral"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            ({"effect": "merge", "body": "x"}, "effect must be one of"),
+            ({"effect": "pr_comment", "body": ""}, "non-empty"),
+            ({"effect": "pr_comment", "body": "x" * 51}, "longer than 50"),
+            ({"effect": "check_run", "body": "s", "conclusion": "success"}, "conclusion must be"),
+        ],
+    )
+    def test_a_bad_proposal_is_an_error_the_model_can_fix(self, repo, args, message):
+        tools = RepoTools(repo.dest, ALLOWED)
+        assert message in tools.run("propose_effect", args)
+        assert tools.proposals == []
+
+    def test_proposals_are_capped(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        for _ in range(agent_loop.MAX_PROPOSALS):
+            tools.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+        assert "no more effects" in tools.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+
+    def test_without_allowed_effects_the_tool_does_not_exist(self, repo):
+        assert "unknown tool" in repo.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+
+    def test_malformed_allowed_effects_are_ignored(self, repo):
+        assert RepoTools(repo.dest, ["junk", {"no": "effect"}]).specs() == agent_loop.TOOLS

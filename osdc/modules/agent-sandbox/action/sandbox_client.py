@@ -226,8 +226,16 @@ def main(env: dict | None = None, opener=None, token_opener=None) -> int:
         write_outputs(output_path, outputs)
 
     errors = payload.get("errors") or {}
-    if status == 200 and errors:
-        print(f"::error::{_command_data('the task reported errors: ' + json.dumps(errors))}", flush=True)
+    errors = errors if isinstance(errors, dict) else {"result": errors}
+    # A rejected proposal is a diagnostic, not a failed run: the effects that passed
+    # screening are still valid, and failing here would stop the apply step.
+    if status == 200 and "effects" in errors:
+        print(
+            f"::warning::{_command_data('some proposed effects were rejected: ' + str(errors['effects']))}", flush=True
+        )
+    fatal = {k: v for k, v in errors.items() if k != "effects"}
+    if status == 200 and fatal:
+        print(f"::error::{_command_data('the task reported errors: ' + json.dumps(fatal))}", flush=True)
         return 1
     if not well_formed:
         print("::error::/run returned no well-formed task id; the result was not trusted", flush=True)

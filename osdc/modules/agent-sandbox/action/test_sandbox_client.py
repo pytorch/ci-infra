@@ -284,6 +284,27 @@ def test_a_task_that_reported_errors_fails_the_step_but_keeps_its_outputs(fake, 
     assert outputs(tmp_path)["task-id"] == "0123456789ab"
 
 
+def test_rejected_effects_warn_but_do_not_fail_the_step(fake, tmp_path, capsys):
+    fake["run"] = [
+        (
+            200,
+            {
+                "task_id": "0123456789ab",
+                "report": "r",
+                "effects": [{"effect": "pr_comment"}],
+                "errors": {"effects": "#1: title too long"},
+            },
+        )
+    ]
+    assert run(env_for(fake, tmp_path)) == 0
+    assert "::warning::some proposed effects were rejected" in capsys.readouterr().out
+
+
+def test_non_dict_errors_are_still_fatal(fake, tmp_path):
+    fake["run"] = [(200, {"task_id": "0123456789ab", "report": "r", "errors": "boom"})]
+    assert run(env_for(fake, tmp_path)) == 1
+
+
 def test_a_transport_failure_is_not_retried(tmp_path, fake, capsys):
     env = env_for(fake, tmp_path)
     env["INPUT_ENDPOINT"] = "http://127.0.0.1:1"
@@ -355,7 +376,12 @@ def test_the_action_passes_inputs_as_env_not_as_script_text():
     import yaml
 
     action = yaml.safe_load((Path(__file__).parent / "action.yml").read_text())
-    step = action["runs"]["steps"][0]
-    assert "${{" not in step["run"]
+    steps = action["runs"]["steps"]
+    env_names = set()
+    for step in steps:
+        assert "${{" not in step["run"]
+        env_names |= set(step["env"])
     for name in action["inputs"]:
-        assert f"INPUT_{name.upper().replace('-', '_')}" in step["env"]
+        if name == "apply-effects":
+            continue  # a condition on the apply step, not a script input
+        assert f"INPUT_{name.upper().replace('-', '_')}" in env_names

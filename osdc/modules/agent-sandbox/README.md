@@ -260,6 +260,30 @@ steps:
       REPORT: ${{ steps.sandbox.outputs.report }}
 ```
 
+## Writes: proposed in the sandbox, applied outside it
+
+The agent never writes. When its manifest lists `capabilities.effects`, the agent gets a
+`propose_effect` tool and can propose a PR comment or a check run; the task returns the
+proposals in `effects`. The dispatcher screens them against the Grant
+(`dispatcher/effects.py`): the kind must be listed, bodies fit `max_bytes`, a check run's
+conclusion comes from the manifest's set and its name from the manifest. Effects need the
+request's `ref` to be a commit sha, and the task must report having checked out exactly
+that commit; every accepted effect is pinned to it and to the cloned repository, and
+opens with a provenance line. Rejections are reported in `errors.effects` (a warning, not
+a failed step); a run that did not finish proposes nothing.
+
+The action applies what survives when called with `apply-effects: "true"` and a
+`pr-number` (`action/apply_effects.py`), reading the result its own `/run` step just wrote
+in the same job, using the `github-token` input. That defaults to the job's token, which
+can write only to the calling repository; a caller that reviews another repository must
+pass a token for it (a GitHub App installation token), and the step refuses to start with
+the job's token otherwise. A comment is posted as a pull-request review with
+`commit_id` set to the reviewed commit, a check run is created on that commit, effects for
+another repository are refused, and nothing is written if the pull request has moved on.
+For PR-triggered callers, run the whole call — `/run` and the apply step — in a
+`workflow_run` job on the default branch, fed only the PR number by the untrusted stage;
+never apply an artifact produced by another job.
+
 ## Capacity
 
 A sandbox slot is **2 vCPU / 4 GiB / 20 GiB disk with requests == limits** (Guaranteed QoS), so
