@@ -59,81 +59,72 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"ref"?,"task"?,"wait"?}` →
+- `POST /run` body `{"manifest"?,"repo"?,"ref"?,"task"?,"wait"?}` →
   `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
 
-  Waits for the task by default, so a caller sees the result on the same connection —
-  budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
-  returns `202 {"task_id"}` instead. `repo` and `model` are still *parsed* — a non-string
-  is a `400` — but neither reaches the Job: the Grant decides both. Supplying either is
-  checked rather than ignored, so a `repo` that matches policy is accepted and one that
-  does not is a `403`. **`model` is a `403` whatever you send**, because v1's policy model
-  is the empty string meaning "the dispatcher's configured default" — including `""`,
-  which is compared like any other value rather than skipped. Send neither. See *Who may
-  call* below.
+  `manifest` names the capability manifest the call is made under; it is required with a
+  token. `repo` chooses among the repositories that manifest allows (the first is the
+  default); the model is the manifest's, and a `model` that disagrees is a `403`.
+  Waits for the task by default — budget for a cold fleet, where the pod waits on a
+  Karpenter node. `"wait": false` returns `202 {"task_id"}` instead.
   `top_level` is the clone's real top-level listing, which is also fed to the
   model — an empty one means the report was not grounded in the repo.
-- `GET /status/<task_id>` → `{"state":"running"}` or `{"state":"done", …result}`.
-  Results are kept in memory for an hour after the task finishes. A task belonging to
-  another caller answers `404`, not `403` — otherwise the endpoint would confirm that
-  other callers are running tasks.
+- `GET /status/<task_id>?manifest=<name>` → `{"state":"running"}` or
+  `{"state":"done", …result}`. Results are kept in memory for an hour after the task
+  finishes. A task is owned by its caller *and* manifest; one belonging to anyone else
+  answers `404`, not `403`, so the endpoint does not confirm that other tasks exist.
 
 ## Who may call, and what a call can do
 
 `/run` authenticates the caller with a **GitHub Actions OIDC token** in an
-`Authorization: Bearer` header, and authorizes it against a policy that lives in code —
-`dispatcher/authorize.py`, not an env var, because it is the answer to "who may spend our
-Bedrock budget" and belongs in git history and review.
+`Authorization: Bearer` header and authorizes it against a **capability manifest**: one
+YAML file per use case in `kubernetes/base/capabilities/`, deployed as a ConfigMap and
+parsed by `dispatcher/manifest.py`. The request names the manifest; `authorize.py` checks
+the token against that manifest's `clients` region and builds the Grant from the rest.
 
-v1 admits two callers: a workflow in **`pytorch/ciforge`**, and one in
-**`pytorch/ci-infra`** (this module's own `test-agent-sandbox` integration job, the only
-thing that calls `/run` today). Either must be on a protected ref, on a **self-hosted**
-runner, on an event not in a denied set. The *repository* is matched on
-`repository_id`/`repository_owner_id` rather than on its name, because a repository can be
-renamed and its old name re-registered by someone else — the two workflow refs are still
-matched on a name prefix, so a rename breaks authorization even though the ids resolve.
+```yaml
+name: ciforge-pr-review
+owner: pytorch-dev-infra
+clients:
+  repos:                     # matched on the immutable ids, not the name
+    - repository: pytorch/ciforge
+      repository_id: "1133856973"
+      repository_owner_id: "21003710"
+  triggers: [pull_request, workflow_run, workflow_dispatch]   # the token's event_name
+  workflows: []              # optional: workflow files allowed to call; empty = any
+model:
+  id: us.anthropic.claude-opus-5-5   # optional; empty = the dispatcher's default
+sandbox:
+  repos: [pytorch/pytorch, pytorch/test-infra]   # public repos the task may clone
+```
 
-`self-hosted` is a **shape** check, not a trust boundary: `/run` is a ClusterIP reachable
-only from `arc-runners`, so that is simply what a caller who can connect reports. It is not
-a defence against untrusted code minting a token — **the client is untrusted by design**,
-any job with `id-token: write` can mint one on either kind of runner, and the dispatcher's
-job is to validate the token and bound what the validated identity may do. That bound is
-the Grant. One residual to keep in view: the event check is a **denylist**, so an event
-type GitHub adds later is allowed by default — again bounded by the Grant, not by the set.
+**The manifest is the trust anchor, not the client.** A manifest changes only through a
+reviewed commit on this repository's default branch plus a deploy, so a pull request
+cannot edit the manifest it is judged against. That is why a PR-triggered client is
+allowed where its manifest lists `pull_request`, and why the caller's own branch need not
+be protected: the Grant bounds what any admitted caller can do — same repositories, same
+model, same limits — whoever wrote the workflow. The loader is strict (unknown keys, empty
+lists and integer ids are errors) and the dispatcher refuses to start without manifests.
 
-**The request decides less than it looks like it does.** Verification produces a frozen
-`Grant`, and the Job is built from the Grant alone — never from the request body. The
-repository to clone and the model are policy, so a caller cannot name either; passing a
-`repo` or a `model` that disagrees with policy is refused outright rather than quietly
-substituted. The caller contributes the prompt and the commit to read.
+Both workflow refs in the token must be inside the client repository, and `job_workflow_ref`
+is required, so an allowed repository cannot delegate its identity to a reusable workflow
+living elsewhere. The token must also say `runner_environment: self-hosted`; that is a
+**shape** check (`/run` is a ClusterIP reachable only from `arc-runners`), not a trust
+boundary, and it goes away with a public endpoint.
 
 Two residuals worth knowing:
 
-- **The prompt is caller-controlled**, and `workflow_run` is an allowed event, so a
-  workflow that reads pull-request content can shape what the agent is asked to do. The
-  Grant is what bounds the damage — same repo, same model, same limits.
-- **Tokens are replayable until they expire.** `jti` is neither required nor consumed, so
-  a stolen token can submit requests until `exp`. Consuming it needs state shared across
-  dispatcher replicas, which v1 does not have; the concurrency cap and the namespace quota
-  are what bound the damage in the meantime. PyPI's Warehouse solves this with a `jti`
-  table, which is the shape to copy if this matters later.
+- **The prompt is caller-controlled**, so a workflow that reads pull-request content can
+  shape what the agent is asked to do. The Grant is what bounds the damage.
+- **Tokens are replayable until they expire.** `jti` is neither required nor consumed;
+  the concurrency cap and the namespace quota bound the damage meanwhile.
 
 ### Enabling enforcement
 
-`REQUIRE_AUTH` still ships **`false`**, but the policy now admits a caller that can
-actually reach the endpoint, so flipping it is a real next step rather than an outage. Two
-things have to be true first, and neither is code in this repo's dispatcher:
-
-- The **`test-agent-sandbox`** job must send a token. It needs `id-token: write`, a token
-  minted for this dispatcher's audience, and an `Authorization: Bearer` header on its
-  `curl`. It sends none today, so it would get a `401` the moment the flag flips.
-- Any **`pytorch/ciforge`** caller must run on an `arc-runners` runner. Every workflow in
-  that repo is `ubuntu-latest`/`ubuntu-24.04` today, and a github-hosted runner cannot
-  route to a ClusterIP in this cluster at all.
-
-`test_an_admissible_caller_can_actually_reach_run` asserts the policy and the NetworkPolicy
-still describe an overlapping set, so the disjointness that made an earlier revision
-unsatisfiable cannot come back unnoticed.
+`REQUIRE_AUTH` still ships **`false`**. Before flipping it, the **`test-agent-sandbox`**
+integration job must send a token (it needs `id-token: write` and the
+`osdc-integration-test` manifest, which already admits it on `pull_request`); it sends
+none today and would get a `401`.
 
 ### What the flag does
 
@@ -217,10 +208,10 @@ TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/
   -d '{"wait":false}' | jq -r .task_id)
 curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
 ```
-**The caller no longer picks the repository or the model.** Both come from the `Grant`,
-and sending either is a `403` rather than a value that is quietly accepted and dropped.
-The model is `BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
-`agent_sandbox.default_model_id`; per-caller models arrive with the capability manifest.
+**The caller does not pick the model**, and picks the repository only among those its
+manifest allows. The model is the manifest's `model.id`, or `BEDROCK_DEFAULT_MODEL_ID`
+(set at deploy time from `clusters.yaml` → `agent_sandbox.default_model_id`) when the
+manifest leaves it empty or the call is unauthenticated.
 
 ## Capacity
 

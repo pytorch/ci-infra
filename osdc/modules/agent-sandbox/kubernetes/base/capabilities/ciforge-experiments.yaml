@@ -1,0 +1,13 @@
+# Sanctioned home for sandbox and OIDC experiments before they ship to real callers.
+# pytorch/ciforge is a private repo we control. Probes there call from push,
+# workflow_dispatch or schedule; PR-triggered clients belong in their own manifest.
+name: ciforge-experiments
+owner: pytorch-dev-infra
+clients:
+  repos:
+    - repository: pytorch/ciforge
+      repository_id: "1133856973"
+      repository_owner_id: "21003710"
+  triggers: [push, workflow_dispatch, schedule]
+sandbox:
+  repos: [pytorch/pytorch]
