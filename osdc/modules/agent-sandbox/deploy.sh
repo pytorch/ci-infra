@@ -9,12 +9,12 @@ set -euo pipefail
 #      `osdc` project under content-hash tags (skipped if a tag already exists).
 #   2. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
 #   3. Applies the namespace, quota, gvisor RuntimeClass, service accounts, dispatcher
-#      RBAC, sigv4-proxy, the dispatcher + Service, and the NetworkPolicies. Both image
-#      tags, the region, the Bedrock model, the proxy's IRSA role ARN and the cluster's
-#      API-server ClusterIP are substituted in.
+#      RBAC, sigv4-proxy, git-proxy, the dispatcher + Service, and the NetworkPolicies.
+#      Both image tags, the region, the Bedrock model, the proxy's IRSA role ARN, the
+#      cluster's API-server ClusterIP and its kube-dns ClusterIP are substituted in.
 #
 # The AWS credential lives on the sigv4-proxy pod; task pods hold none. Public repos
-# are cloned directly, so there is no GitHub credential at all. Task pods are created
+# are cloned directly, so the only GitHub credential is the one git-proxy holds for private repos. Task pods are created
 # per request by the dispatcher, so there is no standing sandbox Deployment.
 
 CLUSTER="$1"
@@ -156,7 +156,42 @@ else
   K8S_API_CIDR="${K8S_API_IP}/32"
 fi
 
-# --- Apply manifests (substitute both images, region, model, role ARN, API CIDR) ---
+# --- kube-dns address for the git proxy's nginx resolver ---
+# nginx resolves its upstream ONCE at startup without a `resolver`, pinning a GitHub IP
+# until the pod restarts. The address is the cluster's DNS Service, which differs per
+# cluster and is IPv6 here.
+KUBE_DNS_IP=$(kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')
+if [[ -z "$KUBE_DNS_IP" ]]; then
+  echo "[agent-sandbox] ERROR: could not read the kube-dns Service ClusterIP" >&2
+  exit 1
+fi
+# nginx needs an IPv6 literal in brackets; an unbracketed one parses as host:port.
+#
+# The surrounding DOUBLE QUOTES are not decoration. kustomize drops the quotes around
+# the `__KUBE_DNS_IP__` placeholder because a bare word needs none, so the substituted
+# value lands unquoted — and `value: [fd00::a]` is YAML flow-sequence syntax, which the
+# API server rejects with "cannot unmarshal array into ... EnvVar.value of type string".
+# Putting the quotes in the replacement is what keeps it a string.
+if [[ "$KUBE_DNS_IP" == *:* ]]; then
+  KUBE_DNS_RESOLVER="\"[${KUBE_DNS_IP}]\""
+else
+  KUBE_DNS_RESOLVER="\"${KUBE_DNS_IP}\""
+fi
+
+# --- The git proxy's credential ---
+# Created out of band: it is a GitHub token and deploy.sh has no business minting one.
+# Warn rather than fail, so a cluster that only needs public repos still deploys — but
+# warn LOUDLY, because without it git-proxy sits in CreateContainerConfigError and the
+# rollout wait below just times out with "timed out waiting for the condition".
+if ! kubectl get secret git-proxy-credentials -n "$NAMESPACE" >/dev/null 2>&1; then
+  echo "[agent-sandbox] WARNING: secret/git-proxy-credentials is missing. git-proxy will not"
+  echo "[agent-sandbox]          start and the rollout wait will time out. Create it with:"
+  echo "[agent-sandbox]            TOKEN=<a token with contents:read on the allowlisted repos>"
+  echo "[agent-sandbox]            kubectl create secret generic git-proxy-credentials -n ${NAMESPACE} \\"
+  printf '%s\n' "[agent-sandbox]              --from-literal=basic-auth=\"\$(printf 'x-access-token:%s' \"\$TOKEN\" | base64 | tr -d '\\n')\""
+fi
+
+# --- Apply manifests (substitute both images, region, model, role ARN, API CIDR, DNS) ---
 echo "[agent-sandbox] Applying base manifests (task image: ${AGENT_IMAGE}, dispatcher: ${DISPATCHER_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
 kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
   | sed -e "s|__AGENT_IMAGE__|${AGENT_IMAGE}|g" \
@@ -165,6 +200,7 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
     -e "s|__BEDROCK_DEFAULT_MODEL_ID__|${BEDROCK_DEFAULT_MODEL_ID}|g" \
     -e "s|__SIGV4_ROLE_ARN__|${SIGV4_ROLE_ARN}|g" \
     -e "s|__K8S_API_CIDR__|${K8S_API_CIDR}|g" \
+    -e "s|__KUBE_DNS_IP__|${KUBE_DNS_RESOLVER}|g" \
   | kubectl_apply_if_changed -f -
 
 # --- Populate the OIDC signing keys now, not at the CronJob's next tick ---
@@ -240,6 +276,16 @@ fi
 # wait for — task pods only exist while a request is in flight.
 echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
+# Force a roll first: git-proxy-config is a plain resource, not a configMapGenerator, so
+# it carries no content hash and an allowlist or TLS edit leaves the pod template
+# identical. nginx renders the template once at start and never re-reads it, so without
+# this the ConfigMap applies cleanly, rollout status returns immediately, and the running
+# pods keep the old config. Same pattern as modules/pypi-cache/deploy.sh.
+kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"
+# git-proxy too, and this is also what catches an absent git-proxy-credentials Secret:
+# the pod would otherwise sit in CreateContainerConfigError behind a green deploy, and
+# the first symptom would be a private clone failing inside a task.
+kubectl rollout status deployment/git-proxy -n "$NAMESPACE" --timeout=5m
 kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=10m
 
 echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd;"
