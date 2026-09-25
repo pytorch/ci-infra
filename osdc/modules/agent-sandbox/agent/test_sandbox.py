@@ -59,6 +59,67 @@ class TestCloneRepo:
         with pytest.raises(subprocess.CalledProcessError):
             sandbox.clone_repo("org/repo", "no-such-branch", str(tmp_path / "dest"))
 
+    def test_checks_out_a_pull_request_head_ref(self, local_github, tmp_path):
+        """The ref a review needs, and the reason `git clone --branch` had to go: it
+        resolves branches and tags only. A PR head ref lives in the BASE repository, so
+        this reaches a fork's pull request without ever naming the fork."""
+        subprocess.run(["git", "-C", str(local_github), "update-ref", "refs/pull/7/head", "HEAD"], check=True)
+        assert sandbox.clone_repo("org/repo", "refs/pull/7/head", str(tmp_path / "dest")) == 3
+
+    def test_checks_out_a_commit_sha(self, local_github, tmp_path):
+        """Also unreachable through --branch. Fetching a bare sha needs the server to
+        allow it. This is the CLIENT side only: the fixture's file:// transport ignores
+        uploadpack.allowReachableSHA1InWant, so it cannot prove github.com permits it
+        (checked by hand on 2026-09-23 — it does)."""
+        sha = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert sandbox.clone_repo("org/repo", sha, str(tmp_path / "dest")) == 3
+
+    def test_checks_out_the_ref_not_the_default_branch(self, local_github, tmp_path):
+        """A fetch that lands but leaves the tree on some other commit would count the
+        right number of files and review the wrong code.
+
+        The origin's HEAD is put back on main afterwards, and that is the whole point:
+        with HEAD left on `other`, a fetch that ignored the refspec entirely would still
+        land on the same commit and this test would pass while asserting nothing. Both
+        directions are checked for the same reason.
+        """
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "PATH": "/usr/bin:/bin",
+        }
+        subprocess.run(["git", "-C", str(local_github), "checkout", "-q", "-b", "other"], check=True)
+        (local_github / "only-on-other.txt").write_text("x\n")
+        subprocess.run(["git", "-C", str(local_github), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(local_github), "commit", "-qm", "second"], check=True, env=env)
+        subprocess.run(["git", "-C", str(local_github), "checkout", "-q", "main"], check=True)
+        subprocess.run(["git", "-C", str(local_github), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+
+        other = tmp_path / "other"
+        assert sandbox.clone_repo("org/repo", "other", str(other)) == 4
+        assert (other / "only-on-other.txt").exists()
+        main = tmp_path / "main"
+        assert sandbox.clone_repo("org/repo", "main", str(main)) == 3
+        assert not (main / "only-on-other.txt").exists(), "the refspec was ignored"
+
+    def test_a_ref_cannot_smuggle_a_git_option(self, local_github, tmp_path):
+        """`ref` is caller-supplied and git permutes arguments, so without `--` a ref of
+        `--upload-pack=...` is read as an OPTION: over https it silently fetches the
+        default branch, and over the file:// transport this fixture uses git EXECUTES it.
+        `git clone --branch <ref>` was immune because it consumed ref as an option value.
+        """
+        marker = tmp_path / "pwned"
+        with pytest.raises(subprocess.CalledProcessError):
+            sandbox.clone_repo("org/repo", f"--upload-pack=touch {marker}", str(tmp_path / "dest"))
+        assert not marker.exists(), "a ref was parsed as a git option and executed"
+
     def test_a_git_proxy_replaces_the_github_url(self, local_github, tmp_path, monkeypatch):
         """A private repo needs a credential this process must never hold, so the clone
         goes to the proxy that does. The agent still sends nothing authenticated."""
@@ -66,7 +127,7 @@ class TestCloneRepo:
         real_run = subprocess.run
 
         def spy(cmd, **kwargs):
-            if "clone" in cmd:
+            if "fetch" in cmd:
                 captured["cmd"] = cmd
                 # Never dial the proxy name for real: otherwise this depends on DNS
                 # failing fast, and a wildcard or slow search domain turns it into a
@@ -85,7 +146,7 @@ class TestCloneRepo:
         real_run = subprocess.run
 
         def spy(cmd, **kwargs):
-            if "clone" in cmd:
+            if "fetch" in cmd:
                 captured["cmd"] = cmd
             return real_run(cmd, **kwargs)
 
@@ -407,3 +468,48 @@ class TestRunTask:
         result = sandbox.run_task({"repo": "org/repo", "ref": ref, "model": "m"})
         assert seen["ref"] == "main"
         assert result["errors"] == {}
+
+
+class TestPullRequestCheckout:
+    """`{"pr": N}` is a selector that resolves to a ref — no separate code path."""
+
+    def _ref_used(self, monkeypatch, spec):
+        seen = {}
+
+        def fake_clone(repo, ref, dest):
+            seen["ref"] = ref
+            return 1
+
+        monkeypatch.setattr(sandbox, "clone_repo", fake_clone)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "report")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", **spec})
+        return seen.get("ref"), result
+
+    def test_a_pr_becomes_the_head_ref(self, monkeypatch):
+        ref, result = self._ref_used(monkeypatch, {"pr": 1234})
+        assert ref == "refs/pull/1234/head"
+        assert result["pr"] == 1234
+
+    def test_a_pr_wins_over_an_explicit_ref(self, monkeypatch):
+        """The two name different commits. Reviewing the branch instead would be the
+        wrong tree with nothing in the result to say anything was ignored."""
+        ref, _ = self._ref_used(monkeypatch, {"pr": 1234, "ref": "main"})
+        assert ref == "refs/pull/1234/head"
+
+    def test_a_pr_number_as_a_string_still_resolves(self, monkeypatch):
+        """task.py reads env vars, so it arrives as a string in production — an int-only
+        path would silently check out the default branch instead."""
+        ref, _ = self._ref_used(monkeypatch, {"pr": "1234"})
+        assert ref == "refs/pull/1234/head"
+
+    def test_a_true_pr_flag_is_not_pull_request_one(self, monkeypatch):
+        """isinstance(True, int) is True, so an unguarded coercion checks out PR #1."""
+        ref, result = self._ref_used(monkeypatch, {"pr": True, "ref": "main"})
+        assert ref == "main"
+        assert "pr" not in result
+
+    def test_without_a_pr_the_ref_is_untouched(self, monkeypatch):
+        ref, result = self._ref_used(monkeypatch, {"ref": "v2.9.0"})
+        assert ref == "v2.9.0"
+        assert "pr" not in result

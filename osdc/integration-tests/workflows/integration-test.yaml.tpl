@@ -2141,6 +2141,41 @@ jobs:
             exit 1
           fi
           echo "PASS: Bedrock InvokeModel via sigv4-proxy returned a report — the sandbox signed nothing itself"
+      # The one ref `git clone --branch` could never resolve. Only a live cluster proves
+      # the fetch-then-checkout path works against real GitHub: the unit tests drive a
+      # local file:// repo, which says nothing about whether refs/pull/N/head is
+      # fetchable over https from inside the sandbox.
+      #
+      # 100000 is pinned because PR head refs are NOT all permanent — refs/pull/1/head
+      # no longer resolves on this repo. Verified fetchable 2026-09-25; if this ever
+      # starts failing with "couldn't find remote ref", check the ref still exists
+      # before suspecting the agent.
+      - name: Check out a pull request head (the ref a branch/tag clone cannot reach)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESP=$(curl -fsS -m 300 -X POST "$SANDBOX/run" \
+            -H 'Content-Type: application/json' \
+            -d '{"pr":100000,"task":"Name one file this pull request touches."}')
+          echo "Response: $RESP"
+          if ! echo "$RESP" | grep -q '"cloned": *true'; then
+            echo "FAIL: sandbox did not check out the pull request head"
+            echo "  (a 'couldn'\''t find remote ref' in errors.clone means the ref is gone, not a code bug)"
+            exit 1
+          fi
+          # Echoed back so the caller can tell a PR checkout from a branch one; its
+          # absence means the pr selector was dropped somewhere between /run and the pod.
+          if ! echo "$RESP" | grep -q '"pr": *100000'; then
+            echo "FAIL: the response does not report the pull request it checked out"
+            exit 1
+          fi
+          # A fetch that lands on the wrong commit still reports cloned:true, so assert
+          # the tree is non-empty rather than trusting the flag alone.
+          if echo "$RESP" | grep -q '"file_count": *0'; then
+            echo "FAIL: checked out an empty tree"
+            exit 1
+          fi
+          echo "PASS: refs/pull/100000/head checked out in the sandbox — fetch-by-PR-ref works against real GitHub"
       # Capacity, not just correctness: 4 requests at once must produce 4 task pods
       # running at the same time. A fleet node holds 3 slots (2 vCPU / 4 GiB / 20 GiB
       # each on c7a.2xlarge), so passing this means Karpenter added a second node —
