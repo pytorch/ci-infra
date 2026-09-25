@@ -53,6 +53,10 @@ ALLOWED_CALLERS = (
         "repository_id": "1133856973",
         "repository_owner_id": "21003710",  # the pytorch organisation
         "workflow_prefix": "pytorch/ciforge/",
+        # This caller reviews its OWN pull requests, so it clones ciforge rather than the
+        # v1 default. ciforge is private, which is why kube.PRIVATE_REPOS routes it
+        # through git-proxy — the two lists have to name the same repo or the fetch 403s.
+        "clone_repo": "pytorch/ciforge",
     },
     {
         # This module's own integration test (`test-agent-sandbox` in
@@ -136,10 +140,16 @@ class Grant:
     clone_repo: str
     model: str
     task: str
-    # The one field that is caller-controlled and stays so: which commit of the
-    # policy-pinned repository to read. It selects code to look at, not a capability —
-    # the repository itself is not negotiable, and neither is the model.
+    # The fields that are caller-controlled and stay so: which commit of the
+    # policy-pinned repository to read, and which of its pull requests to review. They
+    # select code to look at, not a capability — the repository itself is not
+    # negotiable, and neither is the model.
     ref: str
+    # Pull request number, or 0 for "not a review". Bounded by the same policy as `ref`:
+    # it names a PR OF THE PINNED REPOSITORY, so a caller cannot reach another repo's
+    # review by number. Zero rather than None so the Job template has one thing to
+    # stringify and the agent one thing to parse.
+    pr: int
 
 
 def _lookup_caller(claims: dict) -> dict | None:
@@ -203,7 +213,12 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
     if claims.get("ref_protected") != "true":
         raise Denied("only a protected ref may dispatch agent tasks")
 
-    clone_repo, model = policy(caller) if policy else (V1_CLONE_REPO, V1_MODEL)
+    # Per caller, defaulting to the v1 constant. This is the narrowest slice of the v2
+    # capability manifest that the sandbox actually needs to be useful: without it every
+    # Grant names pytorch/pytorch, nothing ever matches kube.PRIVATE_REPOS, and the git
+    # proxy is unreachable infrastructure. Still POLICY, not request — the caller does
+    # not choose, its allow-list entry does.
+    clone_repo, model = policy(caller) if policy else (caller.get("clone_repo", V1_CLONE_REPO), V1_MODEL)
 
     # The request contributes the prompt and the commit to read, and nothing else reaches
     # the Grant: a caller cannot name a repository to clone or a model to spend, because
@@ -216,6 +231,12 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
     if not isinstance(task, str) or not isinstance(ref, str):
         raise Denied("'task' and 'ref' must be strings")
 
+    # `isinstance(x, int)` is True for booleans, so `{"pr": true}` would otherwise become
+    # PR number 1 — a real review of a real pull request, from a request that named none.
+    pr = request.get("pr", 0)
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr < 0:
+        raise Denied("'pr' must be a non-negative integer")
+
     return Grant(
         caller=caller["name"],
         workflow_ref=workflow_ref,
@@ -223,4 +244,5 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
         model=model,
         task=task,
         ref=ref,
+        pr=pr,
     )
