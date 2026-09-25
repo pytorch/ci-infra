@@ -178,6 +178,19 @@ else
   KUBE_DNS_RESOLVER="\"${KUBE_DNS_IP}\""
 fi
 
+# --- The git proxy's credential ---
+# Created out of band: it is a GitHub token and deploy.sh has no business minting one.
+# Warn rather than fail, so a cluster that only needs public repos still deploys — but
+# warn LOUDLY, because without it git-proxy sits in CreateContainerConfigError and the
+# rollout wait below just times out with "timed out waiting for the condition".
+if ! kubectl get secret git-proxy-credentials -n "$NAMESPACE" >/dev/null 2>&1; then
+  echo "[agent-sandbox] WARNING: secret/git-proxy-credentials is missing. git-proxy will not"
+  echo "[agent-sandbox]          start and the rollout wait will time out. Create it with:"
+  echo "[agent-sandbox]            TOKEN=<a token with contents:read on the allowlisted repos>"
+  echo "[agent-sandbox]            kubectl create secret generic git-proxy-credentials -n ${NAMESPACE} \\"
+  printf '%s\n' "[agent-sandbox]              --from-literal=basic-auth=\"\$(printf 'x-access-token:%s' \"\$TOKEN\" | base64 | tr -d '\\n')\""
+fi
+
 # --- Apply manifests (substitute both images, region, model, role ARN, API CIDR, DNS) ---
 echo "[agent-sandbox] Applying base manifests (task image: ${AGENT_IMAGE}, dispatcher: ${DISPATCHER_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
 kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
