@@ -53,6 +53,10 @@ ALLOWED_CALLERS = (
         "repository_id": "1133856973",
         "repository_owner_id": "21003710",  # the pytorch organisation
         "workflow_prefix": "pytorch/ciforge/",
+        # This caller reviews its OWN pull requests, so it clones ciforge rather than the
+        # v1 default. ciforge is private, which is why kube.PRIVATE_REPOS routes it
+        # through git-proxy — the two lists have to name the same repo or the fetch 403s.
+        "clone_repo": "pytorch/ciforge",
     },
     {
         # This module's own integration test (`test-agent-sandbox` in
@@ -209,7 +213,12 @@ def authorize(claims: dict, request: dict, policy=None) -> Grant:
     if claims.get("ref_protected") != "true":
         raise Denied("only a protected ref may dispatch agent tasks")
 
-    clone_repo, model = policy(caller) if policy else (V1_CLONE_REPO, V1_MODEL)
+    # Per caller, defaulting to the v1 constant. This is the narrowest slice of the v2
+    # capability manifest that the sandbox actually needs to be useful: without it every
+    # Grant names pytorch/pytorch, nothing ever matches kube.PRIVATE_REPOS, and the git
+    # proxy is unreachable infrastructure. Still POLICY, not request — the caller does
+    # not choose, its allow-list entry does.
+    clone_repo, model = policy(caller) if policy else (caller.get("clone_repo", V1_CLONE_REPO), V1_MODEL)
 
     # The request contributes the prompt and the commit to read, and nothing else reaches
     # the Grant: a caller cannot name a repository to clone or a model to spend, because
