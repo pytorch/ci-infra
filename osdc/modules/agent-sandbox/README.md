@@ -266,11 +266,12 @@ kubectl create secret generic git-proxy-credentials -n ai-sandbox \
 Pre-encoded because git over HTTPS authenticates with Basic and nginx cannot base64 at
 render time. A GitHub App installation token is the better source than a PAT — an hour
 long and scoped per repo — but it needs a refresher, which this does not yet have.
-Nothing routes through it yet: the dispatcher starts sending private-repo clones here in
-a later change, and a public clone always goes straight to github.com so the proxy being
-down or unconfigured cannot break one. When that lands, the dispatcher's private-repo
-list must agree with the nginx allowlist — a repo in one and not the other fetches and
-gets a 403.
+`pytorch/ciforge` is granted to its own caller in `ALLOWED_CALLERS` and listed in
+`kube.PRIVATE_REPOS`, so an authenticated ciforge caller clones it through the proxy.
+Only repositories in `PRIVATE_REPOS` are routed that way — a public clone goes straight
+to github.com, so the proxy being down or unconfigured cannot break one. Those two lists
+and the nginx allowlist must name the same repos: granted but not routed fetches
+anonymously and 404s, routed but not allowlisted gets a 403.
 
 ## Capacity
 
