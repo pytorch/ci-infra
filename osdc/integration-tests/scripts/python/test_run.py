@@ -16,7 +16,9 @@ from phases import (
     region_excluded_blocks,
 )
 from run import (
+    CANARY_REPO,
     branch_name,
+    derive_release_runner_group,
     format_duration,
     gh_api,
     has_module,
@@ -25,6 +27,7 @@ from run import (
     normalize_modules,
     parse_args,
     resolve,
+    resolve_org_target,
     run_cmd_with_retry,
     safe_json_loads,
     verify_ecr_image_exists,
@@ -49,7 +52,17 @@ def clusters_yaml(tmp_path):
                 "modules": ["eks", "karpenter", "nodepools", "arc", "arc-runners"],
                 "harbor": {"core_replicas": 1},
                 "monitoring": {"grafana_cloud_url": "https://staging.example.com"},
-                "arc-runners": {"runner_group": "meta-prod-rg"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/pytorch",
+                    "runner_group": "meta-prod-rg",
+                    "additional_orgs": [
+                        {
+                            "github_config_url": "https://github.com/meta-pytorch",
+                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                            "runner_group": "mp-rg",
+                        },
+                    ],
+                },
             },
             "meta-prod-aws-ue2": {
                 "cluster_name": "meta-prod-aws-ue2",
@@ -783,16 +796,162 @@ class TestReleaseRunnerGroupResolution:
     def test_cluster_with_override(self, cfg_staging):
         cluster_runner_group = resolve(cfg_staging, "arc-runners.runner_group")
         assert cluster_runner_group == "meta-prod-rg"
-        release_runner_group = cluster_runner_group or "release-runners"
-        assert release_runner_group == "meta-prod-rg"
+        assert derive_release_runner_group(cluster_runner_group) == "meta-prod-rg-release-runners"
 
     def test_cluster_without_override(self, cfg_production):
         cluster_runner_group = resolve(cfg_production, "arc-runners.runner_group")
         assert cluster_runner_group is None
-        runner_group = cluster_runner_group or "default"
-        release_runner_group = cluster_runner_group or "release-runners"
-        assert runner_group == "default"
-        assert release_runner_group == "release-runners"
+        assert derive_release_runner_group(cluster_runner_group) == "default"
+
+    def test_literal_default_group_keeps_suffix(self):
+        # A cluster that names "default" outright still gets a dedicated release
+        # group — only an absent group collapses to plain "default".
+        assert derive_release_runner_group("default") == "default-release-runners"
+
+    @pytest.mark.parametrize(
+        ("org", "arc_runners"),
+        [
+            (None, {"github_config_url": "https://github.com/pytorch"}),
+            (
+                "meta-pytorch",
+                {
+                    "github_config_url": "https://github.com/pytorch",
+                    "runner_group": "primary-rg",
+                    "additional_orgs": [
+                        {
+                            "github_config_url": "https://github.com/meta-pytorch",
+                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                        },
+                    ],
+                },
+            ),
+        ],
+        ids=["primary-org", "additional-org"],
+    )
+    def test_agrees_with_generator_when_group_unset(self, org, arc_runners):
+        # The shared helper is only a single source of truth if the harness and
+        # generate_runners.py feed it the same raw value. A group-less config is
+        # where they can silently diverge: coalescing to "default" before the
+        # helper yields "default-release-runners", a group no generated runner
+        # ever registers in, so release jobs would queue forever.
+        cfg = {"cluster": {"arc-runners": arc_runners}, "defaults": {}}
+        _, harness_group = resolve_org_target(cfg, org)
+        generator_source = arc_runners["additional_orgs"][0] if org else arc_runners
+        generator_group = generator_source.get("runner_group")
+        assert derive_release_runner_group(harness_group) == derive_release_runner_group(generator_group)
+
+
+# ── resolve_org_target ────────────────────────────────────────────────────
+
+
+class TestResolveOrgTarget:
+    def test_none_returns_primary_path(self, cfg_staging):
+        repo, group = resolve_org_target(cfg_staging, None)
+        assert repo == CANARY_REPO
+        assert group == "meta-prod-rg"
+
+    def test_primary_org_key_returns_primary_path(self, cfg_staging):
+        # Explicitly naming the primary org resolves to the same unchanged path.
+        repo, group = resolve_org_target(cfg_staging, "pytorch")
+        assert repo == CANARY_REPO
+        assert group == "meta-prod-rg"
+
+    def test_additional_org_returns_its_repo_and_group(self, cfg_staging):
+        repo, group = resolve_org_target(cfg_staging, "meta-pytorch")
+        assert repo == "meta-pytorch/pytorch-gha-infra"
+        assert group == "mp-rg"
+
+    def test_malformed_non_dict_entry_is_skipped(self):
+        # A non-dict additional_orgs entry (malformed clusters.yaml) is skipped,
+        # not crashed on; the valid entry after it still resolves.
+        cfg = {
+            "cluster": {
+                "arc-runners": {
+                    "github_config_url": "https://github.com/pytorch",
+                    "runner_group": "primary-rg",
+                    "additional_orgs": [
+                        "not-a-dict",
+                        {
+                            "github_config_url": "https://github.com/meta-pytorch",
+                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                            "runner_group": "mp-rg",
+                        },
+                    ],
+                }
+            },
+            "defaults": {},
+        }
+        repo, group = resolve_org_target(cfg, "meta-pytorch")
+        assert repo == "meta-pytorch/pytorch-gha-infra"
+        assert group == "mp-rg"
+
+    def test_primary_without_runner_group_returns_none(self):
+        cfg = {"cluster": {"arc-runners": {"github_config_url": "https://github.com/pytorch"}}, "defaults": {}}
+        repo, group = resolve_org_target(cfg, None)
+        assert repo == CANARY_REPO
+        assert group is None
+        # Coalescing is the caller's job, and only for the CI group.
+        assert (group or "default") == "default"
+        assert derive_release_runner_group(group) == "default"
+
+    def test_additional_org_without_runner_group_returns_none(self):
+        cfg = {
+            "cluster": {
+                "arc-runners": {
+                    "github_config_url": "https://github.com/pytorch",
+                    "runner_group": "primary-rg",
+                    "additional_orgs": [
+                        {
+                            "github_config_url": "https://github.com/meta-pytorch",
+                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                        },
+                    ],
+                }
+            },
+            "defaults": {},
+        }
+        repo, group = resolve_org_target(cfg, "meta-pytorch")
+        assert repo == "meta-pytorch/pytorch-gha-infra"
+        assert group is None
+        # The entry's own absent group wins over the cluster's "primary-rg", and
+        # coalescing is the caller's job, only for the CI group.
+        assert (group or "default") == "default"
+        assert derive_release_runner_group(group) == "default"
+
+    def test_additional_org_missing_canary_repo_exits(self):
+        cfg = {
+            "cluster": {
+                "arc-runners": {
+                    "github_config_url": "https://github.com/pytorch",
+                    "runner_group": "primary-rg",
+                    "additional_orgs": [
+                        {"github_config_url": "https://github.com/meta-pytorch", "runner_group": "mp-rg"},
+                    ],
+                }
+            },
+            "defaults": {},
+        }
+        with pytest.raises(SystemExit):
+            resolve_org_target(cfg, "meta-pytorch")
+
+    def test_unknown_org_exits(self, cfg_staging):
+        with pytest.raises(SystemExit):
+            resolve_org_target(cfg_staging, "totally-unknown-org")
+
+    def test_workflow_runner_group_reflects_additional_org(self, cfg_staging, workflow_template):
+        # End-to-end: the group resolve_org_target picks for a secondary org must
+        # land in the rendered workflow's {{RUNNER_GROUP}} placeholder.
+        _, group = resolve_org_target(cfg_staging, "meta-pytorch")
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
+            cluster_modules=["arc-runners"],
+            runner_group=group,
+        )
+        assert 'group: "mp-rg"' in result
+        assert "{{RUNNER_GROUP}}" not in result
 
 
 # ── format_duration ───────────────────────────────────────────────────────
@@ -881,6 +1040,21 @@ class TestCleanupStalePrs:
         cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
         # pr list + 2 run list calls, no close/cancel calls
         assert mock_run.call_count == 3
+
+    @patch("phases.run_cmd")
+    def test_threads_custom_canary_repo(self, mock_run):
+        empty = json.dumps([])
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=empty),  # pr list
+            MagicMock(returncode=0, stdout=empty),  # queued runs
+            MagicMock(returncode=0, stdout=empty),  # in_progress runs
+        ]
+        cleanup_stale_prs("branch", canary_repo="meta-pytorch/pytorch-gha-infra")
+        # Every gh call must target the org's canary repo, never the default.
+        for call in mock_run.call_args_list:
+            argv = call[0][0]
+            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "pytorch/pytorch-canary" not in argv
 
 
 # ── prepare_pr ────────────────────────────────────────────────────────────
@@ -973,6 +1147,39 @@ class TestPreparePr:
         )
 
         assert result is None
+
+    @patch("phases.run_cmd")
+    def test_pr_create_uses_custom_canary_repo(self, mock_run, workflow_template, tmp_path):
+        canary = tmp_path / "canary"
+        canary.mkdir()
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git fetch
+            MagicMock(returncode=0),  # git checkout
+            MagicMock(returncode=0),  # git add
+            MagicMock(returncode=1),  # git diff --cached → changes
+            MagicMock(returncode=0),  # git commit
+            MagicMock(returncode=0),  # git push
+            MagicMock(
+                returncode=0,
+                stdout="https://github.com/meta-pytorch/pytorch-gha-infra/pull/7\n",
+                stderr="",
+            ),
+        ]
+
+        result = prepare_pr(
+            canary_path=canary,
+            upstream_dir=workflow_template,
+            workflow_content="name: test\n",
+            branch="osdc-integration-test-meta-prod-aws-uw1",
+            dry_run=False,
+            canary_repo="meta-pytorch/pytorch-gha-infra",
+        )
+
+        assert result == 7
+        create_call = mock_run.call_args_list[6][0][0]
+        assert "meta-pytorch/pytorch-gha-infra" in create_call
+        assert "pytorch/pytorch-canary" not in create_call
 
 
 # ── ensure_canary_repo ───────────────────────────────────────────────────
@@ -1099,6 +1306,35 @@ class TestEnsureCanaryRepo:
             ensure_canary_repo(upstream)
 
         assert "gh auth setup-git failed" in caplog.text
+
+    @patch("phases.run_cmd")
+    def test_clones_custom_repo_with_custom_email(self, mock_run, tmp_path):
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = ensure_canary_repo(
+            upstream,
+            canary_repo="meta-pytorch/pytorch-gha-infra",
+            commit_email="osdc-integration-test@users.noreply.github.com",
+        )
+
+        # A second org gets its own scratch dir (repo name), never the shared pytorch-canary one.
+        assert result == upstream / ".scratch" / "pytorch-gha-infra"
+
+        clone_call = mock_run.call_args_list[1][0][0]
+        assert "meta-pytorch/pytorch-gha-infra" in clone_call
+        assert "pytorch/pytorch-canary" not in clone_call
+        assert str(result) in clone_call
+
+        email_call = mock_run.call_args_list[3][0][0]
+        assert email_call == [
+            "git",
+            "config",
+            "user.email",
+            "osdc-integration-test@users.noreply.github.com",
+        ]
 
 
 # ── branch_name ──────────────────────────────────────────────────────────
@@ -1255,6 +1491,7 @@ class TestParseArgs:
         assert args.keep_pr is False
         assert args.force is False
         assert args.skip_drain is False
+        assert args.org is None
 
     def test_all_flags(self):
         with patch(
@@ -1330,6 +1567,44 @@ class TestParseArgs:
         ):
             args = parse_args()
         assert args.ecr_pull_image_name == "foo"
+
+    def test_org_default_none(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "meta-staging-aws-uw1",
+                "--clusters-yaml",
+                "/tmp/c.yaml",
+                "--upstream-dir",
+                "/tmp/upstream",
+                "--root-dir",
+                "/tmp/root",
+            ],
+        ):
+            args = parse_args()
+        assert args.org is None
+
+    def test_org_override(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "meta-prod-aws-uw1",
+                "--clusters-yaml",
+                "/tmp/c.yaml",
+                "--upstream-dir",
+                "/tmp/upstream",
+                "--root-dir",
+                "/tmp/root",
+                "--org",
+                "meta-pytorch",
+            ],
+        ):
+            args = parse_args()
+        assert args.org == "meta-pytorch"
 
 
 # ── clear_staging_pools ──────────────────────────────────────────────────
@@ -1545,6 +1820,7 @@ class TestMain:
 
         mock_parse_args.return_value = MagicMock(
             cluster_id="meta-staging-aws-uw1",
+            org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1586,6 +1862,7 @@ class TestMain:
 
         mock_parse_args.return_value = MagicMock(
             cluster_id="meta-staging-aws-uw1",
+            org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1628,6 +1905,7 @@ class TestMain:
 
         mock_parse_args.return_value = MagicMock(
             cluster_id="meta-staging-aws-uw1",
+            org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1666,6 +1944,7 @@ class TestMain:
 
         mock_parse_args.return_value = MagicMock(
             cluster_id="meta-staging-aws-uw1",
+            org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1704,6 +1983,7 @@ class TestMain:
 
         mock_parse_args.return_value = MagicMock(
             cluster_id="meta-staging-aws-uw1",
+            org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1762,6 +2042,7 @@ class TestMain:
 
         mock_parse_args.return_value = MagicMock(
             cluster_id="no-arc-cluster",
+            org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1803,6 +2084,7 @@ class TestMain:
 
         mock_parse_args.return_value = MagicMock(
             cluster_id="meta-staging-aws-uw1",
+            org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1829,6 +2111,87 @@ class TestMain:
 
         assert exc_info.value.code == 1
         mock_gen.assert_not_called()
+
+    @patch("run.parse_args")
+    def test_main_org_targets_additional_org(self, mock_parse_args, clusters_yaml, tmp_path):
+        """--org routes cleanup/clone/PR to the additional org's canary repo + group."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="meta-staging-aws-uw1",
+            org="meta-pytorch",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs") as mock_cleanup,
+            patch("phases.ensure_canary_repo", return_value=tmp_path) as mock_ensure,
+            patch("run.verify_ecr_image_exists"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
+            patch("phases.generate_workflow", return_value="wf") as mock_gen,
+            patch("phases.prepare_pr", return_value=None) as mock_prepare,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        assert mock_cleanup.call_args.kwargs["canary_repo"] == "meta-pytorch/pytorch-gha-infra"
+        assert mock_ensure.call_args.kwargs["canary_repo"] == "meta-pytorch/pytorch-gha-infra"
+        assert mock_ensure.call_args.kwargs["commit_email"] == "osdc-integration-test@users.noreply.github.com"
+        assert mock_gen.call_args.kwargs["runner_group"] == "mp-rg"
+        assert mock_prepare.call_args.kwargs["canary_repo"] == "meta-pytorch/pytorch-gha-infra"
+
+    @patch("run.parse_args")
+    def test_main_default_org_keeps_pytorch_identity(self, mock_parse_args, clusters_yaml, tmp_path):
+        """No --org keeps the pytorch canary repo and omits the no-reply email override."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="meta-staging-aws-uw1",
+            org=None,
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs") as mock_cleanup,
+            patch("phases.ensure_canary_repo", return_value=tmp_path) as mock_ensure,
+            patch("run.verify_ecr_image_exists"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
+            patch("phases.generate_workflow", return_value="wf") as mock_gen,
+            patch("phases.prepare_pr", return_value=None) as mock_prepare,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        assert mock_cleanup.call_args.kwargs["canary_repo"] == CANARY_REPO
+        assert mock_ensure.call_args.kwargs["canary_repo"] == CANARY_REPO
+        # Primary path relies on ensure_canary_repo's default author — no override passed.
+        assert "commit_email" not in mock_ensure.call_args.kwargs
+        assert mock_gen.call_args.kwargs["runner_group"] == "meta-prod-rg"
+        assert mock_prepare.call_args.kwargs["canary_repo"] == CANARY_REPO
 
 
 # ── region-gated GPU blocks (hf-cache large-read on L4/g6) ─────────────────

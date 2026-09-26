@@ -25,8 +25,11 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "pypi-cache" / "scripts" / "python"))
 # Add repo-root scripts/python for the shared release-runner-group derivation.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
+# Add arc-runners module scripts for the shared org-key derivation (multi-org targeting).
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "arc-runners" / "scripts" / "python"))
 from fleet_naming import derive_release_runner_group  # noqa: E402
 from generate_manifests import cuda_slug  # noqa: E402
+from generate_runners import org_key_of  # noqa: E402
 from resolve_pytorch_image import resolve_ci_docker_hash
 
 log = logging.getLogger("osdc-integration-test")
@@ -160,6 +163,39 @@ def is_prod_cluster(cluster_id: str) -> bool:
     return len(parts) >= 2 and parts[1] == "prod"
 
 
+def resolve_org_target(cfg: dict, org: str | None) -> tuple[str, str | None]:
+    """Resolve the ``(canary_repo, runner_group)`` pair for the target GitHub org.
+
+    With ``org`` unset or equal to the cluster's primary org key, returns the
+    unchanged pytorch path: ``CANARY_REPO`` and the cluster's ``runner_group``.
+    Otherwise the matching ``arc-runners.additional_orgs`` entry supplies the
+    canary repo and runner group. An unknown org, or a matched entry missing
+    ``canary_repo``, is a fatal misconfiguration.
+
+    The group comes back raw — ``None`` when the config omits it. A group-less
+    cluster and one naming ``default`` outright derive *different* release
+    groups, so that distinction has to survive as far as
+    :func:`derive_release_runner_group`; callers coalesce to ``default``
+    themselves for the CI group.
+    """
+    primary_key = org_key_of(resolve(cfg, "arc-runners.github_config_url", ""))
+    if org is None or org == primary_key:
+        return CANARY_REPO, resolve(cfg, "arc-runners.runner_group")
+
+    for entry in resolve(cfg, "arc-runners.additional_orgs", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if org_key_of(entry.get("github_config_url")) == org:
+            canary_repo = entry.get("canary_repo")
+            if not canary_repo:
+                log.error("arc-runners.additional_orgs entry for org '%s' is missing 'canary_repo'", org)
+                sys.exit(1)
+            return canary_repo, entry.get("runner_group")
+
+    log.error("Unknown --org '%s': not the primary org and no matching arc-runners.additional_orgs entry", org)
+    sys.exit(1)
+
+
 # ── Subprocess helpers ──────────────────────────────────────────────────
 
 
@@ -264,6 +300,12 @@ def parse_args() -> argparse.Namespace:
         default="pytorch-linux-jammy-linter",
         help="ECR image name used by the test-ecr-pull job (debug override)",
     )
+    parser.add_argument(
+        "--org",
+        default=None,
+        help="Target GitHub org key from arc-runners.additional_orgs (e.g. 'meta-pytorch'). "
+        "Defaults to the cluster's primary org (the pytorch/pytorch-canary path).",
+    )
     return parser.parse_args()
 
 
@@ -294,7 +336,7 @@ def main():
     cluster_name = resolve(cfg, "cluster_name")
     region = resolve(cfg, "region", "")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
-    cluster_runner_group = resolve(cfg, "arc-runners.runner_group")
+    canary_repo, cluster_runner_group = resolve_org_target(cfg, args.org)
     runner_group = cluster_runner_group or "default"
     release_runner_group = derive_release_runner_group(cluster_runner_group)
     cluster_modules = cfg["cluster"].get("modules", [])
@@ -314,6 +356,7 @@ def main():
     branch = branch_name(args.cluster_id)
 
     log.info("Integration test for cluster: %s (%s)", args.cluster_id, cluster_name)
+    log.info("  Target canary repo: %s", canary_repo)
     log.info("  Runner prefix: '%s'", prefix)
     log.info("  Runner group: '%s'", runner_group)
     log.info("  Release runner group: '%s'", release_runner_group)
@@ -353,14 +396,18 @@ def main():
             ecr_pull_resolved_tag = ""
 
         # Phase 0: Cleanup
-        cleanup_stale_prs(branch)
+        cleanup_stale_prs(branch, canary_repo=canary_repo)
 
         # Phase 1: Staging pool clear
         if not args.dry_run and not args.skip_drain:
             clear_staging_pools(args.cluster_id, force=args.force)
 
-        # Clone / update canary repo
-        canary_path = ensure_canary_repo(args.upstream_dir)
+        # Clone / update canary repo. Non-primary orgs author commits under a
+        # generic no-reply identity; the primary path keeps ensure_canary_repo's default.
+        commit_kwargs = {}
+        if canary_repo != CANARY_REPO:
+            commit_kwargs["commit_email"] = "osdc-integration-test@users.noreply.github.com"
+        canary_path = ensure_canary_repo(args.upstream_dir, canary_repo=canary_repo, **commit_kwargs)
 
         # Phase 2: Prepare PR
         workflow_content = generate_workflow(
@@ -378,7 +425,9 @@ def main():
             region=region,
         )
         pr_created_at = datetime.now(tz=UTC)
-        pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)
+        pr_number = prepare_pr(
+            canary_path, args.upstream_dir, workflow_content, args.dry_run, branch, canary_repo=canary_repo
+        )
 
         if args.dry_run:
             log.info("DRY RUN complete. No PR created.")
@@ -395,7 +444,7 @@ def main():
         )
 
         # Phase 4: Collect workflow results
-        workflow_results = wait_for_workflows(branch, pr_created_at)
+        workflow_results = wait_for_workflows(branch, pr_created_at, canary_repo=canary_repo)
 
         # Phase 5: Report
         overall_pass = print_report(
@@ -421,9 +470,9 @@ def main():
             from phases_validation import _collect_run_details, _fetch_latest_runs
 
             try:
-                runs = _fetch_latest_runs(branch, pr_created_at)
+                runs = _fetch_latest_runs(branch, pr_created_at, canary_repo=canary_repo)
                 if runs:
-                    workflow_results = _collect_run_details(runs)
+                    workflow_results = _collect_run_details(runs, canary_repo=canary_repo)
             except KeyboardInterrupt:
                 pass  # double Ctrl+C — skip fetch, print what we have
 
@@ -437,7 +486,7 @@ def main():
 
     finally:
         if pr_number is not None and not args.keep_pr:
-            close_pr(pr_number, branch=branch)
+            close_pr(pr_number, branch=branch, canary_repo=canary_repo)
         elif pr_number is not None and args.keep_pr:
             log.info("Keeping PR #%d open (--keep-pr).", pr_number)
 
