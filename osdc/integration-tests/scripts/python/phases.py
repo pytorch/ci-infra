@@ -40,6 +40,7 @@ TAG_REQUIREMENTS: dict[str, list[str]] = {
     "HF_CACHE": ["arc-runners", "hf-cache"],
     "HF_CACHE_OIDC": ["arc-runners", "hf-cache"],
     "GPU_T4": ["arc-runners", "nodepools"],
+    "OOM_KILL": ["arc-runners", "nodepools"],
     "BUILDKIT": ["arc-runners", "buildkit"],
     "CACHE_ENFORCER": ["arc-runners", "cache-enforcer"],
     "RELEASE": ["arc-runners"],
@@ -64,6 +65,7 @@ PROD_EXCLUDED_BLOCKS: set[str] = {"RELEASE"}
 # for a runner that can never come online.
 REGION_GATED_BLOCKS: dict[str, str] = {
     "HF_CACHE_GPU": "g6",  # test-hf-cache-large-read runs on an L4 (g6) runner
+    "OOM_KILL_GPU": "g5",  # test-gpu-oom-kills-only-the-offender runs on an A10G (g5) runner
 }
 
 

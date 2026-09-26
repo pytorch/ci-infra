@@ -249,7 +249,9 @@ clusters:
       cluster_admin_role_names:
         - osdc_gha_staging
     base:
-      base_node_count: 2
+      # One per AZ: this node group spans three subnets, and EBS is zonal, so two nodes
+      # strand any base-infra PVC that lands in the uncovered AZ. (uw1 has two AZs, so 2.)
+      base_node_count: 3
       base_node_instance_type: m5.4xlarge
       base_node_max_unavailable_percentage: 100  # all-at-once for staging
       single_nat_gateway: true       # cost optimization for staging
@@ -349,7 +351,9 @@ clusters:
       cluster_admin_role_names:
         - osdc_gha_staging
     base:
-      base_node_count: 2
+      # One per AZ: this node group spans three subnets, and EBS is zonal, so two nodes
+      # strand any base-infra PVC that lands in the uncovered AZ. (uw1 has two AZs, so 2.)
+      base_node_count: 3
       base_node_instance_type: m5.4xlarge
       base_node_max_unavailable_percentage: 100  # all-at-once for staging
       single_nat_gateway: true       # cost optimization for staging

@@ -238,6 +238,16 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     # controller, which handles consolidation via NoSchedule taints instead
     # of Karpenter's disruptive consolidation.
     # Default comes from cluster-level config (via env var), not per-def hardcode
+    if is_gpu:
+        # Empty would render a glob that matches no AMI, so GPU nodes would never
+        # launch. Fail here instead, where the cause is obvious.
+        eks_version = os.environ.get("NODEPOOLS_EKS_VERSION", "")
+        if not eks_version:
+            raise RuntimeError(
+                f"NODEPOOLS_EKS_VERSION is required to pin the GPU AMI for '{nodepool_def['name']}'; "
+                "deploy.sh reads it from the cluster's eks_version."
+            )
+
     cluster_compactor_enabled = os.environ.get("NODEPOOLS_COMPACTOR_ENABLED", "false").lower() == "true"
     compactor_enabled = nodepool_def.get("node_compactor", cluster_compactor_enabled)
 
@@ -263,9 +273,15 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     # across all nodes, remove osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
     # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
     if is_gpu:
+        # Karpenter's alias families are al2/al2023/bottlerocket/windows -- there
+        # is no nvidia one, so GPU nodes have to select the AMI by name. The glob
+        # must carry the control plane's minor: AWS publishes every minor the same
+        # morning and Karpenter takes the newest match, so an unversioned glob is
+        # decided by which one AWS happened to stamp last. That put the whole GPU
+        # fleet on 1.31 against a 1.35 control plane.
         ami_family_block = "  amiFamily: AL2023"
-        ami_selector_block = """  amiSelectorTerms:
-    - name: "amazon-eks-node-al2023-x86_64-nvidia-*\""""
+        ami_selector_block = f"""  amiSelectorTerms:
+    - name: "amazon-eks-node-al2023-x86_64-nvidia-{eks_version}-*\""""
         if compactor_enabled:
             disruption_budget = os.environ.get("NODEPOOLS_GPU_DISRUPTION_BUDGET", "100%")
             consolidation_after = os.environ.get("NODEPOOLS_GPU_CONSOLIDATE_AFTER", "2m")
@@ -471,6 +487,17 @@ spec:
 {"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' + chr(10) if topology_policy in ("restricted", "best-effort") else ""}\
           containerLogMaxSize: 50Mi
           containerLogMaxFiles: 5
+          # Kill the process that overran, not every process in the container.
+          # On cgroup v2 the kubelet sets memory.oom.group=1, which the kernel
+          # reads as "kill the cgroup as an indivisible unit" -- so a single
+          # runaway test takes down the workflow pod's rpc-server and shell with
+          # it, and the step reports a bare exit 137 with no output, because the
+          # process that would have reported died in the same sweep. The only
+          # tasks the kernel exempts are those at oom_score_adj -1000, and the
+          # kubelet pins Guaranteed pods to -997, which the container cannot
+          # lower (CapEff is 0). Upstream added this flag for exactly this
+          # regression; see kubernetes/kubernetes#126096.
+          singleProcessOOMKill: true
 {_user_data_script_mime_part(indented_userdata)}
     --==BOUNDARY==--
 
