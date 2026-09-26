@@ -426,6 +426,35 @@ class TestWaitForWorkflows:
         assert expected_effective < WORKFLOW_TIMEOUT_MINUTES
         assert expected_effective >= 10
 
+    @patch("phases_validation.time.sleep")
+    @patch("phases_validation.run_cmd")
+    def test_threads_custom_canary_repo(self, mock_run, mock_sleep):
+        """The run-list poll and the collect-details run view both target the custom repo."""
+        from phases_validation import wait_for_workflows
+
+        completed = {
+            "databaseId": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "name": "wf",
+            "createdAt": "2026-03-20T13:00:00Z",
+        }
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps([completed]), stderr=""),  # run list
+            MagicMock(returncode=0, stdout=json.dumps({"jobs": []}), stderr=""),  # run view (collect)
+        ]
+
+        wait_for_workflows(
+            "branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+            canary_repo="meta-pytorch/pytorch-gha-infra",
+        )
+
+        for call in mock_run.call_args_list:
+            argv = call[0][0]
+            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "pytorch/pytorch-canary" not in argv
+
 
 # ── close_pr ───────────────────────────────────────────────────────────
 
@@ -563,6 +592,27 @@ class TestClosePr:
         close_pr(42, branch="test-branch")
 
         assert mock_run.call_count == 3
+
+    @patch("phases_validation.run_cmd")
+    def test_threads_custom_canary_repo(self, mock_run):
+        """close_pr targets the custom repo for both cancel and PR-close calls."""
+        from phases_validation import close_pr
+
+        queued_runs = json.dumps([{"databaseId": 100}])
+        empty = json.dumps([])
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=queued_runs, stderr=""),  # queued list
+            MagicMock(returncode=0, stdout="", stderr=""),  # cancel 100
+            MagicMock(returncode=0, stdout=empty, stderr=""),  # in_progress list
+            MagicMock(returncode=0, stdout="", stderr=""),  # pr close
+        ]
+
+        close_pr(42, branch="test-branch", canary_repo="meta-pytorch/pytorch-gha-infra")
+
+        for call in mock_run.call_args_list:
+            argv = call[0][0]
+            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "pytorch/pytorch-canary" not in argv
 
 
 # ── run_parallel_validation (skip paths) ──────────────────────────────
@@ -958,6 +1008,22 @@ class TestFetchLatestRuns:
 
         assert result == []
 
+    @patch("phases_validation.run_cmd")
+    def test_threads_custom_canary_repo(self, mock_run):
+        from phases_validation import _fetch_latest_runs
+
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps([]), stderr="")
+
+        _fetch_latest_runs(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+            canary_repo="meta-pytorch/pytorch-gha-infra",
+        )
+
+        argv = mock_run.call_args_list[0][0][0]
+        assert "meta-pytorch/pytorch-gha-infra" in argv
+        assert "pytorch/pytorch-canary" not in argv
+
 
 # ── _collect_run_details ───────────────────────────────────────────────
 
@@ -1047,3 +1113,22 @@ class TestCollectRunDetails:
         assert results[0]["conclusion"] == "in_progress"
         # No --log-failed call for in_progress
         assert mock_run.call_count == 1
+
+    @patch("phases_validation.run_cmd")
+    def test_threads_custom_canary_repo(self, mock_run):
+        from phases_validation import _collect_run_details
+
+        runs = [
+            {"databaseId": 10, "conclusion": "failure", "name": "build", "status": "completed"},
+        ]
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({"jobs": []}), stderr=""),  # run view --json
+            MagicMock(returncode=0, stdout="log", stderr=""),  # run view --log-failed
+        ]
+
+        _collect_run_details(runs, canary_repo="meta-pytorch/pytorch-gha-infra")
+
+        for call in mock_run.call_args_list:
+            argv = call[0][0]
+            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "pytorch/pytorch-canary" not in argv

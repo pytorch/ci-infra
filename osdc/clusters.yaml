@@ -178,6 +178,8 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
+      # Held level with the prod clusters so staging exercises the chart prod runs.
+      chart_version: "0.14.1-jeanschmidt.19"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -269,6 +271,8 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
+      # Held level with the prod clusters so staging exercises the chart prod runs.
+      chart_version: "0.14.1-jeanschmidt.19"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -375,6 +379,8 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
+      # Held level with the prod clusters so staging exercises the chart prod runs.
+      chart_version: "0.14.1-jeanschmidt.19"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -477,6 +483,7 @@ clusters:
           runner_group: "meta-prod-aws-uw1"
           resource_slug: mp
           max_runners: 1
+          canary_repo: "meta-pytorch/pytorch-gha-infra"
     arc-runners-h100:
       capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
@@ -514,6 +521,11 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
+    arc:
+      # additional_orgs below needs the resourceName decoupling this release
+      # carries; without it every secondary-org Helm release collides with the
+      # primary org's resources.
+      chart_version: "0.14.1-jeanschmidt.19"
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
@@ -532,6 +544,12 @@ clusters:
       runner_group: "meta-prod-aws-ue1"
       capacity_aware_fresh_multiplier: 0.8
       scheduler_name: bin-pack-scheduler
+      additional_orgs:
+        - github_config_url: "https://github.com/meta-pytorch"
+          github_secret_name: meta-prod-aws-ue1-meta-pytorch
+          runner_group: "meta-prod-aws-ue1"
+          resource_slug: mp
+          canary_repo: "meta-pytorch/pytorch-gha-infra"
     modules:
       - karpenter
       - arc
@@ -560,6 +578,11 @@ clusters:
       vpc_cidr: "10.4.0.0/16"
     harbor:
       ecr_pullthrough: true
+    arc:
+      # additional_orgs below needs the resourceName decoupling this release
+      # carries; without it every secondary-org Helm release collides with the
+      # primary org's resources.
+      chart_version: "0.14.1-jeanschmidt.19"
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
@@ -578,6 +601,12 @@ clusters:
       runner_group: "meta-prod-aws-ue2"   # moved off the shared "default"/"release-runners" groups
       capacity_aware_fresh_multiplier: 0.8
       scheduler_name: bin-pack-scheduler
+      additional_orgs:
+        - github_config_url: "https://github.com/meta-pytorch"
+          github_secret_name: meta-prod-aws-ue2-meta-pytorch
+          runner_group: "meta-prod-aws-ue2"
+          resource_slug: mp
+          canary_repo: "meta-pytorch/pytorch-gha-infra"
     arc-runners-h100:
       capacity_aware_fresh_multiplier: 1.0
     arc-runners-b200:
