@@ -1,6 +1,7 @@
 githubConfigUrl: "{{GITHUB_CONFIG_URL}}"
 githubConfigSecret: "{{GITHUB_SECRET_NAME}}"
 runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
+{{RESOURCE_NAME_LINE}}
 
 minRunners: 0
 {{MAX_RUNNERS_LINE}}
