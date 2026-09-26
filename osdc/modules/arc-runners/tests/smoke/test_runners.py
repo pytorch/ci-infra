@@ -13,7 +13,14 @@ from pathlib import Path
 import pytest
 import yaml
 from helpers import filter_pods, find_helm_release, run_kubectl
-from runner_defs import arc_runners_module_names, def_for_listener_pod, load_defs_by_name, load_runner_defs
+from runner_defs import (
+    SCALE_SET_NAME_LABEL,
+    GeneratedScaleSet,
+    arc_runners_module_names,
+    load_runner_defs,
+    scale_set_label_of_pod,
+    scale_sets_by_label,
+)
 
 pytestmark = [pytest.mark.live]
 
@@ -80,17 +87,23 @@ class TestRunnerDefs:
 class TestRunnerConfigMaps:
     """Verify ConfigMaps exist for each runner definition."""
 
-    def test_configmaps_for_all_defs(self, upstream_dir: Path, enabled_modules: list[str]) -> None:
-        """Each runner def has a matching ConfigMap in arc-runners namespace."""
+    def test_configmaps_for_all_defs(
+        self, upstream_dir: Path, enabled_modules: list[str], generated_scale_sets: list[GeneratedScaleSet]
+    ) -> None:
+        """Each generated scale set has a matching hook ConfigMap in arc-runners namespace.
+
+        Expected names come from the generated files (the source of truth for what
+        this cluster deploys), so per-org fan-out CMs (arc-runner-hook-<slug>-<def>)
+        are covered — a def-name reconstruction would miss them.
+        """
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        # Scope to arc-runners* modules actually enabled on this cluster — defs
-        # from unenabled-but-present-in-codebase variants would otherwise be
-        # expected as CMs that genuinely don't exist on this cluster.
+        # Scope actual CMs to arc-runners* modules enabled on this cluster —
+        # generated_scale_sets is already scoped to the same set.
         enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
 
-        defs = _load_all_defs(upstream_dir, enabled_arc)
+        expected = {s.configmap_name for s in generated_scale_sets}
         result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL_KEY, "-o", "json"], namespace=NAMESPACE)
         cm_names = {
             item["metadata"]["name"]
@@ -98,13 +111,8 @@ class TestRunnerConfigMaps:
             if item.get("metadata", {}).get("labels", {}).get(MODULE_LABEL_KEY) in enabled_arc
         }
 
-        missing = []
-        for d in defs:
-            expected = f"arc-runner-hook-{_normalize_name(d['name'])}"
-            if expected not in cm_names:
-                missing.append(expected)
-
-        assert not missing, f"Missing ConfigMaps for runner defs: {missing}"
+        missing = sorted(expected - cm_names)
+        assert not missing, f"Missing ConfigMaps for generated scale sets: {missing}"
 
 
 # ============================================================================
@@ -127,35 +135,31 @@ class TestRunnerConfigMapEnvVars:
         }
     )
 
-    def test_pypi_cache_env_vars_present(self, upstream_dir: Path, enabled_modules: list[str]) -> None:
-        """Each runner ConfigMap's job-pod.yaml has all pypi-cache env vars."""
+    def test_pypi_cache_env_vars_present(
+        self, upstream_dir: Path, enabled_modules: list[str], generated_scale_sets: list[GeneratedScaleSet]
+    ) -> None:
+        """Each generated scale set's deployed ConfigMap job-pod.yaml has all pypi-cache env vars."""
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
         if "pypi-cache" not in enabled_modules:
             pytest.skip("pypi-cache module not enabled — env vars are intentionally stripped from runner ConfigMaps")
 
-        # Scope to arc-runners* modules actually enabled on this cluster — defs
-        # from unenabled-but-present-in-codebase variants would otherwise be
-        # expected as CMs that genuinely don't exist on this cluster.
+        # Scope actual CMs to arc-runners* modules enabled on this cluster —
+        # generated_scale_sets is already scoped to the same set.
         enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
 
-        defs = _load_all_defs(upstream_dir, enabled_arc)
         result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL_KEY, "-o", "json"], namespace=NAMESPACE)
-        items = [
-            item
+        items = {
+            item["metadata"]["name"]: item
             for item in result.get("items", [])
             if item.get("metadata", {}).get("labels", {}).get(MODULE_LABEL_KEY) in enabled_arc
-        ]
+        }
 
         missing_vars: list[str] = []
-        for d in defs:
-            cm_name = f"arc-runner-hook-{_normalize_name(d['name'])}"
-            cm = None
-            for item in items:
-                if item["metadata"]["name"] == cm_name:
-                    cm = item
-                    break
+        for scale_set in generated_scale_sets:
+            cm_name = scale_set.configmap_name
+            cm = items.get(cm_name)
             if cm is None:
                 continue  # TestRunnerConfigMaps covers missing CMs
 
@@ -187,26 +191,24 @@ class TestRunnerHelmReleases:
     """Verify Helm releases exist for each runner definition."""
 
     def test_helm_releases_for_all_defs(
-        self, upstream_dir: Path, all_helm_releases: list[dict], enabled_modules: list[str]
+        self, all_helm_releases: list[dict], enabled_modules: list[str], generated_scale_sets: list[GeneratedScaleSet]
     ) -> None:
-        """Each runner def has a matching Helm release."""
+        """Each generated scale set has a matching Helm release.
+
+        deploy.sh installs one release per generated file, named
+        ``arc-<normalized resource_id>`` — so per-org fan-out releases
+        (arc-<slug>-<def>) are covered.
+        """
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        # Scope to arc-runners* modules actually enabled on this cluster — defs
-        # from unenabled-but-present-in-codebase variants would otherwise be
-        # expected as releases that genuinely don't exist on this cluster.
-        enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
-
-        defs = _load_all_defs(upstream_dir, enabled_arc)
         missing = []
-        for d in defs:
-            release_name = f"arc-{_normalize_name(d['name'])}"
-            release = find_helm_release(all_helm_releases, release_name)
-            if release is None:
+        for scale_set in generated_scale_sets:
+            release_name = f"arc-{_normalize_name(scale_set.resource_id)}"
+            if find_helm_release(all_helm_releases, release_name) is None:
                 missing.append(release_name)
 
-        assert not missing, f"Missing Helm releases for runner defs: {missing}"
+        assert not missing, f"Missing Helm releases for generated scale sets: {missing}"
 
 
 # ============================================================================
@@ -217,18 +219,23 @@ class TestRunnerHelmReleases:
 class TestNoStaleRunners:
     """Verify no orphaned ConfigMaps exist that don't match any runner def."""
 
-    def test_no_stale_configmaps(self, upstream_dir: Path, enabled_modules: list[str]) -> None:
-        """All ConfigMaps with the arc-runners label match a known runner def."""
+    def test_no_stale_configmaps(
+        self, upstream_dir: Path, enabled_modules: list[str], generated_scale_sets: list[GeneratedScaleSet]
+    ) -> None:
+        """Every deployed arc-runners ConfigMap matches a generated scale set.
+
+        Expected names come from the generated files, so per-org fan-out CMs
+        (arc-runner-hook-<slug>-<def>) are legitimate — reconstructing expected
+        names from def names alone would flag every additional-org CM as stale.
+        """
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        # Scope to arc-runners* modules actually enabled on this cluster — defs
-        # from unenabled-but-present-in-codebase variants would otherwise be
-        # expected as CMs that genuinely don't exist on this cluster.
+        # Scope actual CMs to arc-runners* modules enabled on this cluster —
+        # generated_scale_sets is already scoped to the same set.
         enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
 
-        defs = _load_all_defs(upstream_dir, enabled_arc)
-        expected_cms = {f"arc-runner-hook-{_normalize_name(d['name'])}" for d in defs}
+        expected_cms = {s.configmap_name for s in generated_scale_sets}
 
         result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL_KEY, "-o", "json"], namespace=NAMESPACE)
         actual_cms = {
@@ -238,7 +245,7 @@ class TestNoStaleRunners:
         }
 
         stale = actual_cms - expected_cms
-        assert not stale, f"Stale ConfigMaps (no matching def): {stale}"
+        assert not stale, f"Stale ConfigMaps (no matching generated scale set): {stale}"
 
 
 # ============================================================================
@@ -296,10 +303,8 @@ class TestListenerCapacityAwareEnvVars:
     def test_listener_env_vars_match_generated_yaml(
         self,
         all_pods: dict,
-        upstream_dir: Path,
         enabled_modules: list[str],
-        resolve_config,
-        generated_arc_runners: dict[str, dict],
+        generated_scale_sets: list[GeneratedScaleSet],
     ) -> None:
         """Each listener pod's CAPACITY_AWARE_* env vars match its generated YAML.
 
@@ -317,10 +322,13 @@ class TestListenerCapacityAwareEnvVars:
             f"No listener pods found in '{LISTENER_NAMESPACE}' with labels {LISTENER_LABELS}"
         )
 
-        runner_name_prefix = resolve_config("arc-runners.runner_name_prefix", "")
-        # Reuse load_defs_by_name only for the listener→def mapping helper —
-        # value comparisons go through generated_arc_runners.
-        defs_by_name = load_defs_by_name(upstream_dir)
+        # Map each listener pod to its generated scale set via the org-unique
+        # scale-set-name label (resourceName for additional orgs, runnerScaleSetName
+        # for the primary). Per-org fan-out gives the two orgs DIFFERENT labels but
+        # the SAME underlying def, and their listener env differs (e.g. the
+        # CAPACITY_AWARE_CLUSTER_INDEX/COUNT per-org shard) — so a def-keyed lookup
+        # would compare a pod against the wrong org's YAML.
+        by_label = scale_sets_by_label(generated_scale_sets)
 
         problems: list[str] = []
         for pod in listener_pods:
@@ -331,23 +339,22 @@ class TestListenerCapacityAwareEnvVars:
                 problems.append(f"{pod_name}: no '{LISTENER_CONTAINER_NAME}' container")
                 continue
 
-            def_name, _runner = def_for_listener_pod(pod, defs_by_name, runner_name_prefix)
-            if def_name is None:
+            label = scale_set_label_of_pod(pod)
+            if not label:
+                problems.append(f"{pod_name}: missing '{SCALE_SET_NAME_LABEL}' label")
+                continue
+
+            scale_set = by_label.get(label)
+            if scale_set is None:
                 problems.append(
-                    f"{pod_name}: missing/invalid 'actions.github.com/scale-set-name' label "
-                    f"(prefix={runner_name_prefix!r})"
+                    f"{pod_name}: no generated scale set for {SCALE_SET_NAME_LABEL}={label!r} (stale scale-set?)"
                 )
                 continue
 
-            generated = generated_arc_runners.get(def_name)
-            if generated is None:
-                problems.append(f"{pod_name}: no generated YAML found for def {def_name!r} (stale scale-set?)")
-                continue
-
-            generated_env = _capacity_aware_env(_listener_env_from_generated_yaml(generated))
+            generated_env = _capacity_aware_env(_listener_env_from_generated_yaml(scale_set.values))
             if not generated_env:
                 problems.append(
-                    f"{pod_name} (def={def_name}): generated YAML has no CAPACITY_AWARE_* env vars in "
+                    f"{pod_name} (scale-set={label}): generated YAML has no CAPACITY_AWARE_* env vars in "
                     f"listenerTemplate — template/generator regression?"
                 )
                 continue
@@ -359,13 +366,13 @@ class TestListenerCapacityAwareEnvVars:
             for var, want_entry in generated_env.items():
                 got_entry = deployed_env.get(var)
                 if got_entry is None:
-                    problems.append(f"{pod_name} (def={def_name}): missing env var {var!r}")
+                    problems.append(f"{pod_name} (scale-set={label}): missing env var {var!r}")
                     continue
                 want_sig = self._env_value_signature(want_entry)
                 got_sig = self._env_value_signature(got_entry)
                 if want_sig != got_sig:
                     problems.append(
-                        f"{pod_name} (def={def_name}): {var} mismatch — generated {want_sig!r}, deployed {got_sig!r}"
+                        f"{pod_name} (scale-set={label}): {var} mismatch — generated {want_sig!r}, deployed {got_sig!r}"
                     )
 
             # Catch the reverse: env vars deployed but no longer in the
@@ -373,7 +380,7 @@ class TestListenerCapacityAwareEnvVars:
             extra = sorted(deployed_env.keys() - generated_env.keys())
             if extra:
                 problems.append(
-                    f"{pod_name} (def={def_name}): unexpected CAPACITY_AWARE_* env vars not in generated YAML: {extra}"
+                    f"{pod_name} (scale-set={label}): unexpected CAPACITY_AWARE_* env vars not in generated YAML: {extra}"
                 )
 
         assert not problems, "Listener CAPACITY_AWARE_* env-var coherence failures:\n" + "\n".join(problems)
