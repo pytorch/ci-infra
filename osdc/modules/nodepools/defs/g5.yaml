@@ -7,6 +7,18 @@ fleet:
   gpu: true
   exclude_regions:
     - us-west-1
+  # LF clusters (lf-prod-aws-ue1/ue2) get the same reordering g6 already has
+  # (see #1048): a 1-GPU pod fits the 104Gi request on an 8xlarge, but the
+  # Meta-authored default order ranks 12xlarge/24xlarge above it, so those
+  # multi-GPU nodes were absorbing 1-GPU pods with 3 of 4 A10Gs left idle
+  # (5 g5.12xlarge nodes in lf-prod-aws-ue2, 1 g5.24xlarge in ue1, each
+  # hosting a single 1-GPU pod, observed live 2026-09-22).
+  # g5.48xlarge is disabled on LF too, same as g6.48xlarge: a massive
+  # 192c/768Gi node is a poor cost fit for the 1-GPU-dominant LF workload
+  # mix, which is better served by the smaller single-GPU sizes above.
+  # (This is the base g5 fleet's 48xlarge rung only — the dedicated 8-GPU
+  # runner uses the separate g5-large fleet in g5-large.yaml, which is
+  # unaffected by this weight and still provisions on LF.)
   # Release wheel-build GPU runners.
   release:
     # Smallest node that fits, largest last. The 12xlarge earns its place at the
@@ -30,26 +42,44 @@ fleet:
     # Smallest node here with a GPU; a 1-GPU pod takes a whole node either way.
     # Ranked above the other 1-GPU sizes; the multi-GPU ones pack several pods.
     - type: g5.4xlarge
-      weight: 75
+      weight:
+        default: 75
+        lf-prod-aws-ue1: 100
+        lf-prod-aws-ue2: 100
       node_disk_size: 600
       has_nvme: true
     - type: g5.48xlarge
-      weight: 100
+      weight:
+        default: 100
+        lf-prod-aws-ue1: 0    # disabled — poor cost fit for LF's workload mix
+        lf-prod-aws-ue2: 0
       node_disk_size: 600
       has_nvme: true
     - type: g5.12xlarge
-      weight: 90
+      weight:
+        default: 90
+        lf-prod-aws-ue1: 70   # 4-GPU cost optimum — LF's stranding case
+        lf-prod-aws-ue2: 70
       node_disk_size: 600
       has_nvme: true
     - type: g5.24xlarge
-      weight: 80
+      weight:
+        default: 80
+        lf-prod-aws-ue1: 90   # 1-GPU fallthrough — packs 3 runners/node
+        lf-prod-aws-ue2: 90
       node_disk_size: 600
       has_nvme: true
     - type: g5.8xlarge
-      weight: 70
+      weight:
+        default: 70
+        lf-prod-aws-ue1: 95   # 1-GPU fallthrough for pods too big for the 4xlarge
+        lf-prod-aws-ue2: 95
       node_disk_size: 600
       has_nvme: true
     - type: g5.16xlarge
-      weight: 60
+      weight:
+        default: 60
+        lf-prod-aws-ue1: 80   # 1-GPU last resort; cannot host a 4-GPU pod
+        lf-prod-aws-ue2: 80
       node_disk_size: 600
       has_nvme: true
