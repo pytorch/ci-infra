@@ -1,6 +1,12 @@
 [Unit]
 Description=GHA daemon manager
-After=network.target
+After=network.target gha-cgroup-reapply.service
+Wants=gha-cgroup-reapply.service
+# Absence of this flag means the node was intentionally taken out of
+# auto-restart (e.g. for maintenance after a reboot regressed CUDA state).
+# Bringing it back requires an explicit re-provision/restart playbook run,
+# which recreates the flag - see restart-ghad-service.yml / setup-host.yml.
+ConditionPathExists=/etc/gha-runner-config/autostart-enabled
 StartLimitIntervalSec=0
 
 [Service]

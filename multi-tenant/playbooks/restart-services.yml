@@ -22,6 +22,15 @@
       executable: /bin/bash
 
   tasks:
+    # A missing flag means the node was intentionally taken out of
+    # auto-restart (see ghad-manager.service's ConditionPathExists). Running
+    # this playbook is the explicit, human-involved action that re-arms it.
+    - name: Ensure ghad-manager autostart flag exists
+      ansible.builtin.file:
+        path: /etc/gha-runner-config/autostart-enabled
+        state: touch
+        mode: '0644'
+
     - name: Get number of NVIDIA GPUs
       ansible.builtin.shell: nvidia-smi --list-gpus | wc -l
       register: gpu_count

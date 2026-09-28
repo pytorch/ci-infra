@@ -112,6 +112,20 @@
       loop: "{{ user_names[:(num_users | int)] }}"
       register: created_users
 
+    - name: create the runner config directory
+      ansible.builtin.file:
+        path: /etc/gha-runner-config
+        state: directory
+
+    - name: Write list of multi-tenant usernames for the cgroup-reapply helper
+      ansible.builtin.copy:
+        dest: /etc/gha-runner-config/multi-tenant-users
+        content: |
+          {% for item in created_users.results %}
+          {{ item.name }}
+          {% endfor %}
+        mode: '0644'
+
     - name: Gather service facts
       ansible.builtin.service_facts:
       register: services_facts
@@ -302,11 +316,6 @@
         machinectl shell {{ item.name }}@ /bin/bash -c 'aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 308535385114.dkr.ecr.us-east-1.amazonaws.com/multi-tenant-gpu'
       loop: "{{ created_users.results }}"
 
-    - name: create the runner config directory
-      ansible.builtin.file:
-        path: /etc/gha-runner-config
-        state: directory
-
     - name: Create file with instance label
       ansible.builtin.copy:
         dest: /etc/gha-runner-config/instance-label
@@ -356,6 +365,24 @@
         dest: /root/ghad-manager.py
         mode: '0644'
 
+    - name: Copy the cgroup-reapply service file
+      ansible.builtin.copy:
+        src: ../services/ghad-manager/gha-cgroup-reapply.service
+        dest: /etc/systemd/system/gha-cgroup-reapply.service
+        mode: '0644'
+
+    - name: Deploy the cgroup-reapply helper script
+      ansible.builtin.copy:
+        src: ../scripts/gha-reapply-nvidia-cgroups.sh
+        dest: /usr/local/sbin/gha-reapply-nvidia-cgroups.sh
+        mode: '0755'
+
+    - name: Create the ghad-manager autostart flag (re-)enabling auto-start on boot
+      ansible.builtin.copy:
+        dest: /etc/gha-runner-config/autostart-enabled
+        content: ""
+        mode: '0644'
+
     - name: Install multi-tenant-gpu-main.sh into each users home directory, make it read-only
       ansible.builtin.copy:
         src: ../scripts/multi-tenant-gpu-main.sh
@@ -366,6 +393,11 @@
     - name: Reload systemd
       ansible.builtin.systemd:
         daemon_reload: yes
+
+    - name: Enable the cgroup-reapply helper service
+      ansible.builtin.systemd:
+        name: gha-cgroup-reapply
+        enabled: yes
 
     - name: Restart the runner manager service
       ansible.builtin.systemd:

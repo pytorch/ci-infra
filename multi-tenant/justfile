@@ -21,6 +21,7 @@
 #   just setup-host dgxb200-03    # provision a single host / group
 #   just restart-services         # restart docker + ghad-manager
 #   just restart-ghad             # restart only the ghad-manager service
+#   just disable-autostart        # take a host out of ghad-manager auto-restart for maintenance
 
 set dotenv-load
 set dotenv-filename := "secrets.env"
@@ -72,6 +73,10 @@ restart-services limit=LIMIT: setup
 # Restart only the ghad-manager service on B200 host(s)
 restart-ghad limit=LIMIT: setup
     uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/restart-ghad-service.yml -vv
+
+# Take host(s) out of ghad-manager auto-restart for maintenance (re-arm with restart-services/restart-ghad/setup-host)
+disable-autostart limit=LIMIT: setup
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/disable-autostart.yml -vv
 
 # Build and push the multi-tenant-gpu runner image to ECR
 docker-build:
