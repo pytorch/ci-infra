@@ -1,0 +1,904 @@
+{
+ "annotations": [
+  {
+   "kind": "AnnotationQuery",
+   "spec": {
+    "builtIn": true,
+    "enable": true,
+    "hide": true,
+    "iconColor": "rgba(0, 211, 255, 1)",
+    "name": "Annotations & Alerts",
+    "query": {
+     "datasource": {
+      "name": "-- Grafana --"
+     },
+     "group": "grafana",
+     "kind": "DataQuery",
+     "spec": {},
+     "version": "v0"
+    }
+   }
+  }
+ ],
+ "cursorSync": "Crosshair",
+ "editable": true,
+ "elements": {
+  "panel-1": {
+   "kind": "Panel",
+   "spec": {
+    "data": {
+     "kind": "QueryGroup",
+     "spec": {
+      "queries": [
+       {
+        "kind": "PanelQuery",
+        "spec": {
+         "hidden": false,
+         "query": {
+          "datasource": {
+           "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+           "editorType": "sql",
+           "format": 1,
+           "meta": {
+            "builderOptions": {
+             "columns": [],
+             "database": "",
+             "limit": 1000,
+             "mode": "list",
+             "queryType": "table",
+             "table": ""
+            }
+           },
+           "pluginVersion": "4.17.0",
+           "queryType": "table",
+           "rawSql": "-- Workflow completion guard. Multiplicity undercounts while a run is still\n-- reporting. Cancelled counts as incomplete because it can finish after running\n-- only part of its shards. Failed runs count as finished: main pushes use\n-- keep-going, but setup or runner failures, timeouts, and missing reports can\n-- still undercount the test metrics. No-report detection is not implemented yet.\nSELECT uniqExact(id) AS \"Workflow runs\",\n       uniqExactIf(id, status != 'completed' OR conclusion = 'cancelled') AS \"Runs incomplete\",\n       round(dateDiff('minute', min(created_at), now()) / 60.0, 1) AS \"Commit age (h)\"\nFROM default.workflow_run FINAL\nWHERE head_branch = 'main'\n  AND event = 'push'\n  AND repository.full_name = '$repository'\n  AND startsWith(head_sha, '$head_sha')\n  AND length('$head_sha') >= 7\n  AND match(name, '$wf_scope')"
+          },
+          "version": "v0"
+         },
+         "refId": "A"
+        }
+       }
+      ],
+      "queryOptions": {},
+      "transformations": []
+     }
+    },
+    "description": "`Runs incomplete` counts runs still going plus cancelled ones, which can finish after running only part of their shards. Failed runs count as finished because main pushes use keep-going, but 0 does not guarantee complete test reporting: setup or runner failures, timeouts, and missing reports can still lower these metrics. No-report detection is not implemented yet. The Commit list only offers finished, non-cancelled commits; a hand-entered sha is not checked.",
+    "id": 1,
+    "links": [],
+    "title": "Commit workflow completion [repository, head_sha, wf_scope]",
+    "vizConfig": {
+     "group": "stat",
+     "kind": "VizConfig",
+     "spec": {
+      "fieldConfig": {
+       "defaults": {
+        "color": {
+         "mode": "thresholds"
+        },
+        "decimals": 0,
+        "mappings": [],
+        "unit": "short",
+        "thresholds": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "green",
+           "value": 0
+          }
+         ]
+        }
+       },
+       "overrides": [
+        {
+         "matcher": {
+          "id": "byName",
+          "options": "Runs incomplete"
+         },
+         "properties": [
+          {
+           "id": "thresholds",
+           "value": {
+            "mode": "absolute",
+            "steps": [
+             {
+              "color": "green",
+              "value": 0
+             },
+             {
+              "color": "red",
+              "value": 1
+             }
+            ]
+           }
+          }
+         ]
+        }
+       ]
+      },
+      "options": {
+       "colorMode": "value",
+       "graphMode": "none",
+       "justifyMode": "auto",
+       "orientation": "vertical",
+       "percentChangeColorMode": "standard",
+       "reduceOptions": {
+        "calcs": [
+         "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+       },
+       "showPercentChange": false,
+       "textMode": "auto",
+       "wideLayout": true
+      }
+     },
+     "version": "13.1.0-25668120414"
+    }
+   }
+  },
+  "panel-2": {
+   "kind": "Panel",
+   "spec": {
+    "data": {
+     "kind": "QueryGroup",
+     "spec": {
+      "queries": [
+       {
+        "kind": "PanelQuery",
+        "spec": {
+         "hidden": false,
+         "query": {
+          "datasource": {
+           "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+           "editorType": "sql",
+           "format": 1,
+           "meta": {
+            "builderOptions": {
+             "columns": [],
+             "database": "",
+             "limit": 1000,
+             "mode": "list",
+             "queryType": "table",
+             "table": ""
+            }
+           },
+           "pluginVersion": "4.17.0",
+           "queryType": "table",
+           "rawSql": "WITH runs AS (\n    SELECT id\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\njobs AS (\n    SELECT j.id AS job_id\n    FROM default.workflow_job j\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n)\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- All workflow attempts count. uniqExact folds repeated reports while retaining\n-- tests that only appear on a rerun.\nSELECT uniqExactIf(cityHash64(a.invoking_file, a.classname, a.name),\n                   a.skipped_count = 0\n                   OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail') AS \"Unique tests run\"\nFROM tests.all_test_runs a\nWHERE a.job_id IN (SELECT job_id FROM jobs)"
+          },
+          "version": "v0"
+         },
+         "refId": "A"
+        }
+       }
+      ],
+      "queryOptions": {},
+      "transformations": []
+     }
+    },
+    "description": "Distinct tests that executed at least once across all workflow attempts in scope. Denominator for the multiplicity panels; a test skipped in every configuration is not counted, because no configuration covered it.",
+    "id": 2,
+    "links": [],
+    "title": "Unique tests run [repository, head_sha, wf_scope]",
+    "vizConfig": {
+     "group": "stat",
+     "kind": "VizConfig",
+     "spec": {
+      "fieldConfig": {
+       "defaults": {
+        "color": {
+         "mode": "fixed"
+        },
+        "decimals": 0,
+        "mappings": [],
+        "unit": "short",
+        "thresholds": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "text",
+           "value": 0
+          }
+         ]
+        }
+       },
+       "overrides": []
+      },
+      "options": {
+       "colorMode": "value",
+       "graphMode": "none",
+       "justifyMode": "auto",
+       "orientation": "vertical",
+       "percentChangeColorMode": "standard",
+       "reduceOptions": {
+        "calcs": [
+         "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+       },
+       "showPercentChange": false,
+       "textMode": "auto",
+       "wideLayout": true
+      }
+     },
+     "version": "13.1.0-25668120414"
+    }
+   }
+  },
+  "panel-6": {
+   "kind": "Panel",
+   "spec": {
+    "data": {
+     "kind": "QueryGroup",
+     "spec": {
+      "queries": [
+       {
+        "kind": "PanelQuery",
+        "spec": {
+         "hidden": false,
+         "query": {
+          "datasource": {
+           "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+           "editorType": "sql",
+           "format": 1,
+           "meta": {
+            "builderOptions": {
+             "columns": [],
+             "database": "",
+             "limit": 1000,
+             "mode": "list",
+             "queryType": "table",
+             "table": ""
+            }
+           },
+           "pluginVersion": "4.17.0",
+           "queryType": "table",
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n)\n-- This is the weighted sum of the config-multiplicity distribution: each\n-- executed test x configuration pair counts once. Duplicate reports, shards,\n-- workflow attempts, and reruns do not inflate it. Expected xfails ran to\n-- completion; true skips did not run and are excluded.\nSELECT uniqExact(cityHash64(a.invoking_file, a.classname, a.name), jobs.bc) AS \"Total tests run\"\nFROM tests.all_test_runs a\nINNER JOIN jobs ON jobs.job_id = a.job_id\nWHERE a.job_id IN (SELECT job_id FROM jobs)\n  AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')"
+          },
+          "version": "v0"
+         },
+         "refId": "A"
+        }
+       }
+      ],
+      "queryOptions": {},
+      "transformations": []
+     }
+    },
+    "description": "Distinct test x configuration executions across all workflow attempts, where a configuration is workflow x build x test-config. This is exactly the weighted sum of the config-multiplicity distribution. Shards of one configuration, duplicate reports, and reruns count once; expected xfails count as executed, while true skips do not.",
+    "id": 6,
+    "links": [],
+    "title": "Total tests run [repository, head_sha, wf_scope]",
+    "vizConfig": {
+     "group": "stat",
+     "kind": "VizConfig",
+     "spec": {
+      "fieldConfig": {
+       "defaults": {
+        "color": {
+         "mode": "fixed"
+        },
+        "decimals": 2,
+        "mappings": [],
+        "unit": "short",
+        "thresholds": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "text",
+           "value": 0
+          }
+         ]
+        }
+       },
+       "overrides": []
+      },
+      "options": {
+       "colorMode": "value",
+       "graphMode": "none",
+       "justifyMode": "auto",
+       "orientation": "vertical",
+       "percentChangeColorMode": "standard",
+       "reduceOptions": {
+        "calcs": [
+         "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+       },
+       "showPercentChange": false,
+       "textMode": "auto",
+       "wideLayout": true
+      }
+     },
+     "version": "13.1.0-25668120414"
+    }
+   }
+  },
+  "panel-3": {
+   "kind": "Panel",
+   "spec": {
+    "data": {
+     "kind": "QueryGroup",
+     "spec": {
+      "queries": [
+       {
+        "kind": "PanelQuery",
+        "spec": {
+         "hidden": false,
+         "query": {
+          "datasource": {
+           "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+           "editorType": "sql",
+           "format": 1,
+           "meta": {
+            "builderOptions": {
+             "columns": [],
+             "database": "",
+             "limit": 1000,
+             "mode": "list",
+             "queryType": "table",
+             "table": ""
+            }
+           },
+           "pluginVersion": "4.17.0",
+           "queryType": "table",
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT quantileExact(0.25)(n_configs) AS \"P25\",\n       quantileExact(0.50)(n_configs) AS \"P50\",\n       quantileExact(0.75)(n_configs) AS \"P75\"\nFROM t"
+          },
+          "version": "v0"
+         },
+         "refId": "A"
+        }
+       }
+      ],
+      "queryOptions": {},
+      "transformations": []
+     }
+    },
+    "description": "Distinct workflow x build x config combinations that execute the same test across all workflow attempts. Repeated reports and shards of one configuration count once, so this measures coverage breadth, not job count.",
+    "id": 3,
+    "links": [],
+    "title": "Config multiplicity percentiles [repository, head_sha, wf_scope]",
+    "vizConfig": {
+     "group": "stat",
+     "kind": "VizConfig",
+     "spec": {
+      "fieldConfig": {
+       "defaults": {
+        "color": {
+         "mode": "fixed"
+        },
+        "decimals": 0,
+        "mappings": [],
+        "unit": "short",
+        "thresholds": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "green",
+           "value": 0
+          }
+         ]
+        }
+       },
+       "overrides": []
+      },
+      "options": {
+       "colorMode": "value",
+       "graphMode": "none",
+       "justifyMode": "auto",
+       "orientation": "vertical",
+       "percentChangeColorMode": "standard",
+       "reduceOptions": {
+        "calcs": [
+         "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+       },
+       "showPercentChange": false,
+       "textMode": "auto",
+       "wideLayout": true
+      }
+     },
+     "version": "13.1.0-25668120414"
+    }
+   }
+  },
+  "panel-4": {
+   "kind": "Panel",
+   "spec": {
+    "data": {
+     "kind": "QueryGroup",
+     "spec": {
+      "queries": [
+       {
+        "kind": "PanelQuery",
+        "spec": {
+         "hidden": false,
+         "query": {
+          "datasource": {
+           "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+           "editorType": "sql",
+           "format": 1,
+           "meta": {
+            "builderOptions": {
+             "columns": [],
+             "database": "",
+             "limit": 1000,
+             "mode": "list",
+             "queryType": "table",
+             "table": ""
+            }
+           },
+           "pluginVersion": "4.17.0",
+           "queryType": "table",
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT n_configs AS \"Config multiplicity\",\n       count() AS \"Unique tests\"\nFROM t\nGROUP BY n_configs\nORDER BY n_configs"
+          },
+          "version": "v0"
+         },
+         "refId": "A"
+        }
+       }
+      ],
+      "queryOptions": {},
+      "transformations": []
+     }
+    },
+    "description": "Tests bucketed by how many workflow x build x config combinations execute them across all workflow attempts. Repeated reports count once. A bucket groups tests by configuration count, not by which configurations, so one bucket can span unrelated configuration sets.",
+    "id": 4,
+    "links": [],
+    "title": "Config multiplicity distribution [repository, head_sha, wf_scope]",
+    "vizConfig": {
+     "group": "barchart",
+     "kind": "VizConfig",
+     "spec": {
+      "fieldConfig": {
+       "defaults": {
+        "color": {
+         "mode": "palette-classic-by-name"
+        },
+        "custom": {
+         "axisBorderShow": false,
+         "axisCenteredZero": false,
+         "axisColorMode": "text",
+         "axisLabel": "Unique tests",
+         "axisPlacement": "auto",
+         "barWidthFactor": 0.8,
+         "fillOpacity": 80,
+         "gradientMode": "none",
+         "hideFrom": {
+          "legend": false,
+          "tooltip": false,
+          "viz": false
+         },
+         "lineWidth": 1,
+         "scaleDistribution": {
+          "type": "linear"
+         },
+         "thresholdsStyle": {
+          "mode": "off"
+         }
+        },
+        "mappings": [],
+        "unit": "short",
+        "thresholds": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "green",
+           "value": 0
+          }
+         ]
+        }
+       },
+       "overrides": [
+        {
+         "matcher": {
+          "id": "byName",
+          "options": "Config multiplicity"
+         },
+         "properties": [
+          {
+           "id": "custom.axisLabel",
+           "value": "Config multiplicity"
+          }
+         ]
+        }
+       ]
+      },
+      "options": {
+       "barRadius": 0,
+       "barWidth": 0.8,
+       "fullHighlight": false,
+       "groupWidth": 0.7,
+       "legend": {
+        "calcs": [],
+        "displayMode": "hidden",
+        "placement": "bottom",
+        "showLegend": false
+       },
+       "orientation": "auto",
+       "showValue": "auto",
+       "stacking": "none",
+       "tooltip": {
+        "hideZeros": false,
+        "mode": "single",
+        "sort": "none"
+       },
+       "xField": "Config multiplicity",
+       "xTickLabelRotation": 0,
+       "xTickLabelSpacing": 0
+      }
+     },
+     "version": "13.1.0-25668120414"
+    }
+   }
+  },
+  "panel-5": {
+   "kind": "Panel",
+   "spec": {
+    "data": {
+     "kind": "QueryGroup",
+     "spec": {
+      "queries": [
+       {
+        "kind": "PanelQuery",
+        "spec": {
+         "hidden": false,
+         "query": {
+          "datasource": {
+           "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+           "editorType": "sql",
+           "format": 1,
+           "meta": {
+            "builderOptions": {
+             "columns": [],
+             "database": "",
+             "limit": 1000,
+             "mode": "list",
+             "queryType": "table",
+             "table": ""
+            }
+           },
+           "pluginVersion": "4.17.0",
+           "queryType": "table",
+           "rawSql": "WITH runs AS (\n    SELECT id, name AS wf\n    FROM default.workflow_run FINAL\n    WHERE head_branch = 'main'\n      AND event = 'push'\n      AND repository.full_name = '$repository'\n      AND startsWith(head_sha, '$head_sha')\n      AND length('$head_sha') >= 7\n      AND match(name, '$wf_scope')\n),\n-- Shard indices are stripped from the job name, so every shard of one\n-- build x config folds into a single configuration. Jobs with no shard\n-- suffix keep their own identity.\n-- The workflow name prefixes the key because one job name can run on\n-- different hardware per workflow: linux-jammy-aarch64-py3.10 / test\n-- (default) is Graviton4 (SVE128) in pull and Graviton3 (SVE256) in trunk,\n-- a different ATen kernel path. Unprefixed the two fold into one and the\n-- multiplicity undercounts.\njobs AS (\n    SELECT j.id AS job_id,\n           concat(runs.wf, ' / ',\n                  replaceRegexpOne(j.name, ' \\(([a-zA-Z0-9_-]+), [0-9]+, [0-9]+.*\\)$', ' (\\1)')) AS bc\n    FROM default.workflow_job j\n    INNER JOIN runs ON runs.id = j.run_id\n    WHERE j.run_id IN (SELECT id FROM runs)\n      AND j.status = 'completed'\n),\n-- Executed means the test ran: xfail runs to completion, pytest.skip does not.\n-- Filter on job_id so the IN set prunes via the primary index it leads.\n-- workflow_id prunes comparably via a skip index, so either column works;\n-- what matters is that an IN filter exists, because relying on the join\n-- alone scans the matched partitions.\n-- uniqExact, not count(): all_test_runs is a plain SharedMergeTree and the\n-- replicator can ingest a report object twice. Duplicates share a job_id, so\n-- counting distinct configurations is unaffected.\n-- All workflow attempts count. uniqExact(jobs.bc) folds repeated reports while\n-- retaining tests and configurations that only appear on a rerun.\nt AS (\n    SELECT cityHash64(a.invoking_file, a.classname, a.name) AS test,\n           uniqExact(jobs.bc) AS n_configs\n    FROM tests.all_test_runs a\n    INNER JOIN jobs ON jobs.job_id = a.job_id\n    WHERE a.job_id IN (SELECT job_id FROM jobs)\n      AND (a.skipped_count = 0 OR tupleElement(a.skipped[1], 'type') = 'pytest.xfail')\n    GROUP BY test\n)\nSELECT n_configs AS \"Config multiplicity\",\n       count() AS \"Unique tests\",\n       round(100.0 * sum(count()) OVER (ORDER BY n_configs) / sum(count()) OVER (), 1) AS \"Cumulative %\"\nFROM t\nGROUP BY n_configs\nORDER BY n_configs"
+          },
+          "version": "v0"
+         },
+         "refId": "A"
+        }
+       }
+      ],
+      "queryOptions": {},
+      "transformations": []
+     }
+    },
+    "description": "Bucket counts with a running cumulative share. Percentiles read off the cumulative column; Grafana cannot draw vertical markers on a categorical axis.",
+    "id": 5,
+    "links": [],
+    "title": "Config multiplicity table [repository, head_sha, wf_scope]",
+    "vizConfig": {
+     "group": "table",
+     "kind": "VizConfig",
+     "spec": {
+      "fieldConfig": {
+       "defaults": {
+        "color": {
+         "mode": "thresholds"
+        },
+        "custom": {
+         "align": "auto",
+         "cellOptions": {
+          "type": "auto"
+         },
+         "inspect": false
+        },
+        "mappings": [],
+        "thresholds": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "text",
+           "value": 0
+          }
+         ]
+        }
+       },
+       "overrides": [
+        {
+         "matcher": {
+          "id": "byName",
+          "options": "Cumulative %"
+         },
+         "properties": [
+          {
+           "id": "unit",
+           "value": "percent"
+          },
+          {
+           "id": "custom.cellOptions",
+           "value": {
+            "type": "gauge",
+            "mode": "gradient"
+           }
+          },
+          {
+           "id": "max",
+           "value": 100
+          },
+          {
+           "id": "min",
+           "value": 0
+          }
+         ]
+        }
+       ]
+      },
+      "options": {
+       "cellHeight": "sm",
+       "footer": {
+        "countRows": false,
+        "fields": "",
+        "reducer": [
+         "sum"
+        ],
+        "show": false
+       },
+       "showHeader": true
+      }
+     },
+     "version": "13.1.0-25668120414"
+    }
+   }
+  }
+ },
+ "layout": {
+  "kind": "GridLayout",
+  "spec": {
+   "items": [
+    {
+     "kind": "GridLayoutItem",
+     "spec": {
+      "element": {
+       "kind": "ElementReference",
+       "name": "panel-1"
+      },
+      "height": 5,
+      "width": 8,
+      "x": 0,
+      "y": 0
+     }
+    },
+    {
+     "kind": "GridLayoutItem",
+     "spec": {
+      "element": {
+       "kind": "ElementReference",
+       "name": "panel-2"
+      },
+      "height": 5,
+      "width": 5,
+      "x": 8,
+      "y": 0
+     }
+    },
+    {
+     "kind": "GridLayoutItem",
+     "spec": {
+      "element": {
+       "kind": "ElementReference",
+       "name": "panel-6"
+      },
+      "height": 5,
+      "width": 5,
+      "x": 13,
+      "y": 0
+     }
+    },
+    {
+     "kind": "GridLayoutItem",
+     "spec": {
+      "element": {
+       "kind": "ElementReference",
+       "name": "panel-3"
+      },
+      "height": 5,
+      "width": 6,
+      "x": 18,
+      "y": 0
+     }
+    },
+    {
+     "kind": "GridLayoutItem",
+     "spec": {
+      "element": {
+       "kind": "ElementReference",
+       "name": "panel-4"
+      },
+      "height": 13,
+      "width": 16,
+      "x": 0,
+      "y": 5
+     }
+    },
+    {
+     "kind": "GridLayoutItem",
+     "spec": {
+      "element": {
+       "kind": "ElementReference",
+       "name": "panel-5"
+      },
+      "height": 13,
+      "width": 8,
+      "x": 16,
+      "y": 5
+     }
+    }
+   ]
+  }
+ },
+ "links": [],
+ "liveNow": false,
+ "preload": false,
+ "tags": [
+  "test-metrics"
+ ],
+ "timeSettings": {
+  "autoRefresh": "",
+  "autoRefreshIntervals": [
+   "5s",
+   "10s",
+   "30s",
+   "1m",
+   "5m",
+   "15m",
+   "30m",
+   "1h",
+   "2h",
+   "1d"
+  ],
+  "fiscalYearStartMonth": 0,
+  "from": "now-6M",
+  "hideTimepicker": true,
+  "timezone": "browser",
+  "to": "now"
+ },
+ "title": "PyTorch Test Metrics",
+ "variables": [
+  {
+   "kind": "CustomVariable",
+   "spec": {
+    "name": "repository",
+    "label": "Repository",
+    "query": "pytorch/pytorch",
+    "current": {
+     "text": "pytorch/pytorch",
+     "value": "pytorch/pytorch"
+    },
+    "options": [
+     {
+      "selected": true,
+      "text": "pytorch/pytorch",
+      "value": "pytorch/pytorch"
+     }
+    ],
+    "multi": false,
+    "includeAll": false,
+    "allowCustomValue": false,
+    "hide": "dontHide",
+    "skipUrlSync": false
+   }
+  },
+  {
+   "kind": "CustomVariable",
+   "spec": {
+    "name": "wf_scope",
+    "label": "Workflow scope",
+    "description": "Which main-branch push workflows count toward a test's configuration set. The options use anchored RE2 patterns over workflow_run.name. 'all test workflows' is the stable test-workflow allowlist and intentionally excludes unstable; re-check it when workflows are added or renamed. 'all workflows' includes every main-push workflow. Workflows without all_test_runs rows do not affect the distribution panels, but they do affect the workflow completion panel; this option also exposes newly added test-reporting workflows before the allowlist is updated.",
+    "query": "pull + trunk : ^(pull|trunk)$, trunk : ^trunk$, pull : ^pull$, all test workflows : ^(pull|trunk|inductor|slow|torchtitan-test|inductor-pallas)$, all workflows : .*",
+    "current": {
+     "text": "pull + trunk",
+     "value": "^(pull|trunk)$"
+    },
+    "options": [
+     {
+      "selected": true,
+      "text": "pull + trunk",
+      "value": "^(pull|trunk)$"
+     },
+     {
+      "selected": false,
+      "text": "trunk",
+      "value": "^trunk$"
+     },
+     {
+      "selected": false,
+      "text": "pull",
+      "value": "^pull$"
+     },
+     {
+      "selected": false,
+      "text": "all test workflows",
+      "value": "^(pull|trunk|inductor|slow|torchtitan-test|inductor-pallas)$"
+     },
+     {
+      "selected": false,
+      "text": "all workflows",
+      "value": ".*"
+     }
+    ],
+    "multi": false,
+    "includeAll": false,
+    "allowCustomValue": false,
+    "hide": "dontHide",
+    "skipUrlSync": false
+   }
+  },
+  {
+   "kind": "QueryVariable",
+   "spec": {
+    "name": "head_sha",
+    "label": "Commit",
+    "description": "Main-branch commit to analyse. Defaults to the latest viable/strict HEAD whose main-push workflows are finished and not cancelled. Any main-branch sha, full or prefix, can be typed in; check the workflow completion panel if you do.",
+    "allowCustomValue": true,
+    "current": {
+     "text": "",
+     "value": ""
+    },
+    "definition": "-- Single column on purpose. The ClickHouse plugin does not implement the\n-- __text/__value convention from the SQL datasources; it takes the first\n-- column as both label and value, so a two-column query sets the variable\n-- to the label string and every panel silently matches nothing.\n--\n-- Workflow completion is judged across every main-push workflow, not just\n-- those in $wf_scope, so a commit offered here is finished and non-cancelled\n-- under any scope. This does not detect missing test reports.\nSELECT sp.sha\nFROM misc.stable_pushes sp\nWHERE sp.repository = '$repository'\n  AND sp.timestamp > now() - INTERVAL 7 DAY\n  AND sp.sha NOT IN (\n      SELECT head_sha\n      FROM default.workflow_run FINAL\n      WHERE head_branch = 'main'\n        AND event = 'push'\n        AND repository.full_name = '$repository'\n        AND (status != 'completed' OR conclusion = 'cancelled')\n  )\nORDER BY sp.timestamp DESC\nLIMIT 5",
+    "hide": "dontHide",
+    "includeAll": false,
+    "multi": false,
+    "options": [],
+    "query": {
+     "datasource": {
+      "name": "ceczcsck1b20wb"
+     },
+     "group": "grafana-clickhouse-datasource",
+     "kind": "DataQuery",
+     "spec": {
+      "editorType": "sql",
+      "format": 1,
+      "queryType": "table",
+      "rawSql": "-- Single column on purpose. The ClickHouse plugin does not implement the\n-- __text/__value convention from the SQL datasources; it takes the first\n-- column as both label and value, so a two-column query sets the variable\n-- to the label string and every panel silently matches nothing.\n--\n-- Workflow completion is judged across every main-push workflow, not just\n-- those in $wf_scope, so a commit offered here is finished and non-cancelled\n-- under any scope. This does not detect missing test reports.\nSELECT sp.sha\nFROM misc.stable_pushes sp\nWHERE sp.repository = '$repository'\n  AND sp.timestamp > now() - INTERVAL 7 DAY\n  AND sp.sha NOT IN (\n      SELECT head_sha\n      FROM default.workflow_run FINAL\n      WHERE head_branch = 'main'\n        AND event = 'push'\n        AND repository.full_name = '$repository'\n        AND (status != 'completed' OR conclusion = 'cancelled')\n  )\nORDER BY sp.timestamp DESC\nLIMIT 5"
+     },
+     "version": "v0"
+    },
+    "refresh": "onDashboardLoad",
+    "regex": "",
+    "regexApplyTo": "value",
+    "skipUrlSync": false,
+    "sort": "disabled"
+   }
+  }
+ ]
+}

@@ -24,10 +24,15 @@ from instance_specs import INSTANCE_SPECS
 
 
 def ki_to_mib(ki_str: str) -> int:
-    """Convert Kubernetes Ki memory string to MiB, rounded to int."""
+    """Convert a Kubernetes memory quantity to MiB, rounded to int.
+
+    Nodes do not all report the same unit: most use Ki, but some report Mi or
+    Gi outright, which used to raise ValueError and abort the whole collection.
+    """
     value = ki_str.strip()
-    if value.endswith("Ki"):
-        return int(int(value[:-2]) / 1024)
+    for suffix, to_mib in (("Ki", lambda n: n / 1024), ("Mi", lambda n: n), ("Gi", lambda n: n * 1024)):
+        if value.endswith(suffix):
+            return int(to_mib(int(value[: -len(suffix)])))
     # Fallback: treat as bytes
     return int(int(value) / (1024 * 1024))
 
