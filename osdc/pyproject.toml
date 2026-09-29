@@ -12,7 +12,15 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.5"]
+# pyjwt/cryptography are TEST-only here: the agent-sandbox dispatcher gets them from
+# apt inside its own image, and nothing in this repo imports them at deploy time.
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "pytest-xdist>=3.5",
+  "pyjwt>=2.0",
+  "cryptography>=42.0",
+]
 
 [tool.pytest.ini_options]
 # Each testpath directory is added to sys.path, so all modules are imported

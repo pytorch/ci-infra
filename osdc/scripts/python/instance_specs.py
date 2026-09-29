@@ -83,9 +83,11 @@ INSTANCE_SPECS: dict[str, dict] = {
     "g4dn.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g4dn.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
+    "g5.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 58981, "gpu": 1, "arch": "amd64"},
     "g5.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g5.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
+    "g6.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 58981, "gpu": 1, "arch": "amd64"},
     "g6.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
     # Fleet fallback sizes
     "g6.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
@@ -112,6 +114,9 @@ INSTANCE_SPECS: dict[str, dict] = {
     "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "arm64"},
     "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
     "m6id.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    # BuildKit cross-family fallback. memory_mi is the 0.925 estimate.
+    "m8id.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "m8id.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
     # Staging BuildKit — small pool, same big+half shape as prod at ~1/10 the cost
     "m6id.4xlarge": {"vcpu": 16, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
     "m6id.2xlarge": {"vcpu": 8, "memory_gib": 32, "memory_mi": 30310, "gpu": 0, "arch": "amd64"},
@@ -193,12 +198,14 @@ ENI_MAX_PODS: dict[str, int] = {
     "g4dn.16xlarge": 234,
     "g4dn.12xlarge": 234,
     "g4dn.metal": 737,
+    "g5.4xlarge": 234,
     "g5.8xlarge": 234,
     # Fleet fallback sizes — g5
     "g5.16xlarge": 234,
     "g5.12xlarge": 737,
     "g5.24xlarge": 737,
     "g5.48xlarge": 345,
+    "g6.4xlarge": 234,
     "g6.8xlarge": 234,
     # Fleet fallback sizes — g6
     "g6.16xlarge": 234,
@@ -216,6 +223,9 @@ ENI_MAX_PODS: dict[str, int] = {
     "m8gd.24xlarge": eni_max_pods(15, 50),
     "m6id.24xlarge": eni_max_pods(15, 50),
     "m6id.12xlarge": eni_max_pods(8, 30),
+    # gen-8 has a wider ENI topology than gen-6, so max_pods is higher.
+    "m8id.24xlarge": eni_max_pods(16, 64),
+    "m8id.12xlarge": eni_max_pods(12, 50),
     "m6id.4xlarge": eni_max_pods(8, 30),
     "m6id.2xlarge": eni_max_pods(4, 15),
     "m7gd.4xlarge": eni_max_pods(8, 30),

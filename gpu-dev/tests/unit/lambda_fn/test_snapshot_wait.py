@@ -11,15 +11,19 @@ import pytest
 def test_pending_snapshot_returns_progress_without_waiting(monkeypatch, lambda_index):
     ec2 = MagicMock()
     ec2.describe_volumes.return_value = {"Volumes": []}
-    ec2.describe_snapshots.return_value = {
-        "Snapshots": [
-            {
-                "SnapshotId": "snap-pending",
-                "StartTime": datetime.now(timezone.utc),
-                "Progress": "37%",
-            }
-        ]
-    }
+    # Pending and completed come back from one query now, split on State.
+    ec2.get_paginator.return_value.paginate.return_value = [
+        {
+            "Snapshots": [
+                {
+                    "SnapshotId": "snap-pending",
+                    "StartTime": datetime.now(timezone.utc),
+                    "State": "pending",
+                    "Progress": "37%",
+                }
+            ]
+        }
+    ]
     monkeypatch.setattr(lambda_index, "ec2_client", ec2)
 
     with pytest.raises(
@@ -39,7 +43,6 @@ def test_pending_clone_snapshot_returns_progress_without_waiting(
     ec2 = MagicMock()
     ec2.describe_volumes.return_value = {"Volumes": []}
     ec2.describe_snapshots.side_effect = [
-        {"Snapshots": []},
         {
             "Snapshots": [
                 {
