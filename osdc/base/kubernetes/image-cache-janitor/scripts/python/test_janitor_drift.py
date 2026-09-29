@@ -62,7 +62,7 @@ class TestJanitorLibDriftDetection:
     Known intentional differences:
     - The ConfigMap script has additional runtime functions (run_crictl,
       remove_image, _run_gc_cycle, main) that are NOT in the lib because
-      they depend on host access (nsenter/crictl).
+      they depend on host access (crictl).
     - The ConfigMap MetricsServer has start() for the HTTP server; the lib
       version omits it.
     """

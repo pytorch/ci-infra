@@ -1,0 +1,391 @@
+# Cluster-side enforcement of the task-pod isolation contract.
+#
+# Today every isolation property of a task pod — gVisor, no service-account token, no
+# volumes, the task image and nothing else — is enforced by one Python function,
+# the dispatcher's job_manifest(). The API server accepts whatever that function emits,
+# so a bug or a careless refactor there is enough to produce a task pod with no gVisor
+# and a mounted token, and nothing in the cluster would notice. RBAC does not help: the
+# dispatcher legitimately holds `create jobs`, and "create a Job" is not a verb that can
+# be narrowed to "create a Job shaped like this".
+#
+# This policy is the second copy of that contract, in the API server rather than in the
+# process that could be compromised. It is deliberately redundant with job_manifest() —
+# that is the point. Anything it rejects is either an attack or a bug in the dispatcher.
+#
+# It is also what makes it safe to put OIDC verification inside the dispatcher process
+# rather than in a separate pod in front of it: the worst case of a parser bug there is
+# arbitrary Job creation with the dispatcher's RBAC, and this bounds what an arbitrary
+# Job is allowed to look like.
+#
+# IT IS CHECKED TWICE, on the Job and again on the Pod. Validating only the Job template
+# would leave a gap: the Pod is created later by the Job controller, and any mutating
+# admission webhook installed in the cluster (an identity injector, a service mesh) can
+# add a sidecar, a Secret volume or a projected token to it after this policy has passed
+# the template. The Pod pass is what closes that, scoped by the `app: sandbox-task` label
+# the Job template stamps on its pods.
+#
+# SCOPE. The Job pass applies to Jobs created BY THE DISPATCHER'S SERVICE ACCOUNT, which
+# is the threat this exists for: a bug (or a JWT parser compromise) in the one process
+# that holds create-Job RBAC. Scoping it that way is also what lets the namespace hold an
+# ordinary maintenance Job — none exists today — without each one having to satisfy a
+# contract written for untrusted agent workloads.
+#
+# WHAT IT STILL DOES NOT COVER, so nobody reads more into it than it does:
+#   - It does not stop a task pod REACHING the API server, and NetworkPolicy does not
+#     either: sandbox-task-egress deliberately allows TCP 443 to any address, because
+#     GitHub's ranges move, and the API server answers on 443 like everything else. What
+#     keeps the task pod harmless there is that it carries no token (the automount rule
+#     above) and sandbox-agent holds no RBAC — not a network boundary.
+#   - A mutating webhook that also stripped the `app: sandbox-task` label would evade the
+#     Pod pass. No mutating webhook is configured in this repo today.
+#   - A Job created by some OTHER identity with create-Job RBAC (a cluster admin) is not
+#     checked by the Job pass. Its pods still are, if they carry the task label.
+#   - An EPHEMERAL container attached to a running task pod is the same shape of gap as
+#     the one above, and needs less: matchConstraints names `pods`, which does not cover
+#     the `pods/ephemeralcontainers` subresource, and allContainers below sums containers
+#     and initContainers only — so a `kubectl debug` container would carry whatever image
+#     and securityContext it liked. Nothing in this module can do it, because neither the
+#     dispatcher's Role nor sandbox-agent grants that subresource; anyone else holding it
+#     in this cluster was not enumerated here. Closing it is three changes, not one: a
+#     `pods/ephemeralcontainers` rule in matchConstraints, the SAME rule added to the Pod
+#     binding below, and a validation rejecting `ephemeralContainers` outright. Rejection
+#     rather than folding them into allContainers, because an ephemeral container cannot
+#     carry resource requirements at all, so every rule here that demands limits would
+#     deny it — an allowlist for debug containers would be a separate design, not a
+#     wider `allContainers`.
+#   - It pins the image repository, not a digest — see the image rule for why.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: agent-sandbox-task-jobs
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  # Fail: an API-server-side evaluation error (a malformed object reaching an
+  # expression, the policy failing to compile) rejects the request. The alternative,
+  # Ignore, turns any such error into a silently unenforced isolation contract.
+  failurePolicy: Fail
+  # The Pod pass must stay unconditional here — pods are created by the Job controller,
+  # not by the dispatcher, so a blanket userInfo condition would switch it off entirely.
+  matchConditions:
+    - name: job-writes-come-from-the-dispatcher
+      expression: >-
+        request.kind.kind != 'Job' ||
+        request.userInfo.username == 'system:serviceaccount:ai-sandbox:sandbox-dispatcher'
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    # One expression, two shapes: a Job carries the pod spec under a template, a Pod is
+    # one. Everything below reads through this rather than re-spelling either path, so
+    # the Job pass and the Pod pass cannot drift into checking different things.
+    - name: pod
+      expression: "request.kind.kind == 'Job' ? object.spec.template.spec : object.spec"
+    - name: isJob
+      expression: "request.kind.kind == 'Job'"
+    - name: allContainers
+      expression: >-
+        variables.pod.containers +
+        (has(variables.pod.initContainers) ? variables.pod.initContainers : [])
+  validations:
+    # --- Isolation: the three properties the whole design rests on -----------------
+    #
+    # Each is written `has(x) && x == ...` rather than `!has(x) || x == ...`: an absent
+    # field must be a rejection, not a pass. A Job template that omits
+    # serviceAccountName does not inherit sandbox-agent — it gets `default` when the
+    # pod is created, which is a token-mounting account.
+    - expression: "has(variables.pod.runtimeClassName) && variables.pod.runtimeClassName == 'gvisor'"
+      reason: Forbidden
+      message: "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)"
+    - expression: "has(variables.pod.serviceAccountName) && variables.pod.serviceAccountName == 'sandbox-agent'"
+      reason: Forbidden
+      message: "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC"
+    - expression: "has(variables.pod.automountServiceAccountToken) && variables.pod.automountServiceAccountToken == false"
+      reason: Forbidden
+      message: "task pods must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox"
+
+    # --- Placement: the RuntimeClass node selector only binds a cooperating scheduler --
+    #
+    # runtimeClassName above is what stamps the ai-sandbox nodeSelector onto the pod, but
+    # that is honoured by the scheduler, not by the kubelet. A pod that names its own
+    # scheduler, or pins nodeName outright, is placed without anyone consulting it — and
+    # a task pod on a base node sits beside the dispatcher's projected token.
+    #
+    # EXEMPT ON POD UPDATE, and this is load-bearing rather than a softening. The scheduler
+    # sets spec.nodeName through the pods/binding subresource, which this policy does not
+    # match; from then on every pod this binding sees carries a nodeName. Without the
+    # exemption the rule denies every UPDATE to the pod's main resource — including the
+    # Job controller's removal of its batch.kubernetes.io/job-tracking finalizer, which is
+    # what lets status.succeeded reach 1. The dispatcher waits on exactly that field, so
+    # the visible symptom is not a security event: every task runs, prints its result, and
+    # then hangs until the dispatcher's own deadline. Nothing is lost by exempting it —
+    # spec.nodeName is immutable through the main resource, so the only writer is the
+    # binding subresource, which the rule never covered.
+    - expression: "!has(variables.pod.nodeName) || (!variables.isJob && request.operation == 'UPDATE')"
+      reason: Forbidden
+      message: "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector"
+    - expression: "!has(variables.pod.schedulerName) || variables.pod.schedulerName == 'default-scheduler'"
+      reason: Forbidden
+      message: "task pods must use the default scheduler — an alternate scheduler need not honour the RuntimeClass node selector"
+
+    # --- No path from the pod to the node or to another pod's data -----------------
+    - expression: >-
+        (!has(variables.pod.hostNetwork) || !variables.pod.hostNetwork) &&
+        (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
+        (!has(variables.pod.hostIPC) || !variables.pod.hostIPC)
+      reason: Forbidden
+      message: "task pods must not share host namespaces (hostNetwork/hostPID/hostIPC)"
+    # Volumes are how a Secret, a hostPath or a projected token would get in. v1 task
+    # pods declare none at all, so the rule can be "none" rather than an allowlist of
+    # shapes; the GITHUB_TOKEN init-container work that needs a shared emptyDir amends
+    # this line and the initContainers line below, and says so in review.
+    - expression: "!has(variables.pod.volumes) || size(variables.pod.volumes) == 0"
+      reason: Forbidden
+      message: "task pods must declare no volumes — see the module README before adding one"
+    - expression: "!has(variables.pod.resourceClaims) || size(variables.pod.resourceClaims) == 0"
+      reason: Forbidden
+      message: "task pods must claim no devices — a resource claim can attach host hardware and its mounts"
+    - expression: >-
+        !has(variables.pod.securityContext) || !has(variables.pod.securityContext.sysctls) ||
+        size(variables.pod.securityContext.sysctls) == 0
+      reason: Forbidden
+      message: "task pods must set no sysctls"
+
+    # --- The image, and nothing that can smuggle another one in --------------------
+    #
+    # The literal registry path is deliberate: this is security policy, so it belongs in
+    # git history and code review rather than in a deploy-time substitution. It pins the
+    # repository, not the tag — deploy.sh builds a fresh content-hash tag on every
+    # deploy, and pinning the tag here would reject in-flight Jobs from the previous
+    # dispatcher replicas for the length of every rollout.
+    - expression: "variables.allContainers.all(c, c.image.startsWith('harbor:30002/osdc/ci-agent-sandbox:'))"
+      reason: Forbidden
+      message: "task containers must run the task image from harbor:30002/osdc/ci-agent-sandbox"
+    - expression: "size(variables.pod.containers) == 1"
+      reason: Forbidden
+      message: "a task pod runs exactly one container"
+    # Separate from the count above, because "one container" is not the same claim: on
+    # 1.35 an init container with restartPolicy: Always is a native sidecar that runs for
+    # the pod's whole life. Allowing arbitrary init containers would make the rule above
+    # cosmetic.
+    - expression: "!has(variables.pod.initContainers) || size(variables.pod.initContainers) == 0"
+      reason: Forbidden
+      message: "task pods must declare no init containers"
+
+    # --- Nothing reads a Secret into the task pod ----------------------------------
+    #
+    # The task pod is the untrusted side and holds no identity by design; the sigv4
+    # proxy exists so that even the Bedrock credential stays outside it. envFrom and
+    # env[].valueFrom are the two ways a Secret or ConfigMap becomes an environment
+    # variable without a volume, so both are closed alongside the volumes rule above.
+    - expression: "variables.allContainers.all(c, !has(c.envFrom) || size(c.envFrom) == 0)"
+      reason: Forbidden
+      message: "task containers must not use envFrom — it pulls a whole Secret or ConfigMap into the sandbox"
+    - expression: "variables.allContainers.all(c, !has(c.env) || c.env.all(e, !has(e.valueFrom)))"
+      reason: Forbidden
+      message: "task container env must be literal values — valueFrom reads Secrets, ConfigMaps and pod fields into the sandbox"
+
+    # --- Privilege ------------------------------------------------------------------
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) && c.securityContext.allowPrivilegeEscalation == false &&
+          (!has(c.securityContext.privileged) || c.securityContext.privileged == false) &&
+          has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot == true)
+      reason: Forbidden
+      message: "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged"
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0)
+      reason: Forbidden
+      message: "task containers must not add Linux capabilities"
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.procMount) ||
+          c.securityContext.procMount == 'Default')
+      reason: Forbidden
+      message: "task containers must not unmask /proc"
+    # A hostPort is a listener on the node itself, reachable from outside the pod network
+    # and outside every NetworkPolicy in this namespace.
+    - expression: "variables.allContainers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort)))"
+      reason: Forbidden
+      message: "task containers must not publish a hostPort"
+
+    # --- Cost and blast radius -------------------------------------------------------
+    #
+    # These rules check that limits are DECLARED, and that requests equal them. They put
+    # no ceiling on the VALUES, so one admitted task can still size itself to the whole
+    # namespace quota (25 CPU / 50Gi memory / 245Gi ephemeral in quota.yaml) and starve
+    # every other task — a denial of service against ourselves, not an escape, which is
+    # why it is a follow-up rather than a rule here: a ceiling means a fourth copy of the
+    # TASK_CPU/TASK_MEMORY/TASK_EPHEMERAL_STORAGE values, and comparing quantities needs
+    # CEL's quantity() library, which the smoke suite can exercise on a cluster but this
+    # change has no way to evaluate at review time.
+    #
+    # The quota already rejects a pod that declares no limits, since it tracks limits.*
+    # — so this rule is not what stops that pod, it is what names the reason. The quota's
+    # message is about a namespace-wide budget; this one is about the task contract.
+    #
+    # `in` rather than has(): resources.limits is a map, and the CEL has() macro takes a
+    # field selection, which 'ephemeral-storage' cannot be spelled as.
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.resources) && has(c.resources.limits) &&
+          'cpu' in c.resources.limits && 'memory' in c.resources.limits &&
+          'ephemeral-storage' in c.resources.limits)
+      reason: Forbidden
+      message: "task containers must set cpu, memory and ephemeral-storage limits"
+    # Present is not the same as "only these", and the difference is a device. The rule
+    # above admits a fourth key, and an extended resource is exactly that: Kubernetes
+    # already requires `nvidia.com/gpu`'s request to equal its limit, so such a key also
+    # satisfies the Guaranteed-QoS rule below by construction, and attaches hardware
+    # through the resources map rather than through resourceClaims — which is the door
+    # the resourceClaims rule above exists to close. Nothing lands today only because the
+    # ai-sandbox fleet advertises no device plugin, and that is a fleet shape rather than
+    # a rule.
+    #
+    # Written as an ALLOWLIST rather than a device denylist, so it also excludes keys that
+    # are not devices at all (hugepages-2Mi and the rest) — anything outside the three the
+    # dispatcher sizes a task with is a resource nobody here has approved.
+    #
+    # `all` over a MAP binds its iteration variable to the KEYS, so this tests key names
+    # and not quantities.
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.resources) || !has(c.resources.limits) ||
+          c.resources.limits.all(k, k in ['cpu', 'memory', 'ephemeral-storage']))
+      reason: Forbidden
+      message: "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them"
+    # Guaranteed QoS: requests == limits is what keeps fleet capacity a division rather
+    # than a guess, and stops a task pod being the first thing evicted under pressure.
+    #
+    # This is a STRING comparison, not a numeric one — assume "2" and "2000m" do NOT
+    # compare equal here. (An earlier revision of this file claimed the opposite. Nothing
+    # we could run settles it: Kubernetes ships a `quantity()` CEL conversion library,
+    # which would have no purpose if a raw field access already yielded a number, so the
+    # string reading is the safe one to design against.) That is acceptable because
+    # job_manifest() emits the identical string on both sides, and because the failure
+    # direction is a rejection rather than an admission. Do not relax the rule on the
+    # assumption that it normalises units, and reach for `quantity()` if it ever needs to.
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.resources.requests) && c.resources.requests == c.resources.limits)
+      reason: Forbidden
+      message: "task containers must request exactly what they limit (Guaranteed QoS)"
+    # The deadline in the Job block below TRIGGERS termination; it does not bound when the
+    # node comes back. Deletion honours terminationGracePeriodSeconds, so a container that
+    # ignores SIGTERM goes on holding its node afterwards, and with the field unbounded
+    # that wait is unbounded too. This caps the configured value, which is the only part
+    # of it we set. It is deliberately NOT a hard bound on time past the deadline: the
+    # controller terminates asynchronously, and the kubelet may extend the grace once for
+    # a preStop hook. Read it as removing the unbounded case, not as a guarantee.
+    #
+    # `!has(...) ||` rather than the `has(...) &&` shape the isolation rules use, because
+    # here absence is correct: the Job template legitimately carries no value, and the
+    # API server defaults the field to 30 on the pod the controller then creates.
+    - expression: >-
+        !has(variables.pod.terminationGracePeriodSeconds) ||
+        variables.pod.terminationGracePeriodSeconds <= 60
+      reason: Forbidden
+      message: "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it"
+
+    # --- Job-level bounds, skipped on the Pod pass (a Pod has no such fields) ---------
+    #
+    # One /run is one task pod. Without these, a single admitted Job could fan out to
+    # `parallelism` pods and retry each of them, consuming the whole namespace quota from
+    # one request that satisfied every rule above.
+    #
+    # The 3600 below is a second copy of the dispatcher's TASK_DEADLINE_S, which is env
+    # configurable and defaults to 900. Raise that env past 3600 and this rule rejects
+    # every Job — loudly, at dispatch, but with the unit suite green, so
+    # test_admissionpolicy.py reads the ceiling back out of this expression and compares
+    # it against both the dispatcher default and whatever dispatcher.yaml deploys.
+    - expression: "!variables.isJob || (has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds <= 3600)"
+      reason: Forbidden
+      message: "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it"
+    - expression: "!variables.isJob || !has(object.spec.parallelism) || object.spec.parallelism == 1"
+      reason: Forbidden
+      message: "task Jobs must run one pod at a time (parallelism: 1)"
+    - expression: "!variables.isJob || !has(object.spec.completions) || object.spec.completions == 1"
+      reason: Forbidden
+      message: "task Jobs must run exactly one pod (completions: 1)"
+    - expression: "!variables.isJob || (has(object.spec.backoffLimit) && object.spec.backoffLimit == 0)"
+      reason: Forbidden
+      message: "task Jobs must set backoffLimit: 0 — a retry re-clones and re-prompts the model, and bills for it"
+    # This is what makes the Pod pass reachable. The Pod binding selects on
+    # app=sandbox-task, so a Job that did not stamp the label on its template would
+    # produce pods that skip the second pass entirely. Requiring it here means every Job
+    # this policy admits produces pods this policy also sees.
+    - expression: >-
+        !variables.isJob || (has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) &&
+        'app' in object.spec.template.metadata.labels &&
+        object.spec.template.metadata.labels['app'] == 'sandbox-task')
+      reason: Forbidden
+      message: "task Job pod templates must carry the app: sandbox-task label"
+
+---
+# The bindings are what actually turn the policy on. A ValidatingAdmissionPolicy with no
+# binding is inert — a policy that looks enforced in `kubectl get` and enforces nothing is
+# the failure mode this comment exists to prevent.
+#
+# Deny, not Warn or Audit: a warning about a Job that escapes the sandbox is a log line
+# nobody reads. The dispatcher surfaces the rejection to its caller as a dispatch error,
+# so a genuine bug here is loud rather than silent.
+#
+# Two bindings rather than one, because the two passes need different scopes. Neither
+# binding label-filters the Job pass — a Job that simply omitted the label would otherwise
+# skip the policy entirely, which is one of the bugs this is here to catch. The Job pass IS
+# narrowed, but by the policy's own `matchConditions` above, to Jobs created by the
+# dispatcher's service account; nothing in these bindings does it.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: agent-sandbox-task-jobs
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  policyName: agent-sandbox-task-jobs
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ai-sandbox
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+
+---
+# The Pod pass, after any mutating webhook has had its turn. Label-scoped, because the
+# namespace also holds the dispatcher and sigv4-proxy pods, which are the trusted side and
+# satisfy none of these rules by design.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: agent-sandbox-task-pods
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  policyName: agent-sandbox-task-jobs
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ai-sandbox
+    objectSelector:
+      matchLabels:
+        app: sandbox-task
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
