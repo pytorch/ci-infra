@@ -37,6 +37,10 @@ CPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_consol
 BAREMETAL_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.baremetal_consolidate_after "")
 COMPACTOR_ENABLED=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.enabled "false")
 ENABLED_MODULES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" enabled-modules)
+# Pins the GPU AMI to the control plane's minor. Karpenter has no nvidia alias
+# family, so GPU nodes select by name glob, and an unversioned glob picks
+# whichever minor AWS published last — see generate_nodepools.py.
+EKS_VERSION=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" eks_version)
 
 # Cluster-level capacity_reservation_ids override, namespaced per module name
 # (e.g. `nodepools-h100.capacity_reservation_ids`). Empty if unset → generator
@@ -50,6 +54,7 @@ NODEPOOLS_DEFS_DIR="$DEFS_DIR" \
   NODEPOOLS_MODULE_NAME="$MODULE_NAME" \
   NODEPOOLS_REGION="$REGION" \
   NODEPOOLS_CLUSTER="$CLUSTER" \
+  NODEPOOLS_EKS_VERSION="$EKS_VERSION" \
   NODEPOOLS_GPU_DISRUPTION_BUDGET="$GPU_DISRUPTION_BUDGET" \
   NODEPOOLS_GPU_CONSOLIDATE_AFTER="$GPU_CONSOLIDATE_AFTER" \
   NODEPOOLS_CPU_DISRUPTION_BUDGET="$CPU_DISRUPTION_BUDGET" \
