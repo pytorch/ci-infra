@@ -447,12 +447,12 @@ class TestWaitForWorkflows:
         wait_for_workflows(
             "branch",
             datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
-            canary_repo="meta-pytorch/pytorch-gha-infra",
+            canary_repo="meta-pytorch/test-infra",
         )
 
         for call in mock_run.call_args_list:
             argv = call[0][0]
-            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "meta-pytorch/test-infra" in argv
             assert "pytorch/pytorch-canary" not in argv
 
 
@@ -607,11 +607,11 @@ class TestClosePr:
             MagicMock(returncode=0, stdout="", stderr=""),  # pr close
         ]
 
-        close_pr(42, branch="test-branch", canary_repo="meta-pytorch/pytorch-gha-infra")
+        close_pr(42, branch="test-branch", canary_repo="meta-pytorch/test-infra")
 
         for call in mock_run.call_args_list:
             argv = call[0][0]
-            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "meta-pytorch/test-infra" in argv
             assert "pytorch/pytorch-canary" not in argv
 
 
@@ -1017,11 +1017,11 @@ class TestFetchLatestRuns:
         _fetch_latest_runs(
             "test-branch",
             datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
-            canary_repo="meta-pytorch/pytorch-gha-infra",
+            canary_repo="meta-pytorch/test-infra",
         )
 
         argv = mock_run.call_args_list[0][0][0]
-        assert "meta-pytorch/pytorch-gha-infra" in argv
+        assert "meta-pytorch/test-infra" in argv
         assert "pytorch/pytorch-canary" not in argv
 
 
@@ -1126,9 +1126,9 @@ class TestCollectRunDetails:
             MagicMock(returncode=0, stdout="log", stderr=""),  # run view --log-failed
         ]
 
-        _collect_run_details(runs, canary_repo="meta-pytorch/pytorch-gha-infra")
+        _collect_run_details(runs, canary_repo="meta-pytorch/test-infra")
 
         for call in mock_run.call_args_list:
             argv = call[0][0]
-            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "meta-pytorch/test-infra" in argv
             assert "pytorch/pytorch-canary" not in argv

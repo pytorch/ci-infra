@@ -58,7 +58,7 @@ def clusters_yaml(tmp_path):
                     "additional_orgs": [
                         {
                             "github_config_url": "https://github.com/meta-pytorch",
-                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                            "canary_repo": "meta-pytorch/test-infra",
                             "runner_group": "mp-rg",
                         },
                     ],
@@ -820,7 +820,7 @@ class TestReleaseRunnerGroupResolution:
                     "additional_orgs": [
                         {
                             "github_config_url": "https://github.com/meta-pytorch",
-                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                            "canary_repo": "meta-pytorch/test-infra",
                         },
                     ],
                 },
@@ -858,7 +858,7 @@ class TestResolveOrgTarget:
 
     def test_additional_org_returns_its_repo_and_group(self, cfg_staging):
         repo, group = resolve_org_target(cfg_staging, "meta-pytorch")
-        assert repo == "meta-pytorch/pytorch-gha-infra"
+        assert repo == "meta-pytorch/test-infra"
         assert group == "mp-rg"
 
     def test_malformed_non_dict_entry_is_skipped(self):
@@ -873,7 +873,7 @@ class TestResolveOrgTarget:
                         "not-a-dict",
                         {
                             "github_config_url": "https://github.com/meta-pytorch",
-                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                            "canary_repo": "meta-pytorch/test-infra",
                             "runner_group": "mp-rg",
                         },
                     ],
@@ -882,7 +882,7 @@ class TestResolveOrgTarget:
             "defaults": {},
         }
         repo, group = resolve_org_target(cfg, "meta-pytorch")
-        assert repo == "meta-pytorch/pytorch-gha-infra"
+        assert repo == "meta-pytorch/test-infra"
         assert group == "mp-rg"
 
     def test_primary_without_runner_group_returns_none(self):
@@ -903,7 +903,7 @@ class TestResolveOrgTarget:
                     "additional_orgs": [
                         {
                             "github_config_url": "https://github.com/meta-pytorch",
-                            "canary_repo": "meta-pytorch/pytorch-gha-infra",
+                            "canary_repo": "meta-pytorch/test-infra",
                         },
                     ],
                 }
@@ -911,7 +911,7 @@ class TestResolveOrgTarget:
             "defaults": {},
         }
         repo, group = resolve_org_target(cfg, "meta-pytorch")
-        assert repo == "meta-pytorch/pytorch-gha-infra"
+        assert repo == "meta-pytorch/test-infra"
         assert group is None
         # The entry's own absent group wins over the cluster's "primary-rg", and
         # coalescing is the caller's job, only for the CI group.
@@ -1049,11 +1049,11 @@ class TestCleanupStalePrs:
             MagicMock(returncode=0, stdout=empty),  # queued runs
             MagicMock(returncode=0, stdout=empty),  # in_progress runs
         ]
-        cleanup_stale_prs("branch", canary_repo="meta-pytorch/pytorch-gha-infra")
+        cleanup_stale_prs("branch", canary_repo="meta-pytorch/test-infra")
         # Every gh call must target the org's canary repo, never the default.
         for call in mock_run.call_args_list:
             argv = call[0][0]
-            assert "meta-pytorch/pytorch-gha-infra" in argv
+            assert "meta-pytorch/test-infra" in argv
             assert "pytorch/pytorch-canary" not in argv
 
 
@@ -1162,7 +1162,7 @@ class TestPreparePr:
             MagicMock(returncode=0),  # git push
             MagicMock(
                 returncode=0,
-                stdout="https://github.com/meta-pytorch/pytorch-gha-infra/pull/7\n",
+                stdout="https://github.com/meta-pytorch/test-infra/pull/7\n",
                 stderr="",
             ),
         ]
@@ -1173,12 +1173,12 @@ class TestPreparePr:
             workflow_content="name: test\n",
             branch="osdc-integration-test-meta-prod-aws-uw1",
             dry_run=False,
-            canary_repo="meta-pytorch/pytorch-gha-infra",
+            canary_repo="meta-pytorch/test-infra",
         )
 
         assert result == 7
         create_call = mock_run.call_args_list[6][0][0]
-        assert "meta-pytorch/pytorch-gha-infra" in create_call
+        assert "meta-pytorch/test-infra" in create_call
         assert "pytorch/pytorch-canary" not in create_call
 
 
@@ -1316,15 +1316,15 @@ class TestEnsureCanaryRepo:
 
         result = ensure_canary_repo(
             upstream,
-            canary_repo="meta-pytorch/pytorch-gha-infra",
+            canary_repo="meta-pytorch/test-infra",
             commit_email="osdc-integration-test@users.noreply.github.com",
         )
 
         # A second org gets its own scratch dir (repo name), never the shared pytorch-canary one.
-        assert result == upstream / ".scratch" / "pytorch-gha-infra"
+        assert result == upstream / ".scratch" / "test-infra"
 
         clone_call = mock_run.call_args_list[1][0][0]
-        assert "meta-pytorch/pytorch-gha-infra" in clone_call
+        assert "meta-pytorch/test-infra" in clone_call
         assert "pytorch/pytorch-canary" not in clone_call
         assert str(result) in clone_call
 
@@ -2146,11 +2146,11 @@ class TestMain:
             main()
 
         assert exc_info.value.code == 0
-        assert mock_cleanup.call_args.kwargs["canary_repo"] == "meta-pytorch/pytorch-gha-infra"
-        assert mock_ensure.call_args.kwargs["canary_repo"] == "meta-pytorch/pytorch-gha-infra"
+        assert mock_cleanup.call_args.kwargs["canary_repo"] == "meta-pytorch/test-infra"
+        assert mock_ensure.call_args.kwargs["canary_repo"] == "meta-pytorch/test-infra"
         assert mock_ensure.call_args.kwargs["commit_email"] == "osdc-integration-test@users.noreply.github.com"
         assert mock_gen.call_args.kwargs["runner_group"] == "mp-rg"
-        assert mock_prepare.call_args.kwargs["canary_repo"] == "meta-pytorch/pytorch-gha-infra"
+        assert mock_prepare.call_args.kwargs["canary_repo"] == "meta-pytorch/test-infra"
 
     @patch("run.parse_args")
     def test_main_default_org_keeps_pytorch_identity(self, mock_parse_args, clusters_yaml, tmp_path):

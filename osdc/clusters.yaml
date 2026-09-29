@@ -483,7 +483,7 @@ clusters:
           runner_group: "meta-prod-aws-uw1"
           resource_slug: mp
           max_runners: 1
-          canary_repo: "meta-pytorch/pytorch-gha-infra"
+          canary_repo: "meta-pytorch/test-infra"
     arc-runners-h100:
       capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
@@ -549,7 +549,7 @@ clusters:
           github_secret_name: meta-prod-aws-ue1-meta-pytorch
           runner_group: "meta-prod-aws-ue1"
           resource_slug: mp
-          canary_repo: "meta-pytorch/pytorch-gha-infra"
+          canary_repo: "meta-pytorch/test-infra"
     modules:
       - karpenter
       - arc
@@ -606,7 +606,7 @@ clusters:
           github_secret_name: meta-prod-aws-ue2-meta-pytorch
           runner_group: "meta-prod-aws-ue2"
           resource_slug: mp
-          canary_repo: "meta-pytorch/pytorch-gha-infra"
+          canary_repo: "meta-pytorch/test-infra"
     arc-runners-h100:
       capacity_aware_fresh_multiplier: 1.0
     arc-runners-b200:
