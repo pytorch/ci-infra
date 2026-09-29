@@ -239,6 +239,129 @@ jobs:
   # END_NO_CACHE_ENFORCER
   # END_ARC_RUNNERS
 
+  # BEGIN_OOM_KILL
+  # ── Single-process OOM kill ─────────────────────────────────────────
+  # A step that overruns the container's memory limit must lose only the process
+  # that overran. Under the kubelet default (memory.oom.group=1) the kernel kills
+  # the cgroup as a unit, which takes the hook's rpc-server and the step's shell
+  # with it — the job then reports a bare exit 137 and nothing about which step
+  # died, because whatever would have reported it died in the same sweep.
+  #
+  # The second step is the real assertion: it only runs if the runner outlived
+  # the OOM. Needs singleProcessOOMKill in the nodepools kubelet config.
+  test-oom-kills-only-the-offender:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Overrun the memory limit in a child process
+        run: |
+          LIMIT=$(cat /sys/fs/cgroup/memory.max)
+          if [ "$LIMIT" = "max" ]; then
+            echo "FAIL: container has no memory limit — this test would consume the node"
+            exit 1
+          fi
+          echo "memory.max=$LIMIT"
+          echo "memory.oom.group=$(cat /sys/fs/cgroup/memory.oom.group)"
+          echo "oom_score_adj=$(cat /proc/self/oom_score_adj)"
+
+          # Backgrounded so the balloon is its own process: the kernel should pick
+          # it on RSS alone and leave this shell, the runner and rpc-server alone.
+          LIMIT="$LIMIT" python3 -c '
+          import os
+          limit = int(os.environ["LIMIT"])
+          # Overrun by a clear margin, then give up rather than eat the node if
+          # the cgroup turns out not to be enforcing its limit at all.
+          cap = limit + 4 * 1024**3
+          chunks, total = [], 0
+          while total < cap:
+              chunks.append(bytearray(256 * 1024 * 1024))
+              total += 256 * 1024 * 1024
+          raise SystemExit(9)
+          ' &
+          BALLOON=$!
+          wait "$BALLOON" && rc=0 || rc=$?
+          echo "balloon exited rc=$rc"
+
+          if [ "$rc" -eq 9 ]; then
+            echo "FAIL: allocated 4GiB past memory.max without being killed — limit not enforced"
+            exit 1
+          fi
+          if [ "$rc" -ne 137 ]; then
+            echo "FAIL: expected the balloon to be SIGKILLed (137), got $rc"
+            exit 1
+          fi
+          echo "PASS: the balloon was killed and this shell survived it"
+
+      - name: Verify the runner survived and still reports steps
+        run: |
+          echo "PASS: this step running at all proves the rpc-server outlived the container OOM"
+
+  # BEGIN_OOM_KILL_GPU
+  # Same test on a GPU runner, because GPU nodes are the ones that can silently
+  # miss the setting: Karpenter has no nvidia alias family, so they pick their
+  # AMI by name glob and their kubelet drifts off the control plane. The same
+  # glob currently yields 1.31 on one prod cluster and 1.36 on another, and
+  # singleProcessOOMKill does not exist before 1.32.
+  #
+  # a10g-11-41 rather than a T4: it is the smallest GPU runner we have, and it
+  # is the class the OOMing CUDA shards actually run on. 41Gi of a 64GiB
+  # g5.4xlarge leaves ~13GiB once Karpenter's overhead is counted, so driving
+  # the cgroup to its limit stays a clean cgroup OOM instead of node pressure.
+  # g5 is excluded in us-west-1, so this is region-gated off staging.
+  test-gpu-oom-kills-only-the-offender:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86aavx2-11-41-a10g"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Confirm this really is a GPU runner
+        run: |
+          nvidia-smi --query-gpu=name --format=csv,noheader || {
+            echo "FAIL: no GPU visible — this test must not pass on a CPU node"
+            exit 1
+          }
+
+      - name: Overrun the memory limit in a child process
+        run: |
+          LIMIT=$(cat /sys/fs/cgroup/memory.max)
+          if [ "$LIMIT" = "max" ]; then
+            echo "FAIL: container has no memory limit — this test would consume the node"
+            exit 1
+          fi
+          echo "memory.max=$LIMIT"
+          echo "memory.oom.group=$(cat /sys/fs/cgroup/memory.oom.group)"
+          echo "oom_score_adj=$(cat /proc/self/oom_score_adj)"
+
+          LIMIT="$LIMIT" python3 -c '
+          import os
+          limit = int(os.environ["LIMIT"])
+          cap = limit + 4 * 1024**3
+          chunks, total = [], 0
+          while total < cap:
+              chunks.append(bytearray(256 * 1024 * 1024))
+              total += 256 * 1024 * 1024
+          raise SystemExit(9)
+          ' &
+          BALLOON=$!
+          wait "$BALLOON" && rc=0 || rc=$?
+          echo "balloon exited rc=$rc"
+
+          if [ "$rc" -eq 9 ]; then
+            echo "FAIL: allocated 4GiB past memory.max without being killed — limit not enforced"
+            exit 1
+          fi
+          if [ "$rc" -ne 137 ]; then
+            echo "FAIL: expected the balloon to be SIGKILLed (137), got $rc"
+            exit 1
+          fi
+          echo "PASS: the balloon was killed and this shell survived it"
+
+      - name: Verify the runner survived and still reports steps
+        run: |
+          echo "PASS: this step running at all proves the rpc-server outlived the container OOM"
+  # END_OOM_KILL_GPU
+  # END_OOM_KILL
+
   # BEGIN_HF_CACHE
   # ── HF Cache: read-only mount, env, and offline model load ──────────
   test-hf-cache-mount:

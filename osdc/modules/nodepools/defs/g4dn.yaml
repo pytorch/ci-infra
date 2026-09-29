@@ -7,19 +7,31 @@ fleet:
   gpu: true
   instances:
     - type: g4dn.metal
-      weight: 100
+      weight:
+        default: 100
+        lf-prod-aws-ue1: 85   # overflow only — below 12xlarge; pairing isn't reliable enough on LF
+        lf-prod-aws-ue2: 85
       node_disk_size: 600
       has_nvme: true
       baremetal: true
     - type: g4dn.12xlarge
-      weight: 90
+      weight:
+        default: 90
+        lf-prod-aws-ue1: 90   # 4-GPU jobs' natural fit — fully used by one job, no pairing required
+        lf-prod-aws-ue2: 90
       node_disk_size: 600
       has_nvme: true
     - type: g4dn.8xlarge
-      weight: 80
+      weight:
+        default: 80
+        lf-prod-aws-ue1: 100  # 1-GPU jobs' natural fit — the stranding case
+        lf-prod-aws-ue2: 100
       node_disk_size: 600
       has_nvme: true
     - type: g4dn.16xlarge
-      weight: 70
+      weight:
+        default: 70
+        lf-prod-aws-ue1: 0    # disabled on LF — worst vCPU/GPU ratio, never a job's natural fit
+        lf-prod-aws-ue2: 0
       node_disk_size: 600
       has_nvme: true

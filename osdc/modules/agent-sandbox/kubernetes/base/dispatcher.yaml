@@ -87,6 +87,24 @@ spec:
               value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
             - name: MAX_CONCURRENT_TASKS
               value: "6"
+            # Whether a request with NO Authorization header is refused. A token that IS
+            # presented is always verified whatever this says, so this governs one case:
+            # the caller that authenticates with nothing.
+            #
+            # FLIP THIS TO "true" once the GHA client is sending tokens. It is the whole
+            # point of the OIDC work, and leaving it here as "false" indefinitely means
+            # /run stays open to every pod in arc-runners.
+            - name: REQUIRE_AUTH
+              value: "false"
+            - name: OIDC_AUDIENCE
+              value: "agent-service"
+          volumeMounts:
+            # A normal volume, NOT subPath: a subPath mount never receives ConfigMap
+            # updates, so the keys would freeze at pod start and every token would be
+            # refused at the first rotation.
+            - name: oidc-jwks
+              mountPath: /etc/agent-sandbox/jwks
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -109,6 +127,10 @@ spec:
               cpu: "500m"
               memory: "512Mi"
               ephemeral-storage: "1Gi"
+      volumes:
+        - name: oidc-jwks
+          configMap:
+            name: oidc-jwks
 
 ---
 # Kept named sandbox-agent: it is the address arc-runners and the canary already use

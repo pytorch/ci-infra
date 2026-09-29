@@ -1,0 +1,227 @@
+# OIDC signing keys for the dispatcher, and the job that keeps them current.
+#
+# The dispatcher verifies GitHub Actions tokens, which are signed RS256 with keys GitHub
+# publishes and rotates. It cannot fetch them itself: it is the process holding
+# create-Job RBAC, so it is precisely the one that must not be able to reach the
+# internet — see the egress policy in networkpolicy.yaml. So the keys arrive as a
+# mounted ConfigMap, and a separate CronJob with no such RBAC fetches them.
+#
+# The split is the security property. Write access to this ConfigMap is the power to
+# choose which signing keys the dispatcher trusts, so the refresher's Role names this one
+# object and grants nothing else in the namespace.
+#
+# DELIBERATELY NO `data:` BELOW, and it must stay that way. An earlier revision seeded
+# this ConfigMap with an empty placeholder, which made every deploy an authentication
+# outage: once the refresher had written real keys, the manifest's seed differed from the
+# live object, so `kubectl apply` dutifully put the empty value back. The refresher
+# refilled it shortly after and nothing looked wrong — but only because REQUIRE_AUTH was
+# false and nobody was authenticating yet.
+#
+# So the object is declared here (it must exist before the Deployment mounts it, and it
+# should carry the module's labels) and its CONTENT belongs to the refresher alone. A
+# three-way apply leaves a field alone when it is absent from both the last-applied
+# annotation and the incoming config, so the keys survive every subsequent deploy.
+#
+# Do not "tidy" this by re-adding a placeholder, and if you ever do, know that taking it
+# back out is NOT free: once a seeded manifest has been applied, `data.jwks.json` is in
+# that object's last-applied annotation, and the deploy that removes the field from the
+# manifest deletes it from the live object once before the no-data version becomes the
+# steady state. This file has never shipped with a seed, so there is nothing to migrate
+# today — that is a property to preserve, not a coincidence.
+#
+# Until the first refresh lands the mounted directory has no jwks.json and the dispatcher
+# refuses every token with "no signing keys available" — fail-closed. deploy.sh runs a
+# refresh immediately after applying so that window is a minute or two (a ConfigMap volume
+# updates on the kubelet's sync period, not instantly) rather than up to six hours.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oidc-jwks
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jwks-refresher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jwks-refresher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+rules:
+  # resourceNames, not the whole resource: this account may rewrite the key set the
+  # dispatcher trusts and nothing else. No create — the ConfigMap above already exists,
+  # and create would let a compromised refresher replace a deleted one on its own terms.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["oidc-jwks"]
+    verbs: ["get", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jwks-refresher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jwks-refresher
+subjects:
+  - kind: ServiceAccount
+    name: jwks-refresher
+    namespace: ai-sandbox
+
+---
+# Every 6 hours. The dispatcher refuses keys older than 24h, so this has four chances to
+# succeed before a failing refresher becomes an outage — enough to ride out a GitHub
+# blip, short enough that a persistent failure is not silent for a week.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  # jwks-refresher, matching its ServiceAccount, Role, RoleBinding, NetworkPolicy and pod
+  # label. Nothing depends on the shorter spelling except deploy.sh's `--from=cronjob/`,
+  # and this object has never been applied to a cluster, so there is nothing to prune.
+  name: jwks-refresher
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+  annotations:
+    # First CronJob in the repo that lives inside a kustomization, so the first one
+    # kube-linter sees. A readiness probe is meaningless on a batch container that
+    # fetches a file and exits — its readiness IS its exit status, which the Job already
+    # tracks. Scoped to this object rather than added to the repo-wide exclude list,
+    # which would switch the check off for the Deployments that do need it.
+    ignore-check.kube-linter.io/no-readiness-probe: "a batch container's readiness is its exit status"
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # A missed window (a control-plane blip, a cluster asleep) should run once when it can,
+  # not be skipped silently.
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      # No ttlSecondsAfterFinished here, deliberately. It would ride along into the
+      # one-off Job deploy.sh creates with `--from=cronjob/` — which is what wants
+      # reaping, since nothing owns it — but it would ALSO apply to this CronJob's own
+      # Jobs and override the history limits above, which kube-linter rejects
+      # (job-ttl-seconds-after-finished) because the strictest of the two silently wins.
+      # deploy.sh deletes its own Job instead; see the comment there.
+      template:
+        metadata:
+          labels:
+            app: jwks-refresher
+            osdc.io/module: agent-sandbox
+        spec:
+          restartPolicy: Never
+          serviceAccountName: jwks-refresher
+          # Base nodes, like the dispatcher: this pod may reach the internet, so it must
+          # not be co-tenant with the sandbox fleet it is helping to gate.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-fleet
+                        operator: NotIn
+                        values: ["ai-sandbox"]
+          tolerations:
+            - key: CriticalAddonsOnly
+              operator: Exists
+              effect: NoSchedule
+          containers:
+            - name: refresh
+              image: __DISPATCHER_IMAGE__
+              command: ["python3", "/usr/local/lib/sandbox-dispatcher/jwks_refresh.py"]
+              env:
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+                - name: NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                  ephemeral-storage: "100Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+                  ephemeral-storage: "100Mi"
+
+---
+# The refresher's egress: DNS, the API server, and HTTPS out.
+#
+# Kept beside the CronJob it governs rather than in networkpolicy.yaml with the others.
+# That is the one exception in the repo, and the reason is that this policy is only
+# meaningful while this file's CronJob exists — deleting oidc.yaml without deleting the
+# policy would leave a rule selecting nothing. The trade is that someone auditing egress
+# has two files to read, which the comment in networkpolicy.yaml now points at.
+#
+# Three pods are permitted off-cluster, not two: this one, the sigv4 proxy, and every
+# task pod (`sandbox-task-egress`, TCP 443 to anywhere, because a clone has to reach
+# GitHub). The one that is not is the dispatcher — `sandbox-dispatcher-egress` permits
+# DNS and the API server only, which is the point, since it is the pod holding create-Job
+# RBAC. "Permits", not "enforces": see the header of networkpolicy.yaml on the IPv4
+# egress interface this cluster does not cover.
+#
+# And do not read this refresher as holding nothing worth stealing — an earlier version of
+# this comment did. Its Role can patch the ConfigMap the dispatcher verifies tokens
+# against, which is the trust root: an attacker who owned this pod could install their own
+# JWKS and mint claims the dispatcher would believe. What bounds it is that the Role names
+# that one object and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jwks-refresher-egress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: jwks-refresher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # github.com's published ranges move and NetworkPolicy selects on CIDR, not DNS, so
+    # 443 to anywhere is the tightest this layer can express — the same honest limitation
+    # the task-egress rule documents.
+    - to:
+        - ipBlock:
+            cidr: "::/0"
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
