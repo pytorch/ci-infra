@@ -211,9 +211,9 @@ class Handler(BaseHTTPRequestHandler):
                 model=authorize.V1_MODEL,
                 task=spec.get("task", ""),
                 ref=spec.get("ref", ""),
-                # A selector, not a capability, so the migration window hands it over
-                # like `ref`: an unauthenticated caller reviews a pull request of the
-                # same policy-pinned repository an authorized one would.
+                # A selector, not a capability, so the unauthenticated path hands it over
+                # like `ref`: it names a pull request of the v1 repository, the only one
+                # this Grant clones.
                 pr=spec.get("pr", 0),
             )
         claims = oidc.verify(oidc.bearer_token(header))
