@@ -382,9 +382,6 @@ resource "aws_eks_node_group" "base" {
 
   # Force immediate updates - no grace period
   lifecycle {
-    ignore_changes = [
-      scaling_config[0].desired_size, # Allow manual scaling without Terraform recreation
-    ]
     create_before_destroy = false # Destroy old nodes immediately, don't wait
   }
 
