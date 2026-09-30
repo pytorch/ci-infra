@@ -13,9 +13,10 @@ set -euo pipefail
 #      Both image tags, the region, the Bedrock model, the proxy's IRSA role ARN, the
 #      cluster's API-server ClusterIP and its kube-dns ClusterIP are substituted in.
 #
-# The AWS credential lives on the sigv4-proxy pod; task pods hold none. Public repos
-# are cloned directly, so the only GitHub credential is the one git-proxy holds for private repos. Task pods are created
-# per request by the dispatcher, so there is no standing sandbox Deployment.
+# The AWS credential lives on the sigv4-proxy pod; task pods hold none. Public repos are
+# cloned directly, so the only GitHub credential is the one git-proxy holds, for private
+# repos. Task pods are created per request by the dispatcher, so there is no standing
+# sandbox Deployment.
 
 CLUSTER="$1"
 export CNAME="$2"

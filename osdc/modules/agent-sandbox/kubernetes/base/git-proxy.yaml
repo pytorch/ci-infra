@@ -204,14 +204,15 @@ spec:
                 secretKeyRef:
                   name: git-proxy-credentials
                   key: basic-auth
-            # The kube-dns Service ClusterIP, read by deploy.sh at apply time. Hardcoding
-            # the usual IPv6 ULA would break any cluster whose service CIDR differs.
             # nginx's `worker_processes auto` counts HOST cores, not the cgroup quota, so
             # on a 48-vCPU base node this 500m container would fork 48 workers — each with
             # its own connection arrays and its own resolver cache. This entrypoint flag
             # derives the count from the CPU limit instead (1 here).
             - name: NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE
               value: "1"
+            # The kube-dns Service ClusterIP, read by deploy.sh at apply time — NOT the
+            # pod's resolv.conf. Hardcoding the usual IPv6 ULA would break any cluster
+            # whose service CIDR differs.
             - name: GIT_PROXY_RESOLVER
               value: "__KUBE_DNS_IP__"
           volumeMounts:
