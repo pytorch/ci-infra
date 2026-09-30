@@ -9,6 +9,9 @@ import pytest
 import yaml
 from fleet_naming import derive_fleet_name
 from generate_runners import (
+    _additional_org_errors,
+    _cluster_serves_org,
+    _load_runner_names,
     compute_cluster_sharding,
     generate_runner,
     get_cluster_config,
@@ -16,6 +19,7 @@ from generate_runners import (
     load_excluded_instance_types,
     main,
     normalize_name,
+    org_key_of,
     parse_memory_bytes,
     resolve_max_runners,
     resolve_value,
@@ -269,6 +273,20 @@ def make_nodepool_defs(osdc_root, instance_types, module="nodepools"):
             }
         }
         (defs_dir / f"{fleet_name}.yaml").write_text(yaml.dump(content, default_flow_style=False))
+
+
+def _org_entry(**overrides):
+    """A minimal well-formed additional_orgs entry (the three required keys).
+
+    Tests pass keyword overrides to make an individual field missing or invalid.
+    """
+    entry = {
+        "github_config_url": "https://github.com/meta-pytorch",
+        "github_secret_name": "mp-secret",
+        "resource_slug": "mp",
+    }
+    entry.update(overrides)
+    return entry
 
 
 # ============================================================================
@@ -2718,6 +2736,232 @@ class TestMain:
         with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
             assert main() == 1
 
+    def test_additional_orgs_fan_out(self, tmp_path, monkeypatch, real_template):
+        """End-to-end: a cluster with additional_orgs emits both the primary
+        {def}.yaml and one {slug}-{def}.yaml per additional org."""
+        config = {
+            "defaults": {},
+            "clusters": {
+                "multi-org": {
+                    "cluster_name": "multi-org",
+                    "region": "us-east-2",
+                    "modules": ["nodepools", "arc-runners"],
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/pytorch",
+                        "github_secret_name": "primary-secret",
+                        "runner_name_prefix": "mt-",
+                        "runner_group": "multi-org",
+                        "additional_orgs": [
+                            {
+                                "github_config_url": "https://github.com/meta-pytorch",
+                                "github_secret_name": "mp-secret",
+                                "runner_group": "mp-group",
+                                "resource_slug": "mp",
+                                "max_runners": 12,
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+        (tmp_path / "clusters.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "l-x86ic-8-16", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+        tpl_file = tmp_path / "tpl.yaml"
+        tpl_file.write_text(real_template)
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        with patch.object(sys, "argv", ["generate_runners.py", "multi-org"]):
+            assert main() == 0
+
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["l-x86ic-8-16.yaml", "mp-l-x86ic-8-16.yaml"]
+
+        # Primary keeps the bare name and emits no resourceName.
+        primary = list(yaml.safe_load_all((output_dir / "l-x86ic-8-16.yaml").read_text()))
+        assert "resourceName" not in primary[0]
+        assert primary[0]["githubConfigUrl"] == "https://github.com/pytorch"
+        assert primary[0]["runnerScaleSetName"] == "mt-l-x86ic-8-16"
+
+        # Additional org points at its own org/secret/group and shares the label.
+        extra = list(yaml.safe_load_all((output_dir / "mp-l-x86ic-8-16.yaml").read_text()))
+        assert extra[0]["resourceName"] == "mp-l-x86ic-8-16"
+        assert extra[0]["githubConfigUrl"] == "https://github.com/meta-pytorch"
+        assert extra[0]["githubConfigSecret"] == "mp-secret"
+        assert extra[0]["runnerGroup"] == "mp-group"
+        assert extra[0]["maxRunners"] == 12
+        assert extra[0]["runnerScaleSetName"] == "mt-l-x86ic-8-16"
+
+    def test_two_additional_orgs_fan_out(self, tmp_path, monkeypatch, real_template):
+        """A cluster with TWO additional orgs emits the primary plus one file per
+        org per def (3 files/def), each with a distinct resourceName/url/secret/
+        group/maxRunners and the SAME shared GitHub label."""
+        config = {
+            "defaults": {},
+            "clusters": {
+                "multi-org": {
+                    "cluster_name": "multi-org",
+                    "region": "us-east-2",
+                    "modules": ["nodepools", "arc-runners"],
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/pytorch",
+                        "github_secret_name": "primary-secret",
+                        "runner_name_prefix": "mt-",
+                        "runner_group": "multi-org",
+                        "additional_orgs": [
+                            {
+                                "github_config_url": "https://github.com/meta-pytorch",
+                                "github_secret_name": "mp-secret",
+                                "runner_group": "mp-group",
+                                "resource_slug": "mp",
+                                "max_runners": 12,
+                            },
+                            {
+                                "github_config_url": "https://github.com/executorch",
+                                "github_secret_name": "et-secret",
+                                "runner_group": "et-group",
+                                "resource_slug": "et",
+                                "max_runners": 7,
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+        (tmp_path / "clusters.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "l-x86ic-8-16", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+        tpl_file = tmp_path / "tpl.yaml"
+        tpl_file.write_text(real_template)
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        with patch.object(sys, "argv", ["generate_runners.py", "multi-org"]):
+            assert main() == 0
+
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["et-l-x86ic-8-16.yaml", "l-x86ic-8-16.yaml", "mp-l-x86ic-8-16.yaml"]
+
+        primary = list(yaml.safe_load_all((output_dir / "l-x86ic-8-16.yaml").read_text()))
+        assert "resourceName" not in primary[0]
+        assert primary[0]["githubConfigUrl"] == "https://github.com/pytorch"
+
+        mp = list(yaml.safe_load_all((output_dir / "mp-l-x86ic-8-16.yaml").read_text()))
+        assert mp[0]["resourceName"] == "mp-l-x86ic-8-16"
+        assert mp[0]["githubConfigUrl"] == "https://github.com/meta-pytorch"
+        assert mp[0]["githubConfigSecret"] == "mp-secret"
+        assert mp[0]["runnerGroup"] == "mp-group"
+        assert mp[0]["maxRunners"] == 12
+
+        et = list(yaml.safe_load_all((output_dir / "et-l-x86ic-8-16.yaml").read_text()))
+        assert et[0]["resourceName"] == "et-l-x86ic-8-16"
+        assert et[0]["githubConfigUrl"] == "https://github.com/executorch"
+        assert et[0]["githubConfigSecret"] == "et-secret"
+        assert et[0]["runnerGroup"] == "et-group"
+        assert et[0]["maxRunners"] == 7
+
+        # The GitHub runner label ({prefix}{def}) is shared across all three.
+        assert primary[0]["runnerScaleSetName"] == "mt-l-x86ic-8-16"
+        assert mp[0]["runnerScaleSetName"] == "mt-l-x86ic-8-16"
+        assert et[0]["runnerScaleSetName"] == "mt-l-x86ic-8-16"
+
+    def _run_additional_orgs(self, tmp_path, monkeypatch, real_template, additional_orgs, def_name="l-x86ic-8-16"):
+        """Set up a single-def cluster carrying the given additional_orgs and run
+        main(); return its exit code. Used by the validation-failure tests."""
+        config = {
+            "defaults": {},
+            "clusters": {
+                "multi-org": {
+                    "cluster_name": "multi-org",
+                    "region": "us-east-2",
+                    "modules": ["nodepools", "arc-runners"],
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/pytorch",
+                        "github_secret_name": "primary-secret",
+                        "runner_name_prefix": "mt-",
+                        "additional_orgs": additional_orgs,
+                    },
+                },
+            },
+        }
+        (tmp_path / "clusters.yaml").write_text(yaml.dump(config, default_flow_style=False))
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, def_name, "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+        tpl_file = tmp_path / "tpl.yaml"
+        tpl_file.write_text(real_template)
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(tmp_path / "out"))
+        with patch.object(sys, "argv", ["generate_runners.py", "multi-org"]):
+            return main()
+
+    def test_additional_org_missing_key_fails_cleanly(self, tmp_path, monkeypatch, real_template, capsys):
+        """A missing required key fails via log_error / exit 1 — not a raw KeyError."""
+        rc = self._run_additional_orgs(
+            tmp_path,
+            monkeypatch,
+            real_template,
+            [{"github_config_url": "https://github.com/meta-pytorch", "resource_slug": "mp"}],  # no secret
+        )
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "github_secret_name" in captured.out + captured.err
+
+    def test_additional_org_invalid_slug_fails_cleanly(self, tmp_path, monkeypatch, real_template, capsys):
+        """A non-DNS-1123 resource_slug fails cleanly via log_error / exit 1."""
+        rc = self._run_additional_orgs(tmp_path, monkeypatch, real_template, [_org_entry(resource_slug="Bad_Slug")])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "DNS-1123" in captured.out + captured.err
+
+    def test_additional_org_over_length_name_fails_cleanly(self, tmp_path, monkeypatch, real_template, capsys):
+        """A {slug}-{def} name over 45 chars fails at generate time, not at helm apply."""
+        rc = self._run_additional_orgs(
+            tmp_path,
+            monkeypatch,
+            real_template,
+            [_org_entry(resource_slug="mp")],
+            def_name="a" * 44,  # "mp-" + 44 = 47 > 45
+        )
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "chart limit" in captured.out + captured.err
+
+    def test_additional_org_duplicate_slug_fails_no_overwrite(self, tmp_path, monkeypatch, real_template, capsys):
+        """Two additional orgs with the same resource_slug fail cleanly, and no
+        output is written (no silent overwrite)."""
+        rc = self._run_additional_orgs(
+            tmp_path,
+            monkeypatch,
+            real_template,
+            [_org_entry(resource_slug="mp"), _org_entry(resource_slug="mp", github_secret_name="mp2-secret")],
+        )
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "duplicate" in captured.out + captured.err
+        # Failure happens before the output dir is touched — nothing overwritten.
+        assert not (tmp_path / "out").exists()
+
 
 # ============================================================================
 # Conditional block stripping (pypi-cache cluster-scope gate)
@@ -3151,3 +3395,477 @@ class TestComputeClusterSharding:
         )
         assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 1)
         assert compute_cluster_sharding(yml, "meta-prod-aws-uw2", "arc-runners-h100", "mt-") == (0, 1)
+
+
+# ============================================================================
+# org_key_of
+# ============================================================================
+
+
+class TestOrgKeyOf:
+    def test_org_scoped_url(self):
+        assert org_key_of("https://github.com/pytorch") == "pytorch"
+
+    def test_repo_scoped_url_returns_owner(self):
+        assert org_key_of("https://github.com/pytorch/pytorch-canary") == "pytorch"
+
+    def test_lowercased(self):
+        assert org_key_of("https://github.com/Meta-PyTorch") == "meta-pytorch"
+
+    def test_trailing_slash(self):
+        assert org_key_of("https://github.com/pytorch/") == "pytorch"
+
+    def test_empty_string(self):
+        assert org_key_of("") == ""
+
+    def test_none(self):
+        assert org_key_of(None) == ""
+
+    def test_non_github_url(self):
+        assert org_key_of("https://example.com/pytorch") == ""
+
+    def test_bare_github_no_owner(self):
+        assert org_key_of("https://github.com/") == ""
+
+
+# ============================================================================
+# _cluster_serves_org
+# ============================================================================
+
+
+class TestClusterServesOrg:
+    def test_primary_org_matches(self):
+        cfg = {"arc-runners": {"github_config_url": "https://github.com/pytorch"}}
+        assert _cluster_serves_org(cfg, "pytorch") is True
+
+    def test_additional_org_matches(self):
+        cfg = {
+            "arc-runners": {
+                "github_config_url": "https://github.com/pytorch",
+                "additional_orgs": [{"github_config_url": "https://github.com/meta-pytorch"}],
+            }
+        }
+        assert _cluster_serves_org(cfg, "meta-pytorch") is True
+
+    def test_unserved_org_returns_false(self):
+        cfg = {
+            "arc-runners": {
+                "github_config_url": "https://github.com/pytorch",
+                "additional_orgs": [{"github_config_url": "https://github.com/meta-pytorch"}],
+            }
+        }
+        assert _cluster_serves_org(cfg, "other-org") is False
+
+    def test_missing_arc_runners_block(self):
+        assert _cluster_serves_org({}, "pytorch") is False
+
+    def test_no_additional_orgs(self):
+        cfg = {"arc-runners": {"github_config_url": "https://github.com/pytorch"}}
+        assert _cluster_serves_org(cfg, "meta-pytorch") is False
+
+
+# ============================================================================
+# compute_cluster_sharding — org-aware peer scoping
+# ============================================================================
+
+
+class TestComputeClusterShardingOrgAware:
+    """org_key scoping: None reproduces the org-agnostic peer set; a real org
+    restricts peers to clusters that serve it."""
+
+    def _yaml(self, clusters):
+        return {"clusters": clusters}
+
+    def test_org_key_none_matches_org_agnostic_result(self):
+        """Passing org_key='pytorch' when every peer serves pytorch is a no-op
+        versus the org-agnostic (org_key=None) result — this is the byte-identical
+        guarantee at the sharding level."""
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {
+                    "modules": ["arc-runners"],
+                    "arc-runners": {"runner_name_prefix": "mt-", "github_config_url": "https://github.com/pytorch"},
+                },
+                "meta-prod-aws-ue2": {
+                    "modules": ["arc-runners"],
+                    "arc-runners": {"runner_name_prefix": "mt-", "github_config_url": "https://github.com/pytorch"},
+                },
+            }
+        )
+        for cid in ("meta-prod-aws-ue1", "meta-prod-aws-ue2"):
+            agnostic = compute_cluster_sharding(yml, cid, "arc-runners", "mt-")
+            scoped = compute_cluster_sharding(yml, cid, "arc-runners", "mt-", org_key="pytorch")
+            assert scoped == agnostic
+
+    def test_additional_org_forms_its_own_group_pytorch_unchanged(self):
+        """A cluster with an additional org: the pytorch shard is unchanged (both
+        peers serve pytorch), while the additional org is its own group of one
+        (only the cluster carrying it serves that org)."""
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {
+                    "modules": ["arc-runners"],
+                    "arc-runners": {"runner_name_prefix": "mt-", "github_config_url": "https://github.com/pytorch"},
+                },
+                "meta-prod-aws-ue2": {
+                    "modules": ["arc-runners"],
+                    "arc-runners": {
+                        "runner_name_prefix": "mt-",
+                        "github_config_url": "https://github.com/pytorch",
+                        "additional_orgs": [{"github_config_url": "https://github.com/meta-pytorch"}],
+                    },
+                },
+            }
+        )
+        # pytorch shard unchanged from the org-agnostic split.
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-", org_key="pytorch") == (0, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-", org_key="pytorch") == (1, 2)
+        # meta-pytorch is served only by ue2 -> a group of one.
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-", org_key="meta-pytorch") == (
+            0,
+            1,
+        )
+        # ue1 does not serve meta-pytorch -> safe single-cluster fallback.
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-", org_key="meta-pytorch") == (
+            0,
+            1,
+        )
+
+
+# ============================================================================
+# generate_runner — additional-org fan-out (org_override)
+# ============================================================================
+
+
+def _org_override(**overrides):
+    """A complete additional_orgs entry (with precomputed _idx/_count)."""
+    org = {
+        "github_config_url": "https://github.com/meta-pytorch",
+        "github_secret_name": "mp-secret",
+        "runner_group": "mp-group",
+        "resource_slug": "mp",
+        "max_runners": 12,
+        "_idx": 1,
+        "_count": 3,
+    }
+    org.update(overrides)
+    return org
+
+
+class TestGenerateRunnerOrgOverride:
+    def _cluster_config(self):
+        return {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "primary-secret",
+            "runner_name_prefix": "mt-",
+            "runner_group": "meta-prod-aws-ue2",
+            "cluster_id": "meta-prod-aws-ue2",
+        }
+
+    def test_org_override_full_contract(self, tmp_path, real_template):
+        """One additional-org scale set: org-unique file/name/secret/url/group/
+        shard/maxRunners, SHARED GitHub label, resourceName stamped."""
+        def_file = make_def_file(tmp_path, "l-x86ic-8-16", "c7i.24xlarge", 8, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                self._cluster_config(),
+                output_dir,
+                "arc-runners",
+                org_override=_org_override(),
+            )
+            is True
+        )
+
+        # File is keyed by resource_id ({slug}-{def}), not the bare def name.
+        out_file = output_dir / "mp-l-x86ic-8-16.yaml"
+        assert out_file.exists()
+        assert not (output_dir / "l-x86ic-8-16.yaml").exists()
+
+        docs = list(yaml.safe_load_all(out_file.read_text()))
+        helm, cm = docs
+        # Shared GitHub label = {prefix}{def} (drives runner registration).
+        assert helm["runnerScaleSetName"] == "mt-l-x86ic-8-16"
+        # resourceName makes the chart name all K8s objects after the resource_id.
+        assert helm["resourceName"] == "mp-l-x86ic-8-16"
+        # url / secret / group all come from the override.
+        assert helm["githubConfigUrl"] == "https://github.com/meta-pytorch"
+        assert helm["githubConfigSecret"] == "mp-secret"
+        assert helm["runnerGroup"] == "mp-group"
+        # maxRunners from the override.
+        assert helm["maxRunners"] == 12
+        # Shard index/count from the override's precomputed _idx/_count.
+        env = {e["name"]: e.get("value") for e in helm["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert env["CAPACITY_AWARE_CLUSTER_INDEX"] == "1"
+        assert env["CAPACITY_AWARE_CLUSTER_COUNT"] == "3"
+        # Hook ConfigMap is named after normalize(resource_id) and the runner pod
+        # references that same ConfigMap.
+        assert cm["metadata"]["name"] == "arc-runner-hook-mp-l-x86ic-8-16"
+        assert helm["template"]["spec"]["volumes"][-1]["configMap"]["name"] == "arc-runner-hook-mp-l-x86ic-8-16"
+
+    def test_org_override_configmap_name_normalized(self, tmp_path, real_template):
+        """resource_id with dots/underscores is normalized for the ConfigMap name."""
+        def_file = make_def_file(tmp_path, "runner.with_dots", "m6i.32xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                self._cluster_config(),
+                output_dir,
+                "arc-runners",
+                org_override=_org_override(),
+            )
+            is True
+        )
+        out_file = output_dir / "mp-runner.with_dots.yaml"
+        assert out_file.exists()
+        docs = list(yaml.safe_load_all(out_file.read_text()))
+        assert docs[1]["metadata"]["name"] == "arc-runner-hook-mp-runner-with-dots"
+
+    def test_org_override_max_runners_falls_back_to_def(self, tmp_path, real_template):
+        """An override without max_runners resolves the cap from the def instead."""
+        def_file = make_def_file(tmp_path, "capped", "c7i.24xlarge", 4, 16, max_runners=8)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        org = _org_override()
+        del org["max_runners"]
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                self._cluster_config(),
+                output_dir,
+                "arc-runners",
+                org_override=org,
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "mp-capped.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 8
+
+    def test_org_override_repo_scoped_url_forces_default_group(self, tmp_path, real_template):
+        """The repo-scope guard still applies to an additional org: a repo-scoped
+        override URL forces runnerGroup back to 'default'."""
+        def_file = make_def_file(tmp_path, "repo-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                self._cluster_config(),
+                output_dir,
+                "arc-runners",
+                org_override=_org_override(github_config_url="https://github.com/meta-pytorch/some-repo"),
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "mp-repo-runner.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "default"
+
+    def test_org_override_none_output_unchanged(self, tmp_path, real_template):
+        """org_override=None keeps the primary contract: file is {def}.yaml, no
+        resourceName line is emitted, name uses the bare def."""
+        def_file = make_def_file(tmp_path, "primary-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                self._cluster_config(),
+                output_dir,
+                "arc-runners",
+            )
+            is True
+        )
+        out_file = output_dir / "primary-runner.yaml"
+        assert out_file.exists()
+        content = out_file.read_text()
+        assert "resourceName:" not in content
+        docs = list(yaml.safe_load_all(content))
+        assert "resourceName" not in docs[0]
+        assert docs[0]["runnerScaleSetName"] == "mt-primary-runner"
+        assert docs[1]["metadata"]["name"] == "arc-runner-hook-primary-runner"
+
+    def test_org_override_max_runners_zeroed_by_pause_runners(self, tmp_path, real_template):
+        """pause_runners=true forces the additional org's maxRunners to 0 even
+        when the override supplies its own max_runners."""
+        def_file = make_def_file(tmp_path, "paused", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = self._cluster_config()
+        cluster_config["pause_runners"] = True
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                org_override=_org_override(),
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "mp-paused.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_org_override_max_runners_zeroed_by_region_exclusion(self, tmp_path, real_template):
+        """A region-excluded instance_type forces the additional org's maxRunners
+        to 0 even when the override supplies its own max_runners."""
+        def_file = make_def_file(tmp_path, "excluded", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = self._cluster_config()
+        cluster_config["region"] = "us-west-1"
+        cluster_config["excluded_instance_types"] = {"c7i.24xlarge"}
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                org_override=_org_override(),
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "mp-excluded.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+
+# ============================================================================
+# _load_runner_names
+# ============================================================================
+
+
+class TestLoadRunnerNames:
+    """_load_runner_names returns runner.name only for defs that emit output."""
+
+    def test_includes_valid_defs_and_skips_incomplete(self, tmp_path):
+        good = make_def_file(tmp_path, "good-runner", "c7i.24xlarge", 4, 16)
+        # A def missing name or instance_type writes nothing in generate_runner,
+        # so it must be excluded from the preflight name set too.
+        no_type = tmp_path / "no-type.yaml"
+        no_type.write_text(yaml.dump({"runner": {"name": "no-type"}}, default_flow_style=False))
+        no_name = tmp_path / "no-name.yaml"
+        no_name.write_text(yaml.dump({"runner": {"instance_type": "c7i.24xlarge"}}, default_flow_style=False))
+
+        assert _load_runner_names(sorted([good, no_type, no_name])) == ["good-runner"]
+
+    def test_empty_list(self):
+        assert _load_runner_names([]) == []
+
+
+# ============================================================================
+# _additional_org_errors
+# ============================================================================
+
+
+class TestAdditionalOrgErrors:
+    """Pure validation of a cluster's additional_orgs entries."""
+
+    def test_valid_two_orgs_no_errors(self):
+        orgs = [_org_entry(resource_slug="mp"), _org_entry(resource_slug="mp2", github_secret_name="mp2-secret")]
+        assert _additional_org_errors("c1", orgs, ["l-x86ic-8-16"]) == []
+
+    def test_missing_required_keys_each_reported(self):
+        errors = _additional_org_errors("c1", [{}], ["r"])
+        assert len(errors) == 3
+        joined = "\n".join(errors)
+        for key in ("github_config_url", "github_secret_name", "resource_slug"):
+            assert key in joined
+        assert "additional_orgs[0]" in joined
+
+    def test_blank_required_value_reported(self):
+        errors = _additional_org_errors("c1", [_org_entry(github_secret_name="   ")], ["r"])
+        assert any("github_secret_name" in e for e in errors)
+
+    def test_none_entry_treated_as_empty(self):
+        # A null list item must fail cleanly (all keys missing), never raise.
+        assert len(_additional_org_errors("c1", [None], ["r"])) == 3
+
+    def test_invalid_slug_rejected(self):
+        errors = _additional_org_errors("c1", [_org_entry(resource_slug="Bad_Slug")], ["r"])
+        assert len(errors) == 1
+        assert "DNS-1123" in errors[0]
+        assert "Bad_Slug" in errors[0]
+
+    @pytest.mark.parametrize("slug", ["-lead", "trail-", "UP", "a/b", "a_b", "a.b"])
+    def test_invalid_slug_shapes(self, slug):
+        assert any("DNS-1123" in e for e in _additional_org_errors("c1", [_org_entry(resource_slug=slug)], ["r"]))
+
+    def test_duplicate_slug_rejected(self):
+        orgs = [_org_entry(resource_slug="mp"), _org_entry(resource_slug="mp", github_secret_name="s2")]
+        errors = _additional_org_errors("c1", orgs, ["r"])
+        assert len(errors) == 1
+        assert "duplicate" in errors[0]
+        assert "additional_orgs[1]" in errors[0]
+
+    def test_over_length_name_rejected(self):
+        long_name = "a" * 44  # "mp-" + 44 = 47 > 45
+        errors = _additional_org_errors("c1", [_org_entry(resource_slug="mp")], [long_name])
+        assert len(errors) == 1
+        assert "47" in errors[0]
+        assert "45" in errors[0]
+
+    def test_name_at_limit_allowed(self):
+        name = "a" * 42  # "mp-" + 42 = 45, exactly the limit
+        assert _additional_org_errors("c1", [_org_entry(resource_slug="mp")], [name]) == []
+
+    def test_collision_with_primary_rejected(self):
+        # Primary emits "mp-a" for a def named "mp-a"; org slug "mp" also emits
+        # "mp-a" for the def named "a" -> collision, no silent overwrite.
+        errors = _additional_org_errors("c1", [_org_entry(resource_slug="mp")], ["a", "mp-a"])
+        assert any("collides" in e and "mp-a" in e for e in errors)
+
+    def test_collision_between_two_orgs_rejected(self):
+        # slug "a" + def "b-c" -> "a-b-c"; slug "a-b" + def "c" -> "a-b-c".
+        orgs = [_org_entry(resource_slug="a"), _org_entry(resource_slug="a-b", github_secret_name="s2")]
+        errors = _additional_org_errors("c1", orgs, ["b-c", "c"])
+        assert any("collides" in e and "a-b-c" in e for e in errors)
+
+
+# ============================================================================
+# compute_cluster_sharding — org-aware, real multi-cluster fan-out
+# ============================================================================
+
+
+class TestComputeClusterShardingMultiClusterOrg:
+    """Two clusters both serve the same additional org, so that org shards across
+    both (count=2), while their shared primary org sharding is unchanged."""
+
+    def test_same_additional_org_on_two_clusters(self):
+        arc = {
+            "runner_name_prefix": "mt-",
+            "github_config_url": "https://github.com/pytorch",
+            "additional_orgs": [{"github_config_url": "https://github.com/meta-pytorch"}],
+        }
+        yml = {
+            "clusters": {
+                "meta-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": dict(arc)},
+                "meta-prod-aws-ue2": {"modules": ["arc-runners"], "arc-runners": dict(arc)},
+            }
+        }
+        # meta-pytorch is served by BOTH clusters -> a real 2-cluster shard group.
+        mp = "meta-pytorch"
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-", org_key=mp) == (0, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-", org_key=mp) == (1, 2)
+        # The shared primary (pytorch) shard is unchanged by the additional org.
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-", org_key="pytorch") == (0, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-", org_key="pytorch") == (1, 2)
+        # Byte-identical: the org-agnostic split matches the primary split.
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-") == (1, 2)
