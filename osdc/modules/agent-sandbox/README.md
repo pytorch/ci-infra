@@ -31,6 +31,7 @@ actually holds (see *Limitations*).
    │ [UNTRUSTED] sandbox-task-<id>   Job, runtimeClassName: gvisor           │
    │   • one task then exits; no credentials, no K8s token                   │
    │   • http ─────────► sigv4-proxy (signs Bedrock with IRSA)               │
+   │   • http ─────────► git-proxy   (adds the GitHub token, private repos)  │
    │        pinned to the ai-sandbox gVisor fleet                            │
    └───────────────────────────────────────────────────────────────────────┘
      the credential never shares a node / gVisor sandbox with agent code, and
@@ -48,8 +49,9 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   nothing carries over between tasks.
 - **Credential:** held by the proxy, never by a task. `aws-sigv4-proxy` signs AWS
   requests with a read-only IRSA role (terraform), pinned to Bedrock in this region
-  with `--host`/`--name`; tasks send unsigned HTTP. Public repos are cloned directly,
-  so there is no GitHub credential at all.
+  with `--host`/`--name`; tasks send unsigned HTTP. Public repos are cloned directly and
+  anonymously; the one GitHub credential lives in `git-proxy`, for private repos only —
+  see *Private repositories* below.
 - **Privilege:** the dispatcher can create Jobs in this namespace and nothing else —
   no ClusterRole, no write on pods, no secrets. Task pods run as `sandbox-agent`,
   which has no RBAC and no mounted token.
@@ -59,8 +61,17 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
 ## Endpoints
 
 - `GET /healthz` → `{"status":"ok","in_flight":int,"capacity":int}`
-- `POST /run` body `{"ref"?,"task"?,"wait"?}` →
-  `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`
+- `POST /run` body `{"ref"?,"task"?,"wait"?,"pr"?}` →
+  `{"task_id":str,"cloned":bool,"file_count":int,"top_level":[str],"report":str,"errors":{…}}`,
+  plus `"pr":int` echoed back when the request carried one — so a caller reading a
+  result out of `/status` can tell which pull request it is about.
+
+  **`"pr": <number>` checks out that pull request's head** (`refs/pull/<n>/head`) instead
+  of `ref`, which it overrides. Like `ref`, `pr` is a *selector*: it names a pull request
+  **of the policy-pinned repository**, so it cannot reach another repo. PR head refs live
+  in the base repository, so this reaches a fork's pull request without naming the fork.
+  The checkout is the whole of it for now — the model still gets the top-level listing,
+  not a diff.
 
   Waits for the task by default, so a caller sees the result on the same connection —
   budget for a cold fleet, where the pod waits on a Karpenter node. `"wait": false`
@@ -212,6 +223,13 @@ curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/
   -H 'Content-Type: application/json' \
   -d '{"ref":"main","task":"Summarize the build layout"}'
 
+# Check out a pull request head of the policy-pinned repo. The prompt asks about the
+# tree, not about the change: the agent gets a listing of the PR head and no diff, so
+# "what does this change touch?" is a question it can only answer by guessing.
+curl -fsS -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{"pr":1234,"task":"Which top-level areas of the repo does this branch contain?"}'
+
 # Or don't hold the connection open:
 TASK=$(curl -fsS -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \
   -d '{"wait":false}' | jq -r .task_id)
@@ -221,6 +239,43 @@ curl -fsS "http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/status/$TASK"
 and sending either is a `403` rather than a value that is quietly accepted and dropped.
 The model is `BEDROCK_DEFAULT_MODEL_ID`, set at deploy time from `clusters.yaml` →
 `agent_sandbox.default_model_id`; per-caller models arrive with the capability manifest.
+
+## Private repositories: the git credential proxy
+
+A task pod holds no GitHub credential, so an anonymous fetch reaches **public
+repositories only** — a private one fails with `could not read Username`. `git-proxy`
+is the answer, and it is the same shape as `sigv4-proxy`: the credential lives in the
+proxy, the agent sends an unauthenticated request, and the proxy authenticates it on
+the way out. The agent never learns the token.
+
+Two properties do the security work, and neither is the token's own scope:
+
+- **An allowlist**, a literal in `kubernetes/base/git-proxy.yaml`. A proxy that
+  forwarded any path with a token attached would let anything that can reach it read
+  every repo that token can. Add a repo there, in review, the way `ALLOWED_CALLERS`
+  works in `authorize.py`.
+- **Read only.** Only the two endpoints `git fetch` uses are routed; `git-receive-pack`
+  is not a location and `service=git-receive-pack` is refused, so a token that happens
+  to carry write access cannot push through it.
+
+The credential is **not** created by `deploy.sh` — it is a GitHub token, and the deploy
+has no business minting one. Create it out of band:
+
+```
+TOKEN=<a token with contents:read on the allowlisted repos>
+kubectl create secret generic git-proxy-credentials -n ai-sandbox \
+  --from-literal=basic-auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+```
+
+Pre-encoded because git over HTTPS authenticates with Basic and nginx cannot base64 at
+render time. A GitHub App installation token is the better source than a PAT — an hour
+long and scoped per repo — but it needs a refresher, which this does not yet have.
+`pytorch/ciforge` is granted to its own caller in `ALLOWED_CALLERS` and listed in
+`kube.PRIVATE_REPOS`, so an authenticated ciforge caller clones it through the proxy.
+Only repositories in `PRIVATE_REPOS` are routed that way — a public clone goes straight
+to github.com, so the proxy being down or unconfigured cannot break one. Those two lists
+and the nginx allowlist must name the same repos: granted but not routed fetches
+anonymously and 404s, routed but not allowlisted gets a 403.
 
 ## Capacity
 
@@ -319,8 +374,9 @@ just integration-test meta-staging-aws-ue1
 ```
 The `test-agent-sandbox` job runs on a normal runner and `curl`s the sandbox
 Service — asserting it is reachable from `arc-runners` (BuildKit parity) and that
-it clones a public repo (directly, anonymously) and reaches Bedrock through the
-signing proxy, without the runner or worker holding a token.
+it clones a public repo (directly, anonymously — public clones do not use git-proxy)
+and reaches Bedrock through the signing proxy, without the runner or worker holding a
+token.
 
 ## Limitations (prototype — read before trusting it)
 
@@ -383,10 +439,29 @@ signing proxy, without the runner or worker holding a token.
   holds slots for up to the clone plus invoke timeout and keeps every other consumer on
   `429` — a refusal rather than a hang, but still a denial of service. There is no
   per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
+- **A pull request head is untrusted content, and it reaches the prompt.** The
+  top-level listing fed to the model comes out of the checked-out tree, so with `pr` set
+  a filename authored by whoever opened the pull request — a fork contributor, not a
+  caller — is in the prompt verbatim. Nothing filters it; fencing it would not help,
+  because the model reads the whole prompt either way. What bounds it is that the model
+  has no tools and no credentials, so the worst outcome is a misleading report returned
+  to the caller that asked for it. It stops being bounded once the agent can act on its
+  own output.
+- **git-proxy authorizes on repository, not on caller.** `repo_allowed` matches the URL
+  path, and `git-proxy-ingress` admits every pod labelled `app: sandbox-task` — which is
+  every task pod, whatever `Grant.clone_repo` its caller was issued. So a task dispatched
+  by one allowed caller can reach any repo on the proxy's allowlist, not just its own.
+  Not reachable today: the task image clones `SANDBOX_REPO` and nothing else, and the
+  model has no tool that runs commands. It becomes reachable the moment a task can
+  execute arbitrary code, which is what the agentic option would add. Closing it means a
+  per-Job marker the dispatcher sets and the task cannot forge, or having the dispatcher
+  fetch the pack and hand it over — the same shape as the `GITHUB_TOKEN` init-container
+  note above.
 - **The clone reaches the internet directly.** `sandbox-task-egress` allows TCP 443
   to any address because `NetworkPolicy` selects on CIDR and GitHub's ranges move.
   Closing it means git behind a proxy the way Bedrock is, landing together with the
-  no-NAT subnet — neither exists, and either alone breaks cloning.
+  no-NAT subnet — the proxy now exists, the subnet does not, and the subnet alone
+  still breaks cloning.
 - **Repo context is shallow** — the prompt carries the file count and the
   top-level listing, enough to keep answers grounded, but no file contents. Real
   tasks need reading files (and a tool loop to choose which); today the Bedrock
