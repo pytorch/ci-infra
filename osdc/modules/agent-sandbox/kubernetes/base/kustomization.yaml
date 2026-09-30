@@ -1,6 +1,6 @@
 # Agent-sandbox Kubernetes resources (namespace-scoped + the cluster-scoped gvisor
 # RuntimeClass). deploy.sh substitutes __DISPATCHER_IMAGE__ / __AGENT_IMAGE__ /
-# __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ / __SIGV4_ROLE_ARN__ / __K8S_API_CIDR__
+# __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ / __SIGV4_ROLE_ARN__ / __K8S_API_CIDR__ / __KUBE_DNS_IP__
 # across this output at apply time (kustomize can read neither clusters.yaml, terraform
 # outputs, nor the cluster's own Service CIDR).
 #
@@ -21,6 +21,7 @@ resources:
   - oidc.yaml
   - quota.yaml
   - sigv4-proxy.yaml
+  - git-proxy.yaml
   - proxy-pdb.yaml
   - dispatcher.yaml
   - networkpolicy.yaml
