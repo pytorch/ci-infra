@@ -308,8 +308,9 @@ steps:
       RESULT_FILE: ${{ steps.sandbox.outputs.result-file }}
 ```
 
-To read a pull request, pass its head sha as `ref` (or `refs/pull/<n>/head`, the ref the
-dispatcher checks out when given a `pr` number).
+To review a pull request, pass its head sha as `ref` (or `refs/pull/<n>/head`, the ref
+the dispatcher checks out when given a `pr` number) and the merge base as `base`, so the
+agent is given the diff.
 
 ## Capacity
 
