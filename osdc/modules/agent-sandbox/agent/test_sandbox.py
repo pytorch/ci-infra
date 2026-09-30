@@ -300,6 +300,22 @@ class TestCloneRepo:
         assert truncated is True
         assert len(patch.encode()) <= 1000
 
+    def test_a_gitattributes_in_the_change_cannot_hide_the_diff(self, local_github, tmp_path):
+        """The tree is the author's: `* -diff` in its .gitattributes would turn the whole
+        patch, that file included, into "Binary files ... differ"."""
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        (local_github / ".gitattributes").write_text("* -diff\n")
+        _commit(local_github, "setup.py", "import evil\n")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        files, _, patch, _ = sandbox.diff_against("org/repo", str(dest), base)
+        assert sorted(files) == [".gitattributes", "setup.py"]
+        assert "+import evil" in patch
+        assert "+* -diff" in patch
+        assert "Binary files" not in patch
+
     def test_a_file_named_head_does_not_make_the_diff_ambiguous(self, local_github, tmp_path):
         base = subprocess.run(
             ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True

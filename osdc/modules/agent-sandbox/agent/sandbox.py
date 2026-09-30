@@ -131,6 +131,14 @@ def clone_repo(repo: str, ref: str, dest: str) -> int:
         return subprocess.run(["git", *args], check=True, capture_output=True, text=True, timeout=timeout, env=env)
 
     git("init", "-q", dest, timeout=GIT_STEP_TIMEOUT_S)
+    # The checked-out tree is the pull request's, so its .gitattributes is the author's,
+    # and `* -diff` there turns every change into "Binary files ... differ": the diff the
+    # model is given would be blind with nothing to say so. .git/info/attributes outranks
+    # the tree, and unsetting `diff` there leaves git's own binary detection in charge.
+    info = os.path.join(dest, ".git", "info")
+    os.makedirs(info, exist_ok=True)
+    with open(os.path.join(info, "attributes"), "w", encoding="utf-8") as handle:
+        handle.write("* !diff\n")
     # The URL is passed to fetch rather than configured as a remote: nothing here pushes
     # or re-fetches, and an unconfigured remote is one less thing a later step can follow.
     # `--` is load-bearing. git permutes arguments, so without it a `ref` of
