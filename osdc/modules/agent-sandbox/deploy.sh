@@ -233,10 +233,16 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 # rollout on every deploy of this module, almost always for a config nobody touched.
 # The hash is of the rendered template, so a substituted kube-dns address counts as a
 # change too.
+GIT_PROXY_RESTART_FAILED=""
 GIT_PROXY_CONFIG_HASH=$(git_proxy_config_hash || true)
 if [[ "$GIT_PROXY_CONFIG_HASH" != "${GIT_PROXY_CONFIG_HASH_BEFORE:-}" ]]; then
   echo "[agent-sandbox] git-proxy config changed — restarting it to pick up the new template"
-  kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"
+  # Guarded like the key fetch: a failed restart is recorded and fails the deploy at the
+  # end, so it cannot cut short the key fetch, the prune and the IRSA revocation below.
+  if ! kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"; then
+    GIT_PROXY_RESTART_FAILED="git-proxy config changed but the restart failed, so the running pods keep the old config; run \`kubectl rollout restart deployment/git-proxy -n ${NAMESPACE}\` — a re-run of this deploy will not, because it sees the config as unchanged."
+    echo "[agent-sandbox] ERROR: ${GIT_PROXY_RESTART_FAILED} (the deploy continues its other steps, then fails)" >&2
+  fi
 else
   echo "[agent-sandbox] git-proxy config unchanged — no restart"
 fi
@@ -321,14 +327,19 @@ else
 fi
 if [[ -n "$jwks_failure" ]]; then
   # A failed read is not "no keys": it fails the deploy with its own message.
+  # key_state says what is known about the keys, for the rollback warning below.
+  key_state=""
   if ! existing_keys=$(kubectl get configmap oidc-jwks -n "$NAMESPACE" -o jsonpath='{.data.jwks\.json}'); then
+    key_state="oidc-jwks could not be read, so whether calls with a token are accepted is unknown"
     JWKS_FATAL="${jwks_failure}, and oidc-jwks could not be read to tell whether signing keys are present."
   elif [[ -z "$existing_keys" ]]; then
+    key_state="oidc-jwks holds no signing keys, so calls with a token get 401 until a refresh lands"
     JWKS_FATAL="${jwks_failure}, and oidc-jwks holds no signing keys yet, so the dispatcher refuses every /run and /status call. Fix the fetch and re-run the deploy."
   # Present is not usable: the dispatcher also refuses a malformed document, an empty key
   # set and keys older than 24h (dispatcher/oidc.py). Same checks here, so the warning
   # below is only printed when the old set really is still accepted.
   elif ! keys_left=$(printf '%s' "$existing_keys" | python3 -c "$JWKS_USABLE_PY"); then
+    key_state="the signing keys in oidc-jwks will not carry this deploy (${keys_left}), so calls with a token are refused once they go stale or if they are malformed"
     JWKS_FATAL="${jwks_failure}, and the signing keys in oidc-jwks cannot carry this deploy (${keys_left}): the dispatcher refuses every call once they are stale or if they are malformed. Fix the fetch and re-run the deploy."
   else
     echo "[agent-sandbox] Warning: ${jwks_failure}. The previous signing keys stay in use for about ${keys_left} more; the CronJob retries every 6h."
@@ -340,7 +351,7 @@ if [[ -n "$jwks_failure" ]]; then
     require_auth=$(kubectl get deployment sandbox-dispatcher -n "$NAMESPACE" \
       -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REQUIRE_AUTH")].value}') || require_auth="unknown"
     if [[ "$require_auth" == "false" ]]; then
-      echo "[agent-sandbox] Warning: ${jwks_failure}, and oidc-jwks holds no signing keys the dispatcher would accept, so calls with a token get 401 until a refresh lands. REQUIRE_AUTH is false, so calls without one still work."
+      echo "[agent-sandbox] Warning: ${jwks_failure}, and ${key_state}. REQUIRE_AUTH is false, so calls without a token still work."
       JWKS_FATAL=""
     else
       echo "[agent-sandbox] ERROR: ${JWKS_FATAL} (the deploy continues its cleanup steps, then fails)" >&2
@@ -399,8 +410,13 @@ kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=1
 # A signing-key problem recorded above fails the deploy only here, after every step that
 # changes the cluster: exiting before the git-proxy restart left a config change in this
 # deploy unapplied, and the re-run then read that config as unchanged and never restarted.
+if [[ -n "$GIT_PROXY_RESTART_FAILED" ]]; then
+  echo "[agent-sandbox] ERROR: ${GIT_PROXY_RESTART_FAILED}" >&2
+fi
 if [[ -n "$JWKS_FATAL" ]]; then
   echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2
+fi
+if [[ -n "$GIT_PROXY_RESTART_FAILED$JWKS_FATAL" ]]; then
   exit 1
 fi
 
