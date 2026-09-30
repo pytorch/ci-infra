@@ -432,9 +432,10 @@ class TestHTTPSurface:
             assert exc.value.code == 401
             assert "manifest" in json.loads(exc.value.read())["error"]
 
-    def test_status_under_a_manifest_without_a_token_is_401(self, server):
+    @pytest.mark.parametrize("query", ["manifest=ciforge-experiments", "manifest="], ids=["named", "blank"])
+    def test_status_under_a_manifest_without_a_token_is_401(self, server, query):
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _opener.open(f"{server}/status/0123456789ab?manifest=ciforge-experiments", timeout=30)
+            _opener.open(f"{server}/status/0123456789ab?{query}", timeout=30)
         assert exc.value.code == 401
 
     def test_naming_the_policy_repository_is_still_accepted(self, server):

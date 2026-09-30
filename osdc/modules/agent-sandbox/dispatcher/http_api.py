@@ -118,9 +118,11 @@ class Handler(BaseHTTPRequestHandler):
             if not TASK_ID_RE.match(task_id):
                 self._send(400, {"error": "malformed task id"})
                 return
-            query = urllib.parse.parse_qs(url.query)
+            # Blank values kept: `?manifest=` names a manifest (the empty one) just as
+            # `"manifest": ""` does in a /run body, and is refused the same way.
+            names = urllib.parse.parse_qs(url.query, keep_blank_values=True).get("manifest")
             try:
-                caller = self._owner(query.get("manifest", [""])[0])
+                caller = self._owner(names[0] if names else None)
             except oidc.InvalidToken as exc:
                 self._send(401, {"error": str(exc)})
                 return
@@ -175,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("'pr' must be a non-negative integer")
         return spec
 
-    def _owner(self, manifest_name: str) -> str:
+    def _owner(self, manifest_name: str | None) -> str:
         """Who is asking, as a task-ownership key. Raises oidc.InvalidToken (401) or
         authorize.Denied (403).
 
@@ -184,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
         real key rather than None: during the migration window unauthenticated callers
         can read each other's results, and nobody else's.
         """
-        return self._grant_for({"manifest": manifest_name} if manifest_name else {}).owner
+        return self._grant_for({} if manifest_name is None else {"manifest": manifest_name}).owner
 
     def _grant_for(self, spec: dict):
         """Authenticate the caller and turn the request into a Grant.
