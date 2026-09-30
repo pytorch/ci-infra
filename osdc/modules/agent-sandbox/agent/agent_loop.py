@@ -756,6 +756,8 @@ def run_agent(
         if tools.effects and not final:
             # The read that spends a budget is where the model must hear it: told a turn
             # later, it could propose in two turns while the context reserve covers one.
+            # Time is measured again: the last read may have run into the reserve.
+            remaining = deadline - clock()
             spent_now = (
                 "time"
                 if remaining <= answer_reserve

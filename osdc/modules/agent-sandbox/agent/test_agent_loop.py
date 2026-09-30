@@ -830,6 +830,20 @@ class TestProposals:
         out = agent_loop.run_agent(scripted(tool_use("list_dir", {}), comment, check), "m", "p", tools)
         assert out["error"] == "the model kept calling tools after its budget ran out"
 
+    def test_a_read_that_runs_into_the_time_reserve_carries_the_note(self, repo):
+        """Admitted just outside the reserve, a read can finish inside it: the check after
+        the turn's calls measures time again, so that read carries the note."""
+        ticks = iter([0.0, 1.0, 600 - 121.0, 600 - 119.0])
+
+        def clock():
+            return next(ticks, 600 - 118.0)
+
+        tools = RepoTools(repo.dest, ALLOWED)
+        invoke = scripted(tool_use("list_dir", {}), answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools, clock=clock, time_limit_s=600)
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+        assert out["tools_refused"] == "time"
+
     def test_time_running_short_is_announced_on_a_proposal_only_turn(self, repo):
         """Time counts in the turn-level check too: a model that proposes without reading
         once time is short is told, and gets its one proposal turn."""
