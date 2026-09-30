@@ -423,7 +423,18 @@ class RepoTools:
         if not self.effects:
             return TOOLS
         propose = json.loads(json.dumps(PROPOSE_EFFECT))
-        propose["input_schema"]["properties"]["effect"]["enum"] = sorted(self.effects)
+        properties = propose["input_schema"]["properties"]
+        properties["effect"]["enum"] = sorted(self.effects)
+        # The limits are in the schema so the first attempt is valid: in the last proposal
+        # turn a rejected call cannot be retried.
+        conclusions = sorted({c for e in self.effects.values() for c in e.get("conclusions", []) if isinstance(c, str)})
+        if conclusions:
+            properties["conclusion"]["enum"] = conclusions
+        limits = "; ".join(
+            f"{kind} body at most {spec.get('max_bytes', MAX_PROPOSAL_BYTES)} bytes"
+            for kind, spec in sorted(self.effects.items())
+        )
+        propose["description"] += f" Limits: {limits}; a title at most {MAX_TITLE_CHARS} characters."
         return [*TOOLS, propose]
 
     def propose_effect(self, effect=None, body=None, title=None, conclusion=None) -> str:
@@ -595,7 +606,8 @@ def run_agent(
     """Loop model -> tools -> model until the model answers. Returns report, turns,
     tool_calls, and `error` when the loop did not end in a complete answer.
 
-    Also `tools_refused`, naming the budget, when a tool call was refused and the model
+    Also `tools_refused`, naming the budget, when the model was told its budget is spent —
+    a refused tool call, or the note added when the budget ran out without one — and then
     answered from what it had already read: the answer stands, but a caller can tell it
     from one written after complete reading. And `model_error` when a model call failed
     for good (after retrying a transient failure) — the turns and tool calls so far are
@@ -716,6 +728,10 @@ def run_agent(
                 output = tools.run(use.get("name"), use.get("input"))
             elif limit:
                 output = "error: tool budget exhausted — answer now with what you have read"
+                if tools.effects:
+                    # Proposing is still open for one turn; without saying so, a model
+                    # that splits its proposals over two turns loses both.
+                    output += "\n" + BUDGET_SPENT_NOTE
                 final = True
                 refused = refused or limit
                 told = True

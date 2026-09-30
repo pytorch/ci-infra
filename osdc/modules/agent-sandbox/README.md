@@ -88,7 +88,8 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   last is kept for the answer) — and
   the model then answers from what it has read, the answer is returned with
   `tools_refused` naming that budget, so it can be told from one written after complete
-  reading. A turn may use up to 16000 tokens, thinking included, and
+  reading. (`tools_refused` is set whenever the model was told its budget is spent, which
+  with effects allowed can happen without a refused call.) A turn may use up to 16000 tokens, thinking included, and
   300 s. A throttled (429), failed (5xx) or dropped model call is retried up to three
   times with backoff while at least 30 s of the loop's time is left; a call that still
   fails ends the run with `errors.bedrock`, keeping `turns` and `tool_calls`.

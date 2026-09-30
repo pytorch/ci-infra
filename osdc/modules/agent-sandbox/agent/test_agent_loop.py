@@ -814,6 +814,34 @@ class TestProposals:
         assert len(invoke.seen) == 3
         assert out["error"] == "the model kept calling tools after its budget ran out"
 
+    def test_a_refused_read_says_one_proposal_turn_is_left(self, repo, monkeypatch):
+        """The refusal is the only thing the model sees; with effects allowed it must also
+        say proposing is open for one more turn, or a review split over two is lost."""
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
+        tools = RepoTools(repo.dest, ALLOWED)
+        invoke = scripted(tool_use("list_dir", {}), tool_use("list_dir", {}, id_="r2"), answer("done"))
+        agent_loop.run_agent(invoke, "m", "p", tools)
+        refusal = invoke.seen[2]["messages"][-1]["content"][0]["content"]
+        assert refusal.startswith("error: tool budget exhausted")
+        assert agent_loop.BUDGET_SPENT_NOTE in refusal
+
+    def test_without_effects_the_refusal_says_nothing_about_proposing(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        invoke = scripted(tool_use("list_dir", {}), answer("done"))
+        agent_loop.run_agent(invoke, "m", "p", repo)
+        assert agent_loop.BUDGET_SPENT_NOTE not in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+
+    def test_the_propose_tool_lists_its_limits(self, repo):
+        """In the last proposal turn a rejected call cannot be retried, so the first
+        attempt must be able to be valid: conclusions and sizes are in the schema."""
+        propose = RepoTools(repo.dest, ALLOWED).specs()[-1]
+        assert propose["input_schema"]["properties"]["conclusion"]["enum"] == ["neutral"]
+        assert "pr_comment body at most 50 bytes" in propose["description"]
+        assert "check_run body at most 100 bytes" in propose["description"]
+        assert "enum" not in agent_loop.PROPOSE_EFFECT["input_schema"]["properties"]["conclusion"], (
+            "the shared template is not edited"
+        )
+
     def test_the_propose_tool_is_offered_only_when_effects_are_allowed(self, repo):
         assert [t["name"] for t in repo.specs()] == ["list_dir", "read_file", "search"]
         allowed = RepoTools(repo.dest, ALLOWED)
