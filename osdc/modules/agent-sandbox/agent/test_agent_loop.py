@@ -320,12 +320,15 @@ class TestLoop:
         assert out["tool_calls"] == 2
         assert [r["tool_use_id"] for r in invoke.seen[1]["messages"][-1]["content"]] == ["a", "b"]
 
-    def test_the_turn_limit_ends_the_loop_with_an_error(self, repo, monkeypatch):
+    def test_calling_tools_past_the_turn_budget_ends_the_loop_with_an_error(self, repo, monkeypatch):
+        """The next-to-last turn's reads are refused so the last can answer; a model that
+        asks for tools again on the last turn ends the run with an error."""
         monkeypatch.setattr(agent_loop, "MAX_TURNS", 3)
         invoke = scripted(*[tool_use("list_dir", {}) for _ in range(3)])
         out = agent_loop.run_agent(invoke, "m", "p", repo)
         assert out["turns"] == 3
-        assert "turn limit" in out["error"]
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+        assert out["tools_refused"] == "3 turns"
 
     def test_the_time_limit_ends_the_loop_with_an_error(self, repo):
         clock = iter([0.0, 1.0, 10_000.0, 10_001.0]).__next__  # start, turn 1, tool call, turn 2
@@ -687,6 +690,34 @@ class TestLoop:
         out = agent_loop.run_agent(invoke, "m", "p", repo, clock=clock, time_limit_s=600)
         assert out == {"report": "from what I read", "turns": 2, "tool_calls": 0, "tools_refused": "time"}
         assert invoke.seen[1]["messages"][-1]["content"][0]["content"].startswith("error: tool budget exhausted")
+
+    def test_a_read_is_bounded_by_the_answer_reserve(self, repo, monkeypatch):
+        """Admitted with a little more than the reserve left, a read may not spend it."""
+        ticks = iter([0.0, 1.0, 600 - 70.0])
+
+        def clock():
+            return next(ticks, 600 - 70.0)
+
+        timeouts = []
+
+        def run(self, name, args):
+            timeouts.append(self.timeout)
+            return "README.md"
+
+        monkeypatch.setattr(agent_loop.RepoTools, "run", run)
+        agent_loop.run_agent(scripted(tool_use("list_dir", {}), answer("ok")), "m", "p", repo, clock=clock)
+        assert timeouts == [10], "70 s left less the 60 s reserve"
+
+    def test_the_last_turn_is_kept_for_the_answer(self, repo):
+        """A model that reads on every turn is refused on the next-to-last one, so the
+        last turn can still answer instead of ending at the turn limit."""
+        reads = [tool_use("list_dir", {}, id_=f"r{i}") for i in range(agent_loop.MAX_TURNS - 1)]
+        invoke = scripted(*reads, answer("from what I read"))
+        out = agent_loop.run_agent(invoke, "m", "p", repo)
+        assert out["report"] == "from what I read"
+        assert "error" not in out
+        assert out["tools_refused"] == f"{agent_loop.MAX_TURNS} turns"
+        assert out["tool_calls"] == agent_loop.MAX_TURNS - 2
 
     def test_the_deadline_is_checked_between_tool_calls(self, repo):
         both = {

@@ -601,9 +601,12 @@ def run_agent(
             # A result is at most MAX_TOOL_OUTPUT_BYTES plus a short note, so a call runs
             # only while one more worst-case result still fits the context window.
             no_room = room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
+            # Turns are a budget too: the last turn is kept for the answer.
             limit = (
                 "time"
                 if remaining <= answer_reserve
+                else f"{MAX_TURNS} turns"
+                if turn >= MAX_TURNS - 1
                 else f"{MAX_TOOL_CALLS} tool calls"
                 if calls >= MAX_TOOL_CALLS
                 else "tool output"
@@ -618,7 +621,9 @@ def run_agent(
                 refused = refused or limit
             else:
                 calls += 1
-                tools.timeout = max(1, min(TOOL_TIMEOUT_S, int(remaining)))
+                # A read may not spend the answer reserve: it is bounded by what is left
+                # before it, not by what is left of the loop.
+                tools.timeout = max(1, min(TOOL_TIMEOUT_S, int(remaining - answer_reserve)))
                 output = tools.run(use.get("name"), use.get("input"))
                 spent += len(output.encode())
             room_bytes -= len(output.encode()) + 256  # the result and its framing
