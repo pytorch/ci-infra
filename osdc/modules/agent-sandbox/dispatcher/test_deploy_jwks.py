@@ -121,6 +121,16 @@ def test_a_recorded_key_problem_fails_the_deploy_after_every_cluster_change():
     assert text.rindex("kubectl rollout status") < exit_at < text.index('"[agent-sandbox] Deployed.')
 
 
+def test_the_git_proxy_restart_runs_before_anything_that_can_fail_the_deploy():
+    """A restart skipped by a later failure (the key fetch, a rollout) is never retried:
+    the re-run reads the already-applied config as unchanged. So it follows the apply."""
+    text = DEPLOY_SH.read_text()
+    restart = text.index("kubectl rollout restart deployment/git-proxy")
+    assert text.index("| kubectl_apply_if_changed -f -") < restart
+    assert restart < text.index("# --- Populate the OIDC signing keys")
+    assert restart < text.index("kubectl rollout status")
+
+
 def test_the_block_itself_never_exits(tmp_path):
     """Cleanup below must run even when the keys are unusable."""
     kubectl = tmp_path / "kubectl"
