@@ -360,12 +360,18 @@ Key workflows (all callable as reusable workflows via `workflow_call` from the o
 | `osdc-lint.yml` | `just lint` |
 | `osdc-test.yml` | `just test` |
 | `osdc-pre-merge.yml` | Lint + test on PR |
-| `osdc-plan-prod.yml` | `just plan <cluster>` (read-only tofu plan; CI-safe) |
 | `osdc-deploy-prod.yml` | Per-cluster prod deploy. Calls `_osdc-deploy.yml` |
 | `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip_lint_test` input (firefighting only). |
-| `_osdc-plan.yml` | Reusable: `just plan <cluster>` and tee to `plan.txt` |
 | `_osdc-slow-tests.yml` | Reusable: `just load-test`, `just test-compactor`, `just test-janitor` |
 | `osdc-capacity-report.yml` | `just simulate-cluster` + `just analyze-utilization`, periodic |
+
+There is deliberately **no plan-on-PR workflow**. It existed until 2026-09-30 and was
+removed: across its last 60 runs it produced 28 successes, 19 concurrency cancellations,
+11 skips and 2 failures — and both failures were its own infrastructure (a missing
+plugin-cache dir, DynamoDB state-lock contention), never a finding about the change under
+review. It also serialized on `osdc-tofu-<cluster>` against real deploys, so a PR could
+block a deploy on the state lock. Run `just plan <cluster>` locally before a risky infra
+change instead.
 
 When adding a new `just` recipe that CI should run, plumb it through the corresponding reusable workflow.
 
