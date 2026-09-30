@@ -193,8 +193,20 @@ fi
 
 # Hash the rendered nginx template BEFORE applying, so the restart below can tell a real
 # config change from a no-op deploy.
-GIT_PROXY_CONFIG_HASH_BEFORE=$(kubectl get configmap git-proxy-config -n "$NAMESPACE" \
-  -o jsonpath='{.data.default\.conf\.template}' 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+#
+# The `|| true` at both call sites is load-bearing, not defensive noise. On the FIRST
+# deploy to a cluster the ConfigMap does not exist yet, kubectl exits non-zero, and under
+# `set -o pipefail` the command substitution takes that status — aborting the whole
+# deploy before a single manifest is applied. Caught on meta-staging-aws-ue1, which had
+# never run git-proxy.
+#
+# A missing ConfigMap still yields a hash (shasum of empty input), which differs from the
+# post-apply one, so the first deploy restarts. That is the right answer anyway.
+git_proxy_config_hash() {
+  kubectl get configmap git-proxy-config -n "$NAMESPACE" \
+    -o jsonpath='{.data.default\.conf\.template}' 2>/dev/null | shasum -a 256 | cut -d' ' -f1
+}
+GIT_PROXY_CONFIG_HASH_BEFORE=$(git_proxy_config_hash || true)
 
 # --- Apply manifests (substitute both images, region, model, role ARN, API CIDR, DNS) ---
 echo "[agent-sandbox] Applying base manifests (task image: ${AGENT_IMAGE}, dispatcher: ${DISPATCHER_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
@@ -291,8 +303,7 @@ kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
 # rollout on every deploy of this module, almost always for a config nobody touched.
 # The hash is of the rendered template, so a substituted kube-dns address counts as a
 # change too.
-GIT_PROXY_CONFIG_HASH=$(kubectl get configmap git-proxy-config -n "$NAMESPACE" \
-  -o jsonpath='{.data.default\.conf\.template}' 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+GIT_PROXY_CONFIG_HASH=$(git_proxy_config_hash || true)
 if [[ "$GIT_PROXY_CONFIG_HASH" != "${GIT_PROXY_CONFIG_HASH_BEFORE:-}" ]]; then
   echo "[agent-sandbox] git-proxy config changed — restarting it to pick up the new template"
   kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"
