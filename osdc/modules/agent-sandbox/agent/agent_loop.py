@@ -17,6 +17,7 @@ import contextlib
 import http.client
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -130,6 +131,13 @@ PROPOSE_EFFECT = {
 }
 MAX_PROPOSALS = 3
 MAX_PROPOSAL_BYTES = 128 * 1024
+# The dispatcher puts every `@pytorchbot` mention in a proposed body into a code span, so
+# pytorch-bot cannot read it as a command (dispatcher/effects.py). Done here too, before
+# the size check, so a body this tool accepts is not pushed past the limit there.
+BOT_MENTION_RE = re.compile(r"(?<!`)@(pytorch(?:merge)?bot)\b(?!`)", re.IGNORECASE)
+# The check-run title limit the dispatcher's screening applies (effects.MAX_TITLE_CHARS).
+MAX_TITLE_CHARS = 200
+BUDGET_SPENT_NOTE = "note: your read budget is spent. You may propose effects in one more turn; after that, answer."
 
 
 class ToolError(ValueError):
@@ -426,10 +434,13 @@ class RepoTools:
             raise ToolError(f"effect must be one of {sorted(self.effects)}")
         if not isinstance(body, str) or not body.strip():
             raise ToolError("body must be non-empty text")
+        body = BOT_MENTION_RE.sub(r"`@\1`", body)
         if len(body.encode()) > spec.get("max_bytes", MAX_PROPOSAL_BYTES):
             raise ToolError(f"body is longer than {spec.get('max_bytes')} bytes; shorten it")
         if effect == "check_run" and conclusion not in spec.get("conclusions", []):
             raise ToolError(f"conclusion must be one of {spec.get('conclusions', [])}")
+        if title is not None and (not isinstance(title, str) or not title.strip() or len(title) > MAX_TITLE_CHARS):
+            raise ToolError(f"title must be non-empty text of at most {MAX_TITLE_CHARS} characters")
         used = sum(len(json.dumps(p)) for p in self.proposals)
         proposal = {
             k: v
@@ -606,7 +617,10 @@ def run_agent(
     # Set once any call was refused for budget: the model was told to answer, and gets one
     # more turn to do it. Asking for tools again ends the loop, so refusals cannot keep
     # growing the conversation toward the window. `refused` names the first budget hit.
-    final, refused = False, ""
+    # `told` is whether the model has SEEN that its budget is spent — a refused read, or
+    # the note added when the budget ran out without one. Only after that does its one
+    # remaining turn of proposals count.
+    final, refused, told = False, "", False
     proposed_after_refusal = False
 
     def done(turns, error=None):
@@ -658,17 +672,26 @@ def run_agent(
         # count and bytes), and the context reserve covers it and the answer after it.
         # Asking to read again, or proposing again after that turn, ends the loop.
         proposing = [u for u in uses if u.get("name") == "propose_effect" and tools.effects]
-        if final and (len(proposing) < len(uses) or proposed_after_refusal):
+        if final and told and (len(proposing) < len(uses) or proposed_after_refusal):
             return done(turn, "the model kept calling tools after its budget ran out")
-        # A budget can be spent without any read being refused (a proposal-only turn once
-        # the window is nearly full), so exhaustion is checked here, not only per read.
-        # (Time needs no check here: the top of the loop ends it once time is out.)
+        # A budget can be spent without any read being refused (right after the last
+        # allowed read, or a proposal-only turn once the window is nearly full), so
+        # exhaustion is checked here, not only per read. (Time needs no check here: the
+        # top of the loop ends it once time is out.)
         exhausted = (
-            calls >= MAX_TOOL_CALLS or spent >= MAX_TRANSCRIPT_TOOL_BYTES or room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
+            f"{MAX_TOOL_CALLS} tool calls"
+            if calls >= MAX_TOOL_CALLS
+            else "tool output"
+            if spent >= MAX_TRANSCRIPT_TOOL_BYTES
+            else "context window"
+            if room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
+            else ""
         )
+        told_before = told
         if final or exhausted:
             final = True
-            proposed_after_refusal = proposed_after_refusal or bool(proposing)
+            if told_before:
+                proposed_after_refusal = proposed_after_refusal or bool(proposing)
         results = []
         for use in uses:
             remaining = deadline - clock()
@@ -695,6 +718,7 @@ def run_agent(
                 output = "error: tool budget exhausted — answer now with what you have read"
                 final = True
                 refused = refused or limit
+                told = True
             else:
                 calls += 1
                 # A read may not spend the answer reserve: it is bounded by what is left
@@ -704,5 +728,11 @@ def run_agent(
                 spent += len(output.encode())
             room_bytes -= len(output.encode()) + 256  # the result and its framing
             results.append({"type": "tool_result", "tool_use_id": use.get("id", ""), "content": output})
+        if final and not told:
+            # The budget ran out with nothing refused, so the model has not been told. Tell
+            # it now, before it picks its next turn: that turn may still propose.
+            results[-1]["content"] += "\n" + BUDGET_SPENT_NOTE
+            told = True
+            refused = refused or exhausted
         messages.append({"role": "user", "content": results})
     return done(MAX_TURNS, f"turn limit of {MAX_TURNS} reached")

@@ -91,6 +91,10 @@ def build_body(env: dict) -> dict:
     wait = env.get("INPUT_WAIT", "true").strip().lower()
     if wait not in ("true", "false"):
         raise ClientError(f"input `wait` must be true or false, got {wait!r}")
+    if env.get("INPUT_APPLY_EFFECTS", "").strip().lower() == "true" and wait != "true":
+        # Checked before the task starts: with wait false the result — and its effects —
+        # never reaches the apply step, which would then pass having written nothing.
+        raise ClientError("input `apply-effects` needs `wait: true`")
     body = {"manifest": manifest, "task": task, "wait": wait == "true"}
     for key in ("repo", "ref", "base"):
         value = env.get(f"INPUT_{key.upper()}", "").strip()

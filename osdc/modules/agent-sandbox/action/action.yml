@@ -49,7 +49,7 @@ inputs:
     required: false
     default: "900"
   apply-effects:
-    description: "true: apply the writes the run proposed and the dispatcher accepted (needs pr-number)"
+    description: "true: apply the writes the run proposed and the dispatcher accepted (needs pr-number and wait: true)"
     required: false
     default: "false"
   pr-number:
@@ -88,6 +88,7 @@ runs:
         INPUT_REF: ${{ inputs.ref }}
         INPUT_BASE: ${{ inputs.base }}
         INPUT_WAIT: ${{ inputs.wait }}
+        INPUT_APPLY_EFFECTS: ${{ inputs.apply-effects }}
         INPUT_ENDPOINT: ${{ inputs.endpoint }}
         INPUT_MAX_WAIT: ${{ inputs.max-wait }}
       run: python3 "$GITHUB_ACTION_PATH/sandbox_client.py"

@@ -18,6 +18,17 @@ import re
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 MAX_PROPOSALS = 3
 MAX_TITLE_CHARS = 200
+# pytorch-bot reads commands from PR comments and review bodies, and a proposed comment is
+# posted as a review. Text the agent read can steer it into writing one (`merge`, `revert`),
+# a write no manifest lists, so every mention is put in a code span, which the bot does not
+# read as a command. One already in backticks is left alone.
+# agent/agent_loop.py applies the same rule in propose_effect; test_effects keeps the two
+# identical.
+BOT_MENTION_RE = re.compile(r"(?<!`)@(pytorch(?:merge)?bot)\b(?!`)", re.IGNORECASE)
+
+
+def neutralise_bot_commands(body: str) -> str:
+    return BOT_MENTION_RE.sub(r"`@\1`", body)
 
 
 def attribution(head: str, manifest: str) -> str:
@@ -92,7 +103,10 @@ def _screen(result: dict, grant) -> dict:
             continue
         head = attribution(pinned, grant.manifest)
         room = spec.max_bytes - len(head.encode())
-        body = _text(proposal.get("body"), room)
+        # Neutralised before the size check, so the limit applies to what is posted. The
+        # agent's tool neutralises the same way, so a body it accepted does not grow here.
+        body = proposal.get("body")
+        body = _text(neutralise_bot_commands(body) if isinstance(body, str) else body, room)
         if body is None:
             rejected.append(f"#{i}: body must be non-empty text of at most {room} bytes")
             continue

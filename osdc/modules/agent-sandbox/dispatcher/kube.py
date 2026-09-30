@@ -20,6 +20,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import effects
+
 TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
 CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 
@@ -139,11 +141,15 @@ def effects_env(grant) -> str:
     """The writes this run may propose, as JSON for the task: it offers the agent a
     propose_effect tool only when this is non-empty. Informational for the pod — the
     dispatcher re-checks every proposal against the Grant when the task returns."""
+    # max_bytes is the room left for the agent's text: screening puts the provenance line
+    # in front of every body and counts it against the manifest's limit, so a proposal
+    # the tool accepted at the full limit would be dropped after the run.
+    head = len(effects.attribution("0" * 40, grant.manifest).encode())
     return json.dumps(
         [
             {
                 "effect": e.kind,
-                "max_bytes": e.max_bytes,
+                "max_bytes": max(0, e.max_bytes - head),
                 **({"conclusions": sorted(e.conclusions)} if e.conclusions else {}),
             }
             for e in grant.effects

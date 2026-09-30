@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+from pathlib import Path
+
 import effects
 import pytest
 import test_authorize
@@ -175,3 +178,38 @@ def test_the_pr_review_manifest_allows_an_advisory_check_only():
     kinds = {e.kind: e for e in m.effects}
     assert set(kinds) == {"pr_comment", "check_run"}
     assert kinds["check_run"].conclusions == {"neutral"}
+
+
+@pytest.mark.parametrize(
+    ("body", "posted"),
+    [
+        ("@pytorchbot merge", "`@pytorchbot` merge"),
+        ("see\n@PyTorchMergeBot revert -m x", "see\n`@PyTorchMergeBot` revert -m x"),
+        ("already `@pytorchbot merge` quoted", "already `@pytorchbot merge` quoted"),
+        ("mail me@pytorchbots.example", "mail me@pytorchbots.example"),
+    ],
+    ids=["line-leading", "case-and-mergebot", "already-quoted", "not-a-mention"],
+)
+def test_bot_commands_are_put_in_code_spans(body, posted):
+    """pytorch-bot reads commands from review bodies; a code span is not a command."""
+    out = screened([{"effect": "pr_comment", "body": body}], grant=a_grant(allowed=(EffectSpec("pr_comment", 1000),)))
+    assert out["effects"][0]["body"] == ATTRIBUTION + posted
+
+
+def test_the_agent_neutralises_bot_commands_the_same_way():
+    """The tool neutralises before its size check, so the two rules must be one rule."""
+    here = Path(__file__).resolve().parent
+
+    def rule(path):
+        return next(line for line in path.read_text().splitlines() if line.startswith("BOT_MENTION_RE = "))
+
+    assert rule(here / "effects.py") == rule(here.parent / "agent" / "agent_loop.py")
+
+
+def test_a_pull_request_selector_alone_gets_no_effects():
+    """`pr` checks out whatever the head is at fetch time; effects need a commit the
+    caller pinned, so a run selected only by `pr` proposes nothing that is applied."""
+    grant = dataclasses.replace(a_grant(ref=""), pr=7)
+    out = screened([{"effect": "pr_comment", "body": "hi"}], grant=grant)
+    assert out["effects"] == []
+    assert "full commit sha" in out["errors"]["effects"]

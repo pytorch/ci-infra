@@ -773,17 +773,36 @@ class TestProposals:
         whole = (agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS) * agent_loop.MIN_BYTES_PER_TOKEN
         assert agent_loop.prompt_budget_bytes() == whole - fixed
 
-    def test_proposal_only_turns_with_a_full_window_are_bounded_too(self, repo):
+    def test_a_full_window_is_announced_before_the_last_proposal_turn(self, repo):
+        """The window filled without a read being refused, so the model was never told.
+        The note on its proposal result tells it; its next turn may still propose, and
+        only a turn after that ends the loop."""
         tools = RepoTools(repo.dest, ALLOWED)
         full = agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS - 1000
         usage = {"input_tokens": full, "output_tokens": 0}
         first = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "a"}, id_="p1"), usage=usage)
-        again = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "b"}, id_="p2"), usage=usage)
-        invoke = scripted(first, again, answer("never"))
+        second = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "b"}, id_="p2"), usage=usage)
+        third = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "c"}, id_="p3"), usage=usage)
+        invoke = scripted(first, second, third, answer("never"))
         out = agent_loop.run_agent(invoke, "m", "p", tools)
-        assert len(invoke.seen) == 2
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][-1]["content"]
+        assert len(invoke.seen) == 3
         assert out["error"] == "the model kept calling tools after its budget ran out"
-        assert tools.proposals == [{"effect": "pr_comment", "body": "a"}]
+        assert [p["body"] for p in tools.proposals] == ["a", "b"]
+        assert out["tools_refused"] == "context window"
+
+    def test_proposals_split_over_two_turns_survive_a_budget_spent_without_a_refusal(self, repo, monkeypatch):
+        """The review's case: the last allowed read spends the budget, the model proposes
+        its comment, then its check run in the next turn. Both are kept."""
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
+        tools = RepoTools(repo.dest, ALLOWED)
+        comment = tool_use("propose_effect", {"effect": "pr_comment", "body": "LGTM"}, id_="p1")
+        check = tool_use("propose_effect", {"effect": "check_run", "body": "ok", "conclusion": "neutral"}, id_="p2")
+        invoke = scripted(tool_use("list_dir", {}), comment, check, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert "error" not in out
+        assert [p["effect"] for p in tools.proposals] == ["pr_comment", "check_run"]
+        assert out["tools_refused"] == "1 tool calls"
 
     def test_only_one_turn_of_proposals_is_accepted_after_the_budget_runs_out(self, repo, monkeypatch):
         monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
@@ -829,6 +848,19 @@ class TestProposals:
         tools = RepoTools(repo.dest, ALLOWED)
         assert message in tools.run("propose_effect", args)
         assert tools.proposals == []
+
+    def test_a_title_screening_would_drop_is_refused_by_the_tool(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        args = {"effect": "check_run", "body": "ok", "conclusion": "neutral", "title": "t" * 201}
+        assert tools.run("propose_effect", args).startswith("error: title must be")
+        assert tools.proposals == []
+
+    def test_bot_commands_are_neutralised_before_the_size_check(self, repo):
+        """So a body the tool accepts is exactly what screening posts, with no growth."""
+        tools = RepoTools(repo.dest, ALLOWED)
+        body = "@pytorchbot merge"
+        assert not tools.run("propose_effect", {"effect": "pr_comment", "body": body}).startswith("error")
+        assert tools.proposals[0]["body"] == "`@pytorchbot` merge"
 
     def test_proposals_are_capped(self, repo):
         tools = RepoTools(repo.dest, ALLOWED)

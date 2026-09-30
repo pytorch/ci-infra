@@ -415,7 +415,12 @@ def test_an_empty_token_is_refused(fake, tmp_path, capsys):
 
 @pytest.mark.parametrize(
     ("inputs", "message"),
-    [({"manifest": ""}, "`manifest` is required"), ({"task": "  "}, "`task` is required"), ({"wait": "yes"}, "`wait`")],
+    [
+        ({"manifest": ""}, "`manifest` is required"),
+        ({"task": "  "}, "`task` is required"),
+        ({"wait": "yes"}, "`wait`"),
+        ({"wait": "false", "apply_effects": "true"}, "`apply-effects` needs `wait: true`"),
+    ],
 )
 def test_bad_inputs_fail_before_any_request(fake, tmp_path, inputs, message, capsys):
     with pytest.raises(ClientError, match=message):

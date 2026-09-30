@@ -24,6 +24,7 @@ from pathlib import Path
 from threading import Thread
 
 import authorize
+import effects
 import http_api
 import jwt
 import kube
@@ -526,7 +527,13 @@ class TestHTTPSurface:
         )
         body = json.loads(_opener.open(req, timeout=30).read())
         env = {e["name"]: e["value"] for e in fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]}
-        assert {e["effect"] for e in json.loads(env["SANDBOX_EFFECTS"])} == {"pr_comment", "check_run"}
+        offered = json.loads(env["SANDBOX_EFFECTS"])
+        assert {e["effect"] for e in offered} == {"pr_comment", "check_run"}
+        # The tool is offered the room screening leaves after the provenance line, so a
+        # proposal it accepts is not dropped for size afterwards.
+        room = {e["effect"]: e["max_bytes"] for e in offered}
+        head = len(effects.attribution("d" * 40, "ciforge-pr-review").encode())
+        assert room["pr_comment"] == http_api.manifest.MAX_EFFECT_BYTES - head
         assert [e["effect"] for e in body["effects"]] == ["pr_comment"]
         assert "merge" in body["errors"]["effects"]
 

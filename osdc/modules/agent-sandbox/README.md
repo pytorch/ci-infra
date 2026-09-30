@@ -343,12 +343,22 @@ proposals in `effects`. The dispatcher screens them against the Grant
 (`dispatcher/effects.py`): the kind must be listed, bodies fit `max_bytes`, a check run's
 conclusion comes from the manifest's set and its name from the manifest. Effects need the
 request's `ref` to be a commit sha, and the task must report having checked out exactly
-that commit; every accepted effect is pinned to it and to the cloned repository, and
-opens with a provenance line. Rejections are reported in `errors.effects` (a warning, not
-a failed step); a run that did not finish proposes nothing.
+that commit — so a run selected only by `pr` gets no effects; pass the head sha as `ref`.
+Every accepted effect is pinned to that commit and to the cloned repository, and opens
+with a provenance line. Every `@pytorchbot` or `@pytorchmergebot` mention in a body is
+put in a code span, so pytorch-bot cannot read it as a command. Rejections are reported
+in `errors.effects` (a warning, not a failed step); a run that did not finish proposes
+nothing.
 
-The action applies what survives when called with `apply-effects: "true"` and a
-`pr-number` (`action/apply_effects.py`), reading the result its own `/run` step just wrote
+The tool is offered each effect's `max_bytes` less the provenance line, and checks a
+check run's title as screening does, so a proposal it accepts is not dropped for size
+afterwards. Proposing is how the agent delivers its answer, so it stays open after the
+read budget is spent: once the agent has seen that — a refused read, or a note on its
+last proposal's result when the budget ran out without one — it may propose in one more
+turn, and any tool call after that ends the run.
+
+The action applies what survives when called with `apply-effects: "true"`, `wait: "true"`
+and a `pr-number` (`action/apply_effects.py`), reading the result its own `/run` step just wrote
 in the same job, using the `github-token` input. That defaults to the job's token, which
 can write only to the calling repository; a caller that reviews another repository must
 pass a token for it (a GitHub App installation token), and the step refuses to start with
@@ -528,8 +538,8 @@ token.
   Nothing filters it; fencing it would not help, because the model reads the whole
   prompt either way. What bounds it is that the tools only read the checked-out commit
   and the agent holds no credentials, so the worst outcome is a misleading report
-  returned to the caller that asked for it. It stops being bounded once the agent can act
-  on its own output.
+  returned to the caller — or, where the manifest lists effects, a misleading comment or
+  neutral check on the pull request under review, which is all screening lets through.
 - **git-proxy authorizes on repository, not on caller.** `repo_allowed` matches the URL
   path, and `git-proxy-ingress` admits every pod labelled `app: sandbox-task` — which is
   every task pod, whatever `Grant.clone_repo` its caller was issued. So a task dispatched
