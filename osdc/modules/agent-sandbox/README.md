@@ -289,10 +289,12 @@ steps:
       ref: main
       task: "Summarize the build system."
   # The report is model output: write it to the step summary, never echo it into the
-  # log, where a line starting with `::` would be read as a workflow command.
-  - run: printf '%s\n' "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+  # log, where a line starting with `::` would be read as a workflow command. Read it
+  # from the result file: Linux caps one environment variable at 128 KiB, and a long
+  # report passed through `env:` would stop the step from starting.
+  - run: jq -r .report "$RESULT_FILE" >> "$GITHUB_STEP_SUMMARY"
     env:
-      REPORT: ${{ steps.sandbox.outputs.report }}
+      RESULT_FILE: ${{ steps.sandbox.outputs.result-file }}
 ```
 
 ## Capacity

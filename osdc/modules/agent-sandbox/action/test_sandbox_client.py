@@ -200,23 +200,69 @@ def test_429_gives_up_when_the_budget_is_spent(fake, tmp_path, capsys):
     assert "in_flight" in err, "the failure carries a /healthz reading"
 
 
-@pytest.mark.parametrize("clock_values", [[0.0, 1.0, 30.0]], ids=["expired-while-sleeping-or-minting"])
-def test_no_retry_is_sent_after_the_budget_expires(clock_values):
+@pytest.mark.parametrize(
+    ("clock_values", "mints"),
+    [([0.0, 1.0, 30.0], 1), ([0.0, 1.0, 29.0, 30.0], 2)],
+    ids=["expired-while-sleeping", "expired-while-minting"],
+)
+def test_no_retry_is_sent_after_the_budget_expires(clock_values, mints):
     """Sleeping out the remainder (or waiting on a slow token mint) and then posting
-    anyway would admit a task past the budget the caller set."""
+    anyway would admit a task past the budget the caller set. A budget spent by the
+    sleep also mints no token: that request can take its whole timeout, and its failure
+    would be reported instead of the 429."""
     clock = iter(clock_values).__next__
     posts = []
+    tokens = []
 
     class Opener:
         def open(self, request, timeout):
             posts.append(request.full_url)
             raise sandbox_client.urllib.error.HTTPError(request.full_url, 429, "busy", {}, None)
 
+    class CountingTokenOpener(_TokenOpener):
+        def open(self, request, timeout):
+            tokens.append(request.full_url)
+            return super().open(request, timeout)
+
     status, _ = sandbox_client.call_run(
-        Opener(), _TokenOpener(), _TOKEN_ENV, "http://d", {}, 30, sleep=lambda s: None, clock=clock
+        Opener(), CountingTokenOpener(), _TOKEN_ENV, "http://d", {}, 30, sleep=lambda s: None, clock=clock
     )
     assert status == 429
     assert len(posts) == 1
+    assert len(tokens) == mints
+
+
+def test_the_real_sleep_is_patchable(monkeypatch):
+    """`call_run` looks `time.sleep` up per call, so patching the module reaches the
+    retry wait — a default argument would have bound the real function at import."""
+    slept = []
+    monkeypatch.setattr(sandbox_client.time, "sleep", slept.append)
+    clock = iter([0.0, 1.0, 2.0, 3.0, 4.0]).__next__
+    answers = iter([sandbox_client.urllib.error.HTTPError("http://d/run", 429, "busy", {}, None)])
+
+    class Opener:
+        def open(self, request, timeout):
+            error = next(answers, None)
+            if error:
+                raise error
+
+            class R:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self, n):
+                    return b'{"task_id": "0123456789ab"}'
+
+            return R()
+
+    status, _ = sandbox_client.call_run(Opener(), _TokenOpener(), _TOKEN_ENV, "http://d", {}, 30, clock=clock)
+    assert status == 200
+    assert len(slept) == 1
 
 
 class _TokenOpener:

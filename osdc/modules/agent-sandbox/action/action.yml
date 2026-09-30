@@ -46,7 +46,7 @@ outputs:
     description: The dispatcher's task id
     value: ${{ steps.run.outputs.task-id }}
   report:
-    description: The agent's report (only when wait is true)
+    description: The agent's report (only when wait is true). Past 128 KiB it cannot be passed through env; read result-file instead
     value: ${{ steps.run.outputs.report }}
   result-file:
     description: Path to the full /run response as JSON

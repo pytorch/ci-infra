@@ -115,18 +115,26 @@ def call_run(
     endpoint: str,
     body: dict,
     max_wait_s: float,
-    sleep=time.sleep,
-    clock=time.monotonic,
+    sleep=None,
+    clock=None,
 ) -> tuple[int, dict]:
     """POST /run, retrying only 429 until `max_wait_s` has passed. Returns (status, json)."""
+    # Resolved per call, not as default arguments: a default binds the function object at
+    # import, so patching `time.sleep` afterwards would not reach it.
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
     deadline = clock() + max_wait_s
     delay = 5.0
     payload: dict = {}
     retrying = False
     while True:
-        token = mint_token(token_opener, env)  # re-minted per attempt: tokens are short-lived
-        # A retry must never be SENT past the budget, and minting can itself take time.
+        # A retry must never be SENT past the budget. Checked before minting as well as
+        # after: a mint once the budget is spent is an OIDC request that can take its whole
+        # timeout, and its failure would be reported instead of the 429 that stopped us.
         if retrying and clock() >= deadline:
+            return 429, payload
+        token = mint_token(token_opener, env)  # re-minted per attempt: tokens are short-lived
+        if retrying and clock() >= deadline:  # minting can itself take time
             return 429, payload
         request = urllib.request.Request(  # noqa: S310  (endpoint is an action input)
             f"{endpoint}/run",
