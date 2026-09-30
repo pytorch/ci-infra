@@ -60,6 +60,9 @@ MAX_LINE_BYTES = 8 * 1024
 MAX_CALL_RETRIES = 3
 RETRY_BASE_S = 2.0
 MIN_RETRY_REMAINING_S = 30.0
+# Time is a budget like the others: tools are refused while this much is still left, so
+# the model gets a turn to answer from what it has read. A tenth of a shorter limit.
+ANSWER_RESERVE_S = 60.0
 
 SYSTEM = (
     "You are a careful engineer working in a read-only checkout of a git repository. "
@@ -369,6 +372,10 @@ class RepoTools:
                     break
             display = _display_name(name.removeprefix(b"HEAD:"))
             text = raw.rstrip(b"\n").decode(errors="backslashreplace")
+            if len(text.encode()) > MAX_LINE_BYTES:
+                # Escaping can make each invalid byte four characters; cut what renders,
+                # so the line keeps its location instead of filling the budget alone.
+                text, long_line = _cut(text, MAX_LINE_BYTES), True
             line = f"{display}:{number.decode(errors='replace')}:{text}" + (" [line cut]" if long_line else "")
             # Room is kept for the two notes search() may append, so they survive _clip.
             if used + len(line.encode()) + 1 > MAX_TOOL_OUTPUT_BYTES - 128:
@@ -534,6 +541,7 @@ def run_agent(
     """
     time_limit_s = min(time_limit_s, LOOP_DEADLINE_S)
     deadline = clock() + time_limit_s
+    answer_reserve = min(ANSWER_RESERVE_S, time_limit_s / 10)
     messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
     text, calls, spent = "", 0, 0
     # Set once any call was refused for budget: the model was told to answer, and gets one
@@ -595,7 +603,7 @@ def run_agent(
             no_room = room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
             limit = (
                 "time"
-                if remaining <= 0
+                if remaining <= answer_reserve
                 else f"{MAX_TOOL_CALLS} tool calls"
                 if calls >= MAX_TOOL_CALLS
                 else "tool output"

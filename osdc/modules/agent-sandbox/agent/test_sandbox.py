@@ -720,12 +720,13 @@ class TestRunTask:
         monkeypatch.setattr(
             sandbox.agent_loop,
             "run_agent",
-            lambda invoke, model, prompt, tools: {"report": "ok", "turns": 1, "tool_calls": 0},
+            lambda invoke, model, prompt, tools, **kw: {"report": "ok", "turns": 1, "tool_calls": 0},
         )
         result = sandbox.run_task({"repo": "org/repo", "model": "m", "pr": 7, "base": "a" * 40})
         assert seen == {"ref": "refs/pull/7/head", "base": "a" * 40}
         assert result["pr"] == 7
         assert result["changed_files"] == ["a.py"]
+        assert result["errors"] == {}, "the success path ran"
 
     def test_clone_failure_stops_before_bedrock(self, monkeypatch):
         def boom(*a, **kw):
@@ -888,7 +889,7 @@ class TestPullRequestCheckout:
         monkeypatch.setattr(
             sandbox.agent_loop,
             "run_agent",
-            lambda invoke, model, prompt, tools: {"report": "report", "turns": 1, "tool_calls": 0},
+            lambda invoke, model, prompt, tools, **kw: {"report": "report", "turns": 1, "tool_calls": 0},
         )
         result = sandbox.run_task({"repo": "org/repo", "model": "m", **spec})
         return seen.get("ref"), result
@@ -897,6 +898,7 @@ class TestPullRequestCheckout:
         ref, result = self._ref_used(monkeypatch, {"pr": 1234})
         assert ref == "refs/pull/1234/head"
         assert result["pr"] == 1234
+        assert result["errors"] == {}, "the success path ran"
 
     def test_a_pr_wins_over_an_explicit_ref(self, monkeypatch):
         """The two name different commits. Reviewing the branch instead would be the

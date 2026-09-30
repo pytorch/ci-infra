@@ -84,9 +84,10 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   filesystem. The result also carries `turns` and `tool_calls`.
 
   When a budget refuses a tool call — 120 calls, 768 KiB of tool output, the context
-  window, or time — and the model then answers from what it has read, the answer is
-  returned with `tools_refused` naming that budget, so it can be told from one written
-  after complete reading. A turn may use up to 16000 tokens, thinking included, and
+  window, or time (refused while 60 s are still left, so there is time to answer) — and
+  the model then answers from what it has read, the answer is returned with
+  `tools_refused` naming that budget, so it can be told from one written after complete
+  reading. A turn may use up to 16000 tokens, thinking included, and
   300 s. A throttled (429), failed (5xx) or dropped model call is retried up to three
   times with backoff while at least 30 s of the loop's time is left; a call that still
   fails ends the run with `errors.bedrock`, keeping `turns` and `tool_calls`.

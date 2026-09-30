@@ -178,6 +178,27 @@ class TestTools:
         assert name in tools.list_dir("").split("\n")
         assert tools.read_file(name).endswith("1: needle")
 
+    def test_an_escaped_long_line_keeps_its_location_and_the_matches_after_it(self, tmp_path):
+        """backslashreplace writes an invalid byte as four characters, so 8 KiB of raw
+        Latin-1 renders to about 32 KiB; the rendered line is cut, not the whole result."""
+        path = tmp_path / "r5"
+        path.mkdir()
+        (path / "a.txt").write_bytes(b"hit" + b"\xe9" * 9000 + b"\nhit two\n")
+        (path / "b.txt").write_bytes(b"hit three\n")
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(path), "commit", "-qm", "c"], check=True, env={**os.environ, **env})
+        out = RepoTools(str(path)).search("hit").split("\n")
+        assert out[0].startswith("a.txt:1:hit\\xe9")
+        assert out[0].endswith("[line cut]")
+        assert out[1:3] == ["a.txt:2:hit two", "b.txt:1:hit three"]
+
     def test_a_long_matching_line_keeps_its_location_and_the_matches_after_it(self, tmp_path):
         tools = _repo_with(tmp_path, {"a.min.js": "needle" + "x" * 100_000 + "\n", "b.txt": "needle\n"})
         out = tools.search("needle").split("\n")
@@ -653,6 +674,19 @@ class TestLoop:
         repo.read_file("README.md")
         assert os.path.isdir(repo.scratch)
         assert os.listdir(repo.scratch) == []
+
+    def test_running_short_of_time_leaves_a_turn_to_answer(self, repo):
+        """Time is refused while the answer reserve is still left, like the other budgets:
+        the model answers from what it read, and the answer carries tools_refused."""
+        ticks = iter([0.0, 1.0, 590.0, 591.0])
+
+        def clock():
+            return next(ticks, 591.0)
+
+        invoke = scripted(tool_use("list_dir", {}), answer("from what I read"))
+        out = agent_loop.run_agent(invoke, "m", "p", repo, clock=clock, time_limit_s=600)
+        assert out == {"report": "from what I read", "turns": 2, "tool_calls": 0, "tools_refused": "time"}
+        assert invoke.seen[1]["messages"][-1]["content"][0]["content"].startswith("error: tool budget exhausted")
 
     def test_the_deadline_is_checked_between_tool_calls(self, repo):
         both = {
