@@ -143,7 +143,8 @@ def job_manifest(task_id: str, grant) -> dict:
     It does read one thing besides the Grant — `PRIVATE_REPOS`, to decide whether to hand
     the pod the proxy's address. That is deployment topology ("which repos need a
     credential on the way out"), not authorization: the answer is a function of
-    `grant.clone_repo`, which policy already fixed, so nothing a caller sends can move it.
+    `grant.clone_repo`, which the caller may choose only among the repositories its
+    manifest allows, so nothing a caller sends can route a fetch the manifest did not grant.
 
     Every isolation property of a task pod is decided here, which is why
     kubernetes/base/admissionpolicy.yaml restates the same contract in the API server:

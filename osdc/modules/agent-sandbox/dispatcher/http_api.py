@@ -156,10 +156,9 @@ class Handler(BaseHTTPRequestHandler):
         spec = json.loads(self.rfile.read(length) or "{}")
         if not isinstance(spec, dict):
             raise ValueError("body must be a JSON object")
-        # 'repo' is no longer required, and no longer decides anything: the repository to
-        # clone comes from the Grant. It is still type-checked, and still compared to the
-        # Grant below — a caller that names a different repo is told so rather than
-        # quietly getting the policy's one.
+        # 'repo' is not required. With a token it chooses among the repositories the
+        # manifest allows (authorize.py refuses any other); without one the repository is
+        # fixed, and a `repo` that differs is refused below rather than quietly replaced.
         for key in ("manifest", "repo", "ref", "task", "model"):
             if key in spec and not isinstance(spec[key], str):
                 raise ValueError(f"'{key}' must be a string")
