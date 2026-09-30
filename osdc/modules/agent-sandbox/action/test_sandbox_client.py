@@ -284,7 +284,9 @@ _TOKEN_ENV = {"ACTIONS_ID_TOKEN_REQUEST_URL": "http://t/x", "ACTIONS_ID_TOKEN_RE
 
 
 def test_the_backoff_is_bounded_by_the_budget():
-    clock = iter([0.0, 1.0, 2.0, 29.0, 29.5, 31.0]).__next__  # start, 429, re-mint, 429, re-mint, 429
+    # start, first 429, before the second mint, after it, second 429, before the third
+    # mint (past the budget, so the call ends): two requests, the last wait capped at 0.5 s.
+    clock = iter([0.0, 1.0, 2.0, 29.0, 29.5, 31.0]).__next__
     slept = []
 
     class Opener:

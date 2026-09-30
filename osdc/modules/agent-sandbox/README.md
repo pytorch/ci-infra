@@ -297,6 +297,9 @@ steps:
       RESULT_FILE: ${{ steps.sandbox.outputs.result-file }}
 ```
 
+To read a pull request, pass its head sha as `ref` (or `refs/pull/<n>/head`, which the
+dispatcher also takes as its `pr` field).
+
 ## Capacity
 
 A sandbox slot is **2 vCPU / 4 GiB / 20 GiB disk with requests == limits** (Guaranteed QoS), so
