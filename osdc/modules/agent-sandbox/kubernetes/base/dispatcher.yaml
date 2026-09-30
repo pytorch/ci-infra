@@ -83,6 +83,11 @@ spec:
               value: "__AWS_REGION__"
             - name: BEDROCK_DEFAULT_MODEL_ID
               value: "__BEDROCK_DEFAULT_MODEL_ID__"
+            # Where the git credential proxy listens. Passed on to a task pod only when
+            # its repo is in kube.PRIVATE_REPOS — a public clone goes straight to
+            # github.com, so the proxy being down cannot break it.
+            - name: GIT_PROXY
+              value: "git-proxy.ai-sandbox.svc.cluster.local:8080"
             - name: SIGV4_PROXY
               value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
             - name: MAX_CONCURRENT_TASKS

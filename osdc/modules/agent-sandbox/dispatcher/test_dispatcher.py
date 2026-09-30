@@ -32,6 +32,9 @@ import pytest
 import tasks
 import test_authorize
 import test_oidc
+import yaml
+
+GIT_PROXY_MANIFEST = Path(__file__).resolve().parent.parent / "kubernetes" / "base" / "git-proxy.yaml"
 
 
 def _load_entrypoint():
@@ -173,6 +176,80 @@ class TestJobManifest:
         leaves task pods with no egress allow-list at all."""
         labels = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["metadata"]["labels"]
         assert labels["app"] == "sandbox-task"
+
+
+class TestGitProxy:
+    def _env(self, grant):
+        spec = kube.job_manifest("abc123abc123", grant)["spec"]["template"]["spec"]
+        return {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+
+    def test_a_private_repo_is_told_where_the_proxy_is(self, monkeypatch):
+        """The credential lives in the proxy, so the pod needs its address and nothing
+        else — there is no token here to pass down."""
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        monkeypatch.setattr(kube, "PRIVATE_REPOS", frozenset({"org/repo"}))
+        assert self._env(a_grant())["GIT_PROXY"] == "git-proxy.ai-sandbox.svc:8080"
+
+    def test_a_public_repo_goes_straight_to_github(self, monkeypatch):
+        """The proxy is opt-in per repo. Routing everything through it would make a
+        missing Secret break every task, including the public clones that worked before
+        it existed — and push a 250 MB pytorch/pytorch clone through nginx for nothing."""
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        monkeypatch.setattr(kube, "PRIVATE_REPOS", frozenset({"some/other-private-repo"}))
+        assert self._env(a_grant())["GIT_PROXY"] == ""
+
+    def test_the_default_policy_repo_is_not_proxied(self):
+        """The shipped pairing has to be self-consistent: v1 clones V1_CLONE_REPO, and
+        routing that through a proxy whose allowlist does not name it 403s every task."""
+        assert authorize.V1_CLONE_REPO not in kube.PRIVATE_REPOS
+
+    def test_no_credential_reaches_the_task_pod(self, monkeypatch):
+        """An EXACT set, not a scan for names containing TOKEN or SECRET.
+
+        The scan this replaces was the wrong shape for the property: it passed for every
+        variable that did not happen to be spelled that way, so adding
+        `GITHUB_APP_PRIVATE_KEY` — or `GH_PAT`, or the proxy's own credential under any
+        name at all — would have gone green. Pinning the set means a new variable of any
+        kind fails here and has to be added deliberately, which is exactly the review
+        this file exists to force.
+        """
+        monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
+        monkeypatch.setattr(kube, "PRIVATE_REPOS", frozenset({"org/repo"}))
+        spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
+        env = {e["name"] for e in spec["containers"][0]["env"]}
+        assert env == {
+            "PYTHONUNBUFFERED",
+            "AWS_REGION",
+            "SIGV4_PROXY",
+            "GIT_PROXY",  # an ADDRESS. The credential stays in the proxy.
+            "BEDROCK_DEFAULT_MODEL_ID",
+            "SANDBOX_REPO",
+            "SANDBOX_REF",
+            "SANDBOX_TASK",
+            "SANDBOX_MODEL",
+        }
+        # Nothing mounts a credential either — a Secret volume or envFrom would carry one
+        # in without ever naming it above.
+        assert "envFrom" not in spec["containers"][0]
+        assert not spec.get("volumes")
+
+    def test_the_proxy_allowlist_and_private_repos_name_the_same_repos(self):
+        """Two copies of one list, in two languages. A repo in PRIVATE_REPOS but not in
+        nginx's `map` is routed to a proxy that answers 403 — every task for that caller
+        fails — and one in nginx but not here is fetched anonymously from a private repo
+        and 404s. Neither failure is visible until a real task runs, so compare them
+        here.
+
+        Read out of the nginx template rather than restated: a copy of the copy would
+        agree with itself while both drifted from the deployed config.
+        """
+        config = yaml.safe_load(GIT_PROXY_MANIFEST.read_text().split("\n---\n")[0])
+        template = config["data"]["default.conf.template"]
+        block = template.split("map $uri $repo_allowed {", 1)[1].split("}", 1)[0]
+        # `"~^/pytorch/ciforge\.git/"    1;` -> pytorch/ciforge
+        allowed = {m.group(1).replace("\\", "") for m in re.finditer(r'"~\^/(\S+?)\\?\.git/"\s+1;', block)}
+        assert allowed, "parsed no repos out of the nginx allowlist — the map's shape changed"
+        assert allowed == set(kube.PRIVATE_REPOS)
 
 
 class TestRunToCompletion:

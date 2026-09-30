@@ -36,19 +36,47 @@ def _git_repo(path, entries):
     return path
 
 
+GIT_PROXY_HOST = "git-proxy.ai-sandbox.svc:8080"
+
+
+def _insteadof(tmp_path, monkeypatch, rules):
+    """Redirect URL prefixes to local paths with git's `insteadOf` rewrite.
+
+    `rules` maps the prefix `clone_repo` builds to the local URI it should resolve to.
+    A prefix left OUT of the mapping does not resolve at all, which is what lets a test
+    assert WHICH url was built without inspecting the argv: the clone either lands or
+    it fails."""
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text("".join(f'[url "{target}"]\n\tinsteadOf = {prefix}\n' for prefix, target in rules.items()))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+
+
 class TestCloneRepo:
-    """`clone_repo` hardcodes https://github.com/<repo>.git (it only ever clones
-    public repos). Point that URL at a local repo with git's `insteadOf` rewrite so
-    the real clone path is exercised without touching the network."""
+    """`clone_repo` builds https://github.com/<repo>.git, or http://$GIT_PROXY/<repo>.git
+    for a private one. Point those at a local repo with git's `insteadOf` rewrite so the
+    real clone path is exercised without touching the network."""
 
     @pytest.fixture
     def local_github(self, tmp_path, monkeypatch):
         origin = _git_repo(tmp_path / "origin" / "org" / "repo.git", ["README.md", "setup.py", "torch/"])
-        gitconfig = tmp_path / "gitconfig"
-        gitconfig.write_text(
-            f'[url "{(tmp_path / "origin").as_uri()}/"]\n\tinsteadOf = https://github.com/\n',
+        _insteadof(tmp_path, monkeypatch, {"https://github.com/": f"{(tmp_path / 'origin').as_uri()}/"})
+        return origin
+
+    @pytest.fixture
+    def local_git_proxy(self, tmp_path, monkeypatch):
+        """The proxy prefix resolves and github.com does not, so a clone that went
+        straight to github.com fails instead of quietly passing — and neither one
+        leaves the machine."""
+        origin = _git_repo(tmp_path / "origin" / "org" / "repo.git", ["README.md", "setup.py", "torch/"])
+        _insteadof(
+            tmp_path,
+            monkeypatch,
+            {
+                f"http://{GIT_PROXY_HOST}/": f"{(tmp_path / 'origin').as_uri()}/",
+                "https://github.com/": f"{(tmp_path / 'no-such-origin').as_uri()}/",
+            },
         )
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+        monkeypatch.setattr(sandbox, "GIT_PROXY", GIT_PROXY_HOST)
         return origin
 
     def test_counts_tracked_files(self, local_github, tmp_path):
@@ -58,6 +86,18 @@ class TestCloneRepo:
     def test_missing_ref_raises(self, local_github, tmp_path):
         with pytest.raises(subprocess.CalledProcessError):
             sandbox.clone_repo("org/repo", "no-such-branch", str(tmp_path / "dest"))
+
+    def test_a_git_proxy_replaces_the_github_url(self, local_git_proxy, tmp_path):
+        """A private repo needs a credential this process must never hold, so the clone
+        goes to the proxy that does — a real clone over the URL clone_repo built, not an
+        assertion about its argv. Under this fixture only the proxy prefix resolves."""
+        assert sandbox.clone_repo("org/repo", "main", str(tmp_path / "dest")) == 3
+
+    def test_without_a_git_proxy_it_talks_to_github(self, local_github, tmp_path, monkeypatch):
+        """And the mirror image: `local_github` rewrites github.com and nothing else, so
+        this passing means the unproxied URL is the one that was cloned."""
+        monkeypatch.setattr(sandbox, "GIT_PROXY", "")
+        assert sandbox.clone_repo("org/repo", "main", str(tmp_path / "dest")) == 3
 
     def test_terminal_prompts_stay_disabled(self, local_github, tmp_path, monkeypatch):
         """A credential prompt would hang the worker forever instead of failing."""
