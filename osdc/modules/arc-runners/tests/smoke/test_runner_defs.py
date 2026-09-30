@@ -7,7 +7,14 @@ via `pytest test_runner_defs.py`.
 from __future__ import annotations
 
 import pytest
-from runner_defs import def_for_listener_pod, def_name_from_scale_set
+from runner_defs import (
+    def_for_listener_pod,
+    def_name_from_scale_set,
+    read_generated_scale_sets,
+    scale_set_label_from_values,
+    scale_set_label_of_pod,
+    scale_sets_by_label,
+)
 from test_capacity_parity import _proactive_capacity_from_generated
 from test_runners import _capacity_aware_env, _listener_env_from_generated_yaml
 
@@ -161,6 +168,109 @@ class TestProactiveCapacityFromGenerated:
     def test_returns_zero_when_value_unparseable(self):
         assert _proactive_capacity_from_generated(self._doc("not-an-int")) == 0
         assert _proactive_capacity_from_generated(self._doc(None)) == 0
+
+
+class TestScaleSetLabelFromValues:
+    """The live pod scale-set-name label derived from a generated chart-values doc."""
+
+    def test_primary_uses_runner_scale_set_name(self):
+        assert scale_set_label_from_values({"runnerScaleSetName": "mt-l-x86iamx-8-16"}) == "mt-l-x86iamx-8-16"
+
+    def test_additional_org_uses_resource_name(self):
+        # Additional-org fan-out sets resourceName; runnerScaleSetName stays the
+        # shared GitHub label — the K8s label follows resourceName.
+        values = {"runnerScaleSetName": "mt-l-x86iamx-8-16", "resourceName": "mp-l-x86iamx-8-16"}
+        assert scale_set_label_from_values(values) == "mp-l-x86iamx-8-16"
+
+    def test_missing_returns_empty(self):
+        assert scale_set_label_from_values({}) == ""
+
+
+class TestScaleSetLabelOfPod:
+    def test_reads_label(self):
+        pod = {"metadata": {"labels": {"actions.github.com/scale-set-name": "mp-l-x86iamx-8-16"}}}
+        assert scale_set_label_of_pod(pod) == "mp-l-x86iamx-8-16"
+
+    def test_missing_label_returns_none(self):
+        assert scale_set_label_of_pod({"metadata": {"labels": {}}}) is None
+        assert scale_set_label_of_pod({}) is None
+
+
+def _write_generated(path, resource_id, runner_scale_set_name, resource_name=None, cluster_index="0"):
+    """Write a minimal two-doc generated runner YAML mirroring the generator."""
+    resource_line = f'resourceName: "{resource_name}"\n' if resource_name else ""
+    path.write_text(
+        f'runnerScaleSetName: "{runner_scale_set_name}"\n'
+        f"{resource_line}"
+        "listenerTemplate:\n"
+        "  spec:\n"
+        "    containers:\n"
+        "      - name: listener\n"
+        "        env:\n"
+        "          - name: CAPACITY_AWARE_CLUSTER_INDEX\n"
+        f'            value: "{cluster_index}"\n'
+        "---\n"
+        "apiVersion: v1\n"
+        "kind: ConfigMap\n"
+        "metadata:\n"
+        f"  name: arc-runner-hook-{resource_id}\n"
+        "  namespace: arc-runners\n"
+    )
+
+
+class TestReadGeneratedScaleSets:
+    """The generated-files reader that is the source of truth for org-aware checks."""
+
+    def test_multi_org_pair(self, tmp_path):
+        # One def fanned out to primary (pytorch) + additional org (mp), exactly
+        # as the generator emits it.
+        _write_generated(tmp_path / "l-x86iamx-8-16.yaml", "l-x86iamx-8-16", "mt-l-x86iamx-8-16", cluster_index="1")
+        _write_generated(
+            tmp_path / "mp-l-x86iamx-8-16.yaml",
+            "mp-l-x86iamx-8-16",
+            "mt-l-x86iamx-8-16",
+            resource_name="mp-l-x86iamx-8-16",
+            cluster_index="0",
+        )
+
+        scale_sets = read_generated_scale_sets([tmp_path], "mt-")
+        assert len(scale_sets) == 2
+        by_label = scale_sets_by_label(scale_sets)
+
+        # Org-unique labels: primary keeps the prefixed name, mp uses resourceName.
+        assert set(by_label) == {"mt-l-x86iamx-8-16", "mp-l-x86iamx-8-16"}
+        primary = by_label["mt-l-x86iamx-8-16"]
+        mp = by_label["mp-l-x86iamx-8-16"]
+
+        # Both map back to the SAME bare def, but to DIFFERENT org-unique CMs.
+        assert primary.def_name == mp.def_name == "l-x86iamx-8-16"
+        assert primary.configmap_name == "arc-runner-hook-l-x86iamx-8-16"
+        assert mp.configmap_name == "arc-runner-hook-mp-l-x86iamx-8-16"
+        assert primary.resource_id == "l-x86iamx-8-16"
+        assert mp.resource_id == "mp-l-x86iamx-8-16"
+        # Per-org values are preserved (different shard index here).
+        assert (
+            _capacity_aware_env(_listener_env_from_generated_yaml(primary.values))["CAPACITY_AWARE_CLUSTER_INDEX"][
+                "value"
+            ]
+            == "1"
+        )
+        assert (
+            _capacity_aware_env(_listener_env_from_generated_yaml(mp.values))["CAPACITY_AWARE_CLUSTER_INDEX"]["value"]
+            == "0"
+        )
+
+    def test_single_org_matches_def_name_reconstruction(self, tmp_path):
+        # Without an additional org the label is the prefixed name and the CM
+        # name matches the classic arc-runner-hook-<def> reconstruction.
+        _write_generated(tmp_path / "l-x86iamx-8-16.yaml", "l-x86iamx-8-16", "mt-l-x86iamx-8-16")
+        (scale_set,) = read_generated_scale_sets([tmp_path], "mt-")
+        assert scale_set.scale_set_label == "mt-l-x86iamx-8-16"
+        assert scale_set.def_name == "l-x86iamx-8-16"
+        assert scale_set.configmap_name == "arc-runner-hook-l-x86iamx-8-16"
+
+    def test_missing_dir_is_skipped(self, tmp_path):
+        assert read_generated_scale_sets([tmp_path / "does-not-exist"], "mt-") == []
 
 
 if __name__ == "__main__":
