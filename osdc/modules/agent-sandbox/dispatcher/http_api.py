@@ -194,9 +194,13 @@ class Handler(BaseHTTPRequestHandler):
         """
         header = self.headers.get("Authorization")
         if header is None and not REQUIRE_AUTH:
-            # The migration window. Unauthenticated callers get the v1 policy's Grant,
-            # which is the same clone target and model an authorized caller would get —
-            # so flipping REQUIRE_AUTH changes who may call, never what a call can do.
+            # The migration window. Unauthenticated callers get a fixed Grant — the v1
+            # clone target and the dispatcher's default model — not what any manifest
+            # grants. A request that NAMES a manifest is refused rather than served
+            # under it: the manifest would not be applied, and nothing in the result
+            # would say so. Keyed on presence, so `"manifest": ""` is refused too.
+            if "manifest" in spec:
+                raise oidc.InvalidToken("a request that names a manifest must carry a token")
             return authorize.Grant(
                 caller="unauthenticated",
                 manifest="",

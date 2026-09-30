@@ -54,11 +54,14 @@ class Manifest:
     clients: tuple[ClientRepo, ...]
     triggers: frozenset[str]
     # Workflow files, relative to the client repo, allowed to call. Empty means any
-    # workflow in a listed repo.
+    # workflow in a listed repo. A file NAME matched at whatever ref the run used — a
+    # pull request's merge ref or any pushed branch included — so it narrows which file
+    # may call, not what code that file runs. The Grant is what bounds the run.
     workflows: frozenset[str]
     # Bedrock model id; empty means the dispatcher's configured default.
     model: str
-    # Public repositories the task may clone. The first is the default.
+    # Repositories the task may clone. The first is the default. A private one must also
+    # be in kube.PRIVATE_REPOS, which routes its fetch through git-proxy.
     sandbox_repos: tuple[str, ...]
 
 

@@ -97,12 +97,12 @@ the token against that manifest's `clients` region and builds the Grant from the
 name: ciforge-pr-review
 owner: pytorch-dev-infra
 clients:
-  repos:                     # matched on the immutable ids, not the name
+  repos:                     # matched on the ids; the name must still match the workflow refs
     - repository: pytorch/ciforge
       repository_id: "1133856973"
       repository_owner_id: "21003710"
   triggers: [pull_request, workflow_run, workflow_dispatch]   # the token's event_name
-  workflows: []              # optional: workflow files allowed to call; empty = any
+  workflows: []              # optional: file names allowed to call, at any ref; empty = any
 model:
   id: us.anthropic.claude-opus-5-5   # optional; empty = the dispatcher's default
 sandbox:
@@ -115,7 +115,8 @@ cannot edit the manifest it is judged against. That is why a PR-triggered client
 allowed where its manifest lists `pull_request`, and why the caller's own branch need not
 be protected: the Grant bounds what any admitted caller can do — same repositories, same
 model, same limits — whoever wrote the workflow. The loader is strict (unknown keys, empty
-lists and integer ids are errors) and the dispatcher refuses to start without manifests.
+required lists and integer ids are errors) and the dispatcher refuses to start without
+manifests.
 
 Both workflow refs in the token must be inside the client repository, and `job_workflow_ref`
 is required, so an allowed repository cannot delegate its identity to a reusable workflow

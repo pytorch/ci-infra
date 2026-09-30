@@ -422,6 +422,21 @@ class TestHTTPSurface:
         assert exc.value.code == 403
         assert "set by policy" in json.loads(exc.value.read())["error"]
 
+    def test_naming_a_manifest_without_a_token_is_401(self, server):
+        """The unauthenticated Grant is not any manifest's. Serving the request under it
+        would run a different repository and model than the caller asked for and say
+        nothing; `"manifest": ""` is refused too, since it is usually an empty input."""
+        for name in ("ciforge-pr-review", ""):
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                _post(f"{server}/run", {"manifest": name, "task": "hello"})
+            assert exc.value.code == 401
+            assert "manifest" in json.loads(exc.value.read())["error"]
+
+    def test_status_under_a_manifest_without_a_token_is_401(self, server):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener.open(f"{server}/status/0123456789ab?manifest=ciforge-experiments", timeout=30)
+        assert exc.value.code == 401
+
     def test_naming_the_policy_repository_is_still_accepted(self, server):
         """The existing caller sends repo explicitly; it keeps working as long as it
         agrees with policy."""
