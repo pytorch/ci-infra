@@ -320,7 +320,7 @@ if [[ -n "$jwks_failure" ]]; then
     require_auth=$(kubectl get deployment sandbox-dispatcher -n "$NAMESPACE" \
       -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REQUIRE_AUTH")].value}') || require_auth="unknown"
     if [[ "$require_auth" == "false" ]]; then
-      echo "[agent-sandbox] Warning: ${JWKS_FATAL} REQUIRE_AUTH is false, so calls without a token still work; calls with one get 401 until keys land."
+      echo "[agent-sandbox] Warning: ${jwks_failure}, and oidc-jwks holds no signing keys the dispatcher would accept, so calls with a token get 401 until a refresh lands. REQUIRE_AUTH is false, so calls without one still work."
       JWKS_FATAL=""
     else
       echo "[agent-sandbox] ERROR: ${JWKS_FATAL} (the deploy continues its cleanup steps, then fails)" >&2
@@ -368,11 +368,6 @@ fi
 # above them removes a credential. A crash-looping new pod leaves the old one serving,
 # and swallowing the failure tells the operator it succeeded. There is no task rollout to
 # wait for — task pods only exist while a request is in flight.
-if [[ -n "$JWKS_FATAL" ]]; then
-  echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2
-  exit 1
-fi
-
 echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
 # Roll git-proxy ONLY when its config actually changed. git-proxy-config is a plain
@@ -397,6 +392,14 @@ fi
 # the first symptom would be a private clone failing inside a task.
 kubectl rollout status deployment/git-proxy -n "$NAMESPACE" --timeout=5m
 kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=10m
+
+# A signing-key problem recorded above fails the deploy only here, after every step that
+# changes the cluster: exiting before the git-proxy restart left a config change in this
+# deploy unapplied, and the re-run then read that config as unchanged and never restarted.
+if [[ -n "$JWKS_FATAL" ]]; then
+  echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2
+  exit 1
+fi
 
 echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd,"
 echo "by a job presenting its GitHub OIDC token under a capability manifest; each call runs"

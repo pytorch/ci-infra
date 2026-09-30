@@ -990,6 +990,15 @@ class TestAuthenticatedSurface:
         monkeypatch.delenv("REQUIRE_AUTH", raising=False)
         assert http_api._flag("REQUIRE_AUTH", http_api.REQUIRE_AUTH_DEFAULT) is True
 
+    @pytest.mark.parametrize(("require", "code"), [(True, 401), (False, 404)])
+    def test_a_tokenless_status_tells_whether_auth_is_on(self, server, monkeypatch, require, code):
+        """The canary's discriminator: a tokenless /status naming no manifest is 401 with
+        auth required and an unknown-task 404 without it, and starts nothing."""
+        monkeypatch.setattr(http_api, "REQUIRE_AUTH", require)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener.open(f"{server}/status/000000000000", timeout=30)
+        assert exc.value.code == code
+
     def test_requiring_auth_refuses_a_request_with_no_token(self, server, monkeypatch):
         monkeypatch.setattr(http_api, "REQUIRE_AUTH", True)
         with pytest.raises(urllib.error.HTTPError) as exc:

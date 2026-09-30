@@ -109,13 +109,16 @@ def test_an_unreadable_configmap_is_not_mistaken_for_either_case(tmp_path):
     assert "could not be read" in done.stderr
 
 
-def test_a_recorded_key_problem_fails_the_deploy_before_the_rollout_waits():
-    """The exit sits after the prune and IRSA-revocation steps and before the rollouts."""
+def test_a_recorded_key_problem_fails_the_deploy_after_every_cluster_change():
+    """The exit comes after the prune, the IRSA revocation, the git-proxy restart and the
+    rollout checks: an earlier exit skipped the restart, and a re-run then read the new
+    config as unchanged and never restarted git-proxy."""
     text = DEPLOY_SH.read_text()
     exit_at = text.index('if [[ -n "$JWKS_FATAL" ]]; then\n  echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2\n  exit 1')
     assert text.index("# --- Prune objects") < exit_at
     assert text.index("# --- Revoke the sandbox's own AWS identity") < exit_at
-    assert exit_at < text.index("kubectl rollout status")
+    assert text.index("kubectl rollout restart deployment/git-proxy") < exit_at
+    assert text.rindex("kubectl rollout status") < exit_at < text.index('"[agent-sandbox] Deployed.')
 
 
 def test_the_block_itself_never_exits(tmp_path):
@@ -146,6 +149,7 @@ def test_a_rollback_deploy_without_keys_warns_instead_of_failing(tmp_path):
     assert done.returncode == 0, done.stderr
     assert "REACHED_END" in done.stdout
     assert "REQUIRE_AUTH is false" in done.stdout
+    assert "refuses every" not in done.stdout, "the warning does not also say every call is refused"
 
 
 def test_an_unreadable_deployment_keeps_the_failure(tmp_path):

@@ -2130,9 +2130,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CODE=$(curl -sS -o /dev/null -w '%{http_code}' -m 60 -X POST "$SANDBOX/run" \
-            -H 'Content-Type: application/json' \
-            -d "{\"manifest\":\"$MANIFEST\",\"task\":\"Should not run.\"}")
+          # /status, naming no manifest: 401 when auth is required, 404 (an unknown task)
+          # when REQUIRE_AUTH is false. A /run naming a manifest would be a 401 either way,
+          # so it could not tell the two apart. Nothing is started.
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' -m 60 "$SANDBOX/status/000000000000")
           if [ "$CODE" != "401" ]; then
             echo "FAIL: a request with no token got HTTP $CODE, expected 401 (is REQUIRE_AUTH true?)"
             exit 1
