@@ -791,18 +791,61 @@ class TestProposals:
         assert [p["body"] for p in tools.proposals] == ["a", "b"]
         assert out["tools_refused"] == "context window"
 
-    def test_proposals_split_over_two_turns_survive_a_budget_spent_without_a_refusal(self, repo, monkeypatch):
-        """The review's case: the last allowed read spends the budget, the model proposes
-        its comment, then its check run in the next turn. Both are kept."""
+    def test_the_read_that_spends_the_budget_carries_the_note(self, repo, monkeypatch):
+        """Told at that read, the model proposes everything in its next turn and answers;
+        told a turn later, it could propose in two turns while the context reserve covers
+        one."""
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
+        tools = RepoTools(repo.dest, ALLOWED)
+        both = {
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "p1",
+                    "name": "propose_effect",
+                    "input": {"effect": "pr_comment", "body": "LGTM"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "p2",
+                    "name": "propose_effect",
+                    "input": {"effect": "check_run", "body": "ok", "conclusion": "neutral"},
+                },
+            ],
+        }
+        invoke = scripted(tool_use("list_dir", {}), both, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+        assert "error" not in out
+        assert [p["effect"] for p in tools.proposals] == ["pr_comment", "check_run"]
+        assert out["tools_refused"] == "1 tool calls"
+
+    def test_proposals_split_after_the_note_end_the_run(self, repo, monkeypatch):
+        """The note says one turn; a second proposal turn is refused like a read."""
         monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
         tools = RepoTools(repo.dest, ALLOWED)
         comment = tool_use("propose_effect", {"effect": "pr_comment", "body": "LGTM"}, id_="p1")
         check = tool_use("propose_effect", {"effect": "check_run", "body": "ok", "conclusion": "neutral"}, id_="p2")
-        invoke = scripted(tool_use("list_dir", {}), comment, check, answer("done"))
-        out = agent_loop.run_agent(invoke, "m", "p", tools)
-        assert "error" not in out
-        assert [p["effect"] for p in tools.proposals] == ["pr_comment", "check_run"]
-        assert out["tools_refused"] == "1 tool calls"
+        out = agent_loop.run_agent(scripted(tool_use("list_dir", {}), comment, check), "m", "p", tools)
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+
+    def test_time_running_short_is_announced_on_a_proposal_only_turn(self, repo):
+        """Time counts in the turn-level check too: a model that proposes without reading
+        once time is short is told, and gets its one proposal turn."""
+        ticks = iter([0.0, 1.0, 590.0, 591.0, 592.0, 593.0])
+
+        def clock():
+            return next(ticks, 593.0)
+
+        tools = RepoTools(repo.dest, ALLOWED)
+        first = tool_use("propose_effect", {"effect": "pr_comment", "body": "a"}, id_="p1")
+        second = tool_use("propose_effect", {"effect": "check_run", "body": "b", "conclusion": "neutral"}, id_="p2")
+        invoke = scripted(first, second, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools, clock=clock, time_limit_s=600)
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+        assert out["tools_refused"] == "time"
+        assert [p["body"] for p in tools.proposals] == ["a", "b"]
 
     def test_only_one_turn_of_proposals_is_accepted_after_the_budget_runs_out(self, repo, monkeypatch):
         monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
@@ -835,9 +878,13 @@ class TestProposals:
         say proposing is open for one more turn, or a review split over two is lost."""
         monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
         tools = RepoTools(repo.dest, ALLOWED)
-        invoke = scripted(tool_use("list_dir", {}), tool_use("list_dir", {}, id_="r2"), answer("done"))
+        two = {
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": str(i), "name": "list_dir", "input": {}} for i in range(2)],
+        }
+        invoke = scripted(two, answer("done"))
         agent_loop.run_agent(invoke, "m", "p", tools)
-        refusal = invoke.seen[2]["messages"][-1]["content"][0]["content"]
+        refusal = invoke.seen[1]["messages"][-1]["content"][1]["content"]
         assert refusal.startswith("error: tool budget exhausted")
         assert agent_loop.BUDGET_SPENT_NOTE in refusal
 

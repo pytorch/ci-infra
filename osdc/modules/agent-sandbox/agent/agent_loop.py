@@ -623,7 +623,10 @@ def run_agent(
     """
     time_limit_s = min(time_limit_s, LOOP_DEADLINE_S)
     deadline = clock() + time_limit_s
-    answer_reserve = min(ANSWER_RESERVE_S, time_limit_s / 10)
+    # With effects allowed the model is promised a proposal turn AND an answer turn after
+    # it is told its budget is spent, so two turns — and two turns' time — are kept back.
+    turns_kept = 2 if tools.effects else 1
+    answer_reserve = min(ANSWER_RESERVE_S, time_limit_s / 10) * turns_kept
     messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
     text, calls, spent = "", 0, 0
     # Set once any call was refused for budget: the model was told to answer, and gets one
@@ -686,15 +689,15 @@ def run_agent(
         proposing = [u for u in uses if u.get("name") == "propose_effect" and tools.effects]
         if final and told and (len(proposing) < len(uses) or proposed_after_refusal):
             return done(turn, "the model kept calling tools after its budget ran out")
-        # A budget can be spent without any read being refused (right after the last
-        # allowed read, or a proposal-only turn once the window is nearly full), so
-        # exhaustion is checked here, not only per read. (Time needs no check here: the
-        # top of the loop ends it once time is out.)
-        # With effects allowed the model is promised a proposal turn AND an answer turn
-        # after it is told, so two turns are kept back instead of one.
-        turns_kept = 2 if tools.effects else 1
+        # A budget can be spent without any read being refused (a proposal-only turn once
+        # the window is nearly full, or once time is short), so exhaustion is checked here,
+        # not only per read. `remaining` is measured once here and reused by the first
+        # tool call below.
+        remaining = deadline - clock()
         exhausted = (
-            f"{MAX_TURNS} turns"
+            "time"
+            if remaining <= answer_reserve
+            else f"{MAX_TURNS} turns"
             if turn >= MAX_TURNS - turns_kept
             else f"{MAX_TOOL_CALLS} tool calls"
             if calls >= MAX_TOOL_CALLS
@@ -710,8 +713,9 @@ def run_agent(
             if told_before:
                 proposed_after_refusal = proposed_after_refusal or bool(proposing)
         results = []
-        for use in uses:
-            remaining = deadline - clock()
+        for i, use in enumerate(uses):
+            if i:
+                remaining = deadline - clock()
             # A result is at most MAX_TOOL_OUTPUT_BYTES plus a short note, so a call runs
             # only while one more worst-case result still fits the context window.
             no_room = room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
@@ -749,6 +753,22 @@ def run_agent(
                 spent += len(output.encode())
             room_bytes -= len(output.encode()) + 256  # the result and its framing
             results.append({"type": "tool_result", "tool_use_id": use.get("id", ""), "content": output})
+        if tools.effects and not final:
+            # The read that spends a budget is where the model must hear it: told a turn
+            # later, it could propose in two turns while the context reserve covers one.
+            spent_now = (
+                "time"
+                if remaining <= answer_reserve
+                else f"{MAX_TOOL_CALLS} tool calls"
+                if calls >= MAX_TOOL_CALLS
+                else "tool output"
+                if spent >= MAX_TRANSCRIPT_TOOL_BYTES
+                else "context window"
+                if room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
+                else ""
+            )
+            if spent_now:
+                final, exhausted = True, spent_now
         if final and not told:
             # The budget ran out with nothing refused, so the model has not been told. Tell
             # it now, before it picks its next turn: that turn may still propose.
