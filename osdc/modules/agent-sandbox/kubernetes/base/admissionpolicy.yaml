@@ -223,7 +223,7 @@ spec:
     #
     # These rules check that limits are DECLARED, and that requests equal them. They put
     # no ceiling on the VALUES, so one admitted task can still size itself to the whole
-    # namespace quota (25 CPU / 50Gi memory / 245Gi ephemeral in quota.yaml) and starve
+    # namespace quota (26 CPU / 50Gi memory / 248Gi ephemeral in quota.yaml) and starve
     # every other task — a denial of service against ourselves, not an escape, which is
     # why it is a follow-up rather than a rule here: a ceiling means a fourth copy of the
     # TASK_CPU/TASK_MEMORY/TASK_EPHEMERAL_STORAGE values, and comparing quantities needs

@@ -95,6 +95,7 @@ def a_job(**pod_overrides) -> dict:
         model="",
         task="hello",
         ref="",
+        pr=0,
     )
     job = kube.job_manifest("abc123456789", grant)
     job["spec"]["template"]["spec"].update(pod_overrides)
