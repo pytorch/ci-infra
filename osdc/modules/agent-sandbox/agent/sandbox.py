@@ -203,8 +203,13 @@ def diff_against(repo: str, dest: str, base: str) -> tuple[list[str], int, str, 
     )
     with tempfile.TemporaryDirectory() as scratch:
         names_path, patch_path = os.path.join(scratch, "names"), os.path.join(scratch, "patch")
-        _git_to_file(["diff", "--name-only", "-z", base, "HEAD", "--"], dest, names_path)
-        _git_to_file(["diff", "--no-color", "--no-ext-diff", base, "HEAD", "--"], dest, patch_path)
+        # --ignore-submodules=none: otherwise git honours `submodule.<name>.ignore` from the
+        # tree's .gitmodules — the author's file — and a submodule bump could vanish from
+        # both the list and the patch.
+        names = ["diff", "--ignore-submodules=none", "--name-only", "-z", base, "HEAD", "--"]
+        _git_to_file(names, dest, names_path)
+        patch_args = ["diff", "--ignore-submodules=none", "--no-color", "--no-ext-diff", base, "HEAD", "--"]
+        _git_to_file(patch_args, dest, patch_path)
         with open(names_path, "rb") as handle:
             files = [f.decode(errors="backslashreplace") for f in handle.read().split(b"\0") if f]
         with open(patch_path, "rb") as handle:

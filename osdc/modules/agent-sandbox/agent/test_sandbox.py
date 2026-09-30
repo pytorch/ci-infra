@@ -9,6 +9,7 @@ proxy on a real socket, and the HTTP surface against a real socket.
 import http.client
 import io
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -315,6 +316,34 @@ class TestCloneRepo:
         assert "+import evil" in patch
         assert "+* -diff" in patch
         assert "Binary files" not in patch
+
+    def test_a_gitmodules_ignore_cannot_hide_a_submodule_bump(self, local_github, tmp_path):
+        """`ignore = all` in the tree's .gitmodules would drop a submodule pointer change
+        from both the file list and the patch."""
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+
+        def run(*args):
+            subprocess.run(["git", "-C", str(local_github), *args], check=True, env={**os.environ, **env})
+
+        (local_github / ".gitmodules").write_text('[submodule "sub"]\n\tpath = sub\n\turl = ../x\n\tignore = all\n')
+        run("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},sub")
+        run("add", ".gitmodules")
+        run("commit", "-qm", "add sub")
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        run("update-index", "--cacheinfo", f"160000,{'2' * 40},sub")
+        run("commit", "-qm", "bump sub")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        files, _, patch, _ = sandbox.diff_against("org/repo", str(dest), base)
+        assert files == ["sub"]
+        assert "+Subproject commit " + "2" * 40 in patch
 
     def test_a_file_named_head_does_not_make_the_diff_ambiguous(self, local_github, tmp_path):
         base = subprocess.run(
