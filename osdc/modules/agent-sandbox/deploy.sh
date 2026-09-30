@@ -313,8 +313,18 @@ if [[ -n "$jwks_failure" ]]; then
   else
     echo "[agent-sandbox] Warning: ${jwks_failure}. The previous signing keys stay in use for about ${keys_left} more; the CronJob retries every 6h."
   fi
+  # A rollback deploy (REQUIRE_AUTH "false") still serves callers that send no token, so
+  # missing keys refuse only the ones that do: a warning, not a failed deploy. Read from
+  # the Deployment just applied; a failed read keeps the failure.
   if [[ -n "$JWKS_FATAL" ]]; then
-    echo "[agent-sandbox] ERROR: ${JWKS_FATAL} (the deploy continues its cleanup steps, then fails)" >&2
+    require_auth=$(kubectl get deployment sandbox-dispatcher -n "$NAMESPACE" \
+      -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REQUIRE_AUTH")].value}') || require_auth="unknown"
+    if [[ "$require_auth" == "false" ]]; then
+      echo "[agent-sandbox] Warning: ${JWKS_FATAL} REQUIRE_AUTH is false, so calls without a token still work; calls with one get 401 until keys land."
+      JWKS_FATAL=""
+    else
+      echo "[agent-sandbox] ERROR: ${JWKS_FATAL} (the deploy continues its cleanup steps, then fails)" >&2
+    fi
   fi
 fi
 
