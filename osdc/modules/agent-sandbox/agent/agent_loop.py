@@ -14,6 +14,7 @@ how it learns to correct itself.
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import os
 import subprocess
@@ -23,7 +24,11 @@ import time
 
 MAX_TURNS = 24
 LOOP_DEADLINE_S = 600
-MAX_TOKENS = 4096
+# Per turn, and thinking counts toward it: a model that always thinks (Opus 5.5 runs
+# adaptive thinking whether asked or not) can spend much of a small budget before it
+# writes the answer. 16000 is the usual ceiling for a non-streaming call; the turn's
+# time is bounded separately (sandbox.MODEL_CALL_TIMEOUT_S and the loop deadline).
+MAX_TOKENS = 16_000
 # Per tool call, and in total: every result is re-sent on every later turn.
 MAX_TOOL_OUTPUT_BYTES = 32 * 1024
 MAX_TRANSCRIPT_TOOL_BYTES = 768 * 1024
@@ -44,6 +49,12 @@ MAX_SEARCH_MATCHES = 100
 MAX_PATH_CHARS = 4096
 TOOL_TIMEOUT_S = 60
 MAX_LINE_BYTES = 8 * 1024
+# A model call is retried only for a failure another attempt can fix — throttling, a 5xx,
+# a dropped connection — and only while enough of the deadline is left for a call to
+# finish. Anything else (a 4xx, a malformed body) would fail the same way again.
+MAX_CALL_RETRIES = 3
+RETRY_BASE_S = 2.0
+MIN_RETRY_REMAINING_S = 30.0
 
 SYSTEM = (
     "You are a careful engineer working in a read-only checkout of a git repository. "
@@ -93,6 +104,49 @@ TOOLS = [
 
 class ToolError(ValueError):
     """A tool call the model should see as an error message, not a crash."""
+
+
+class ModelHTTPError(RuntimeError):
+    """An HTTP error from a model call, already summarised, with its status code."""
+
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+# What a model call can raise that ends the loop with its progress kept: an HTTP error,
+# a dropped connection or timeout (OSError), a truncated or reset response
+# (HTTPException), and a body that does not parse (ValueError, KeyError, TypeError,
+# RecursionError on deep nesting).
+MODEL_CALL_ERRORS = (
+    ModelHTTPError,
+    OSError,
+    http.client.HTTPException,
+    ValueError,
+    KeyError,
+    TypeError,
+    RecursionError,
+)
+
+
+def _transient(exc: BaseException) -> bool:
+    if isinstance(exc, ModelHTTPError):
+        return exc.status == 429 or exc.status >= 500
+    return isinstance(exc, (OSError, http.client.HTTPException))
+
+
+def _read_until(out, stop: bytes, limit: int) -> bytes | None:
+    """Bytes up to `stop` (consumed, not returned), at most `limit` of them; None at a
+    clean end of file."""
+    buf = bytearray()
+    while len(buf) <= limit:
+        byte = out.read(1)
+        if not byte:
+            return bytes(buf) if buf else None
+        if byte == stop:
+            return bytes(buf)
+        buf += byte
+    raise ToolError("unexpected search output")
 
 
 def _argument_text(value, what: str) -> str:
@@ -270,27 +324,53 @@ class RepoTools:
             raise ToolError("pattern must be a non-empty string")
         _argument_text(pattern, "pattern")
         path = self._path(path, allow_empty=True)
-        args = ["grep", "-n", "-I", "-E", f"--max-count={MAX_SEARCH_MATCHES}", "-e", pattern, "HEAD", "--"]
+        # -z prints each path verbatim and ends it, and the line number, with NUL: the
+        # default output quotes a non-ASCII or unusual name (`"caf\303\251.txt"`), which
+        # read_file could not open.
+        args = ["grep", "-n", "-z", "-I", "-E", f"--max-count={MAX_SEARCH_MATCHES}", "-e", pattern, "HEAD", "--"]
         with self._scratch_file() as out:
             done = self._git([*args, path] if path else args, out)
             if done.returncode == 1:
                 return "no matches"
             if done.returncode != 0:
                 raise ToolError(f"search failed: {done.stderr.decode(errors='replace')}")
-            size = out.tell()
             out.seek(0)
-            raw = out.read(MAX_TOOL_OUTPUT_BYTES)
-        # git grep prefixes each match with "HEAD:".
-        lines = [ln.removeprefix("HEAD:") for ln in raw.decode(errors="backslashreplace").split("\n") if ln]
-        if size > MAX_TOOL_OUTPUT_BYTES:
-            lines = [*lines[:-1], "[more matches not shown; narrow the pattern or the path]"]
-        per_file: dict[str, int] = {}
-        for line in lines:
-            per_file[line.split(":", 1)[0]] = per_file.get(line.split(":", 1)[0], 0) + 1
+            lines, more, per_file = self._matches(out)
+        if more:
+            lines.append("[more matches not shown; narrow the pattern or the path]")
         if any(count >= MAX_SEARCH_MATCHES for count in per_file.values()):
             lines.append(f"[at most {MAX_SEARCH_MATCHES} matches per file are shown]")
         # Bounded again after decoding: escaping can multiply a byte by four.
         return _clip("\n".join(lines))
+
+    @staticmethod
+    def _matches(out):
+        """`path:line:text` lines from `git grep -z -n` records (`HEAD:<path>\\0<line>\\0
+        <text>\\n`), streamed until the output budget is used. Paths are named the way
+        list_dir names them, and each text is cut to MAX_LINE_BYTES first, so one enormous
+        line cannot hide its own location or the matches after it. Returns (lines, more,
+        matches per file)."""
+        lines, used, per_file = [], 0, {}
+        while True:
+            name = _read_until(out, b"\0", 2 * MAX_PATH_CHARS)
+            if name is None:
+                return lines, False, per_file
+            number = _read_until(out, b"\0", 32) or b"?"
+            raw = out.readline(MAX_LINE_BYTES)
+            long_line = len(raw) == MAX_LINE_BYTES and not raw.endswith(b"\n")
+            while long_line:
+                rest = out.readline(MAX_LINE_BYTES)
+                if not rest or rest.endswith(b"\n"):
+                    break
+            display = _display_name(name.removeprefix(b"HEAD:"))
+            text = raw.rstrip(b"\n").decode(errors="backslashreplace")
+            line = f"{display}:{number.decode(errors='replace')}:{text}" + (" [line cut]" if long_line else "")
+            # Room is kept for the two notes search() may append, so they survive _clip.
+            if used + len(line.encode()) + 1 > MAX_TOOL_OUTPUT_BYTES - 128:
+                return lines, True, per_file
+            lines.append(line)
+            used += len(line.encode()) + 1
+            per_file[display] = per_file.get(display, 0) + 1
 
     def run(self, name: str, arguments) -> str:
         tool = {"list_dir": self.list_dir, "read_file": self.read_file, "search": self.search}.get(name)
@@ -352,6 +432,28 @@ class _Overran(Exception):
     """A model call still running when the loop's wall-clock deadline passed."""
 
 
+def _call_with_retries(invoke, model: str, fields: dict, remaining: float, deadline: float, clock, sleep) -> dict:
+    """`_call_within`, retrying a transient failure with backoff inside the deadline.
+
+    A loop makes up to MAX_TURNS calls, so one throttling response or proxy restart late
+    in a run would otherwise throw away every turn before it. `remaining` is what the
+    caller just measured; a retry measures again.
+    """
+    attempt = 0
+    while True:
+        try:
+            return _call_within(invoke, model, fields, remaining)
+        except _Overran:
+            raise
+        except MODEL_CALL_ERRORS as exc:
+            attempt += 1
+            wait = RETRY_BASE_S * 2 ** (attempt - 1)
+            if attempt > MAX_CALL_RETRIES or not _transient(exc) or deadline - clock() - wait < MIN_RETRY_REMAINING_S:
+                raise
+            sleep(wait)
+            remaining = deadline - clock()
+
+
 def _call_within(invoke, model: str, fields: dict, remaining: float) -> dict:
     """`invoke`, bounded by wall-clock time as a whole.
 
@@ -390,10 +492,22 @@ def _context_tokens(response: dict, fields: dict) -> int:
 
 
 def run_agent(
-    invoke, model: str, prompt: str, tools: RepoTools, clock=time.monotonic, time_limit_s: float = LOOP_DEADLINE_S
+    invoke,
+    model: str,
+    prompt: str,
+    tools: RepoTools,
+    clock=time.monotonic,
+    time_limit_s: float = LOOP_DEADLINE_S,
+    sleep=time.sleep,
 ) -> dict:
     """Loop model -> tools -> model until the model answers. Returns report, turns,
     tool_calls, and `error` when the loop did not end in a complete answer.
+
+    Also `tools_refused`, naming the budget, when a tool call was refused and the model
+    answered from what it had already read: the answer stands, but a caller can tell it
+    from one written after complete reading. And `model_error` when a model call failed
+    for good (after retrying a transient failure) — the turns and tool calls so far are
+    kept, so the result shows how far the run got.
 
     `invoke(model, fields, timeout)` is one Messages API call returning the parsed
     response; its timeout is capped by what is left of the deadline. Only
@@ -409,13 +523,15 @@ def run_agent(
     text, calls, spent = "", 0, 0
     # Set once any call was refused for budget: the model was told to answer, and gets one
     # more turn to do it. Asking for tools again ends the loop, so refusals cannot keep
-    # growing the conversation toward the window.
-    final = False
+    # growing the conversation toward the window. `refused` names the first budget hit.
+    final, refused = False, ""
 
     def done(turns, error=None):
         outcome = {"report": text, "turns": turns, "tool_calls": calls}
         if error:
             outcome["error"] = error
+        if refused:
+            outcome["tools_refused"] = refused
         return outcome
 
     for turn in range(1, MAX_TURNS + 1):
@@ -428,9 +544,13 @@ def run_agent(
         if turn == 1 and len(prompt.encode()) > prompt_budget_bytes():
             return done(0, "the prompt is too large for the model's context window")
         try:
-            response = _call_within(invoke, model, fields, remaining)
+            response = _call_with_retries(invoke, model, fields, remaining, deadline, clock, sleep)
         except _Overran:
             return done(turn - 1, f"time limit of {max(0, int(time_limit_s))}s reached during a model call")
+        except MODEL_CALL_ERRORS as exc:
+            outcome = done(turn - 1)
+            outcome["model_error"] = str(exc)
+            return outcome
         content = response.get("content") or []
         if not _well_formed(content):
             return done(turn, "unexpected model response (malformed content)")
@@ -458,9 +578,21 @@ def run_agent(
             # A result is at most MAX_TOOL_OUTPUT_BYTES plus a short note, so a call runs
             # only while one more worst-case result still fits the context window.
             no_room = room_bytes < MAX_TOOL_OUTPUT_BYTES + 1024
-            if remaining <= 0 or calls >= MAX_TOOL_CALLS or spent >= MAX_TRANSCRIPT_TOOL_BYTES or no_room:
+            limit = (
+                "time"
+                if remaining <= 0
+                else f"{MAX_TOOL_CALLS} tool calls"
+                if calls >= MAX_TOOL_CALLS
+                else "tool output"
+                if spent >= MAX_TRANSCRIPT_TOOL_BYTES
+                else "context window"
+                if no_room
+                else ""
+            )
+            if limit:
                 output = "error: tool budget exhausted — answer now with what you have read"
                 final = True
+                refused = refused or limit
             else:
                 calls += 1
                 tools.timeout = max(1, min(TOOL_TIMEOUT_S, int(remaining)))

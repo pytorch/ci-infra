@@ -36,6 +36,10 @@ GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
+# One agent-loop turn. Longer than BEDROCK_TIMEOUT_S because a non-streaming response
+# arrives only when the turn is done, and a turn may think and write up to
+# agent_loop.MAX_TOKENS. The loop's own deadline still bounds every call.
+MODEL_CALL_TIMEOUT_S = 300
 # The fetch carries the whole tree and the checkout writes it, so both get
 # CLONE_TIMEOUT_S; init and ls-files touch almost nothing, and a separate short budget
 # keeps a wedged one from spending the fetch's.
@@ -273,7 +277,7 @@ def _read_bounded(resp, limit: int, deadline: float) -> bytes:
     total = 0
     while True:
         if time.monotonic() > deadline:
-            raise TimeoutError(f"bedrock response incomplete after {BEDROCK_TIMEOUT_S}s")
+            raise TimeoutError("bedrock response still incomplete at its deadline")
         chunk = resp.read(READ_CHUNK_BYTES)
         if not chunk:
             return b"".join(chunks)
@@ -307,14 +311,15 @@ def bedrock_error_summary(exc: urllib.error.HTTPError) -> str:
     return f"{exc} ({code})" if code else str(exc)
 
 
-class BedrockHTTPError(RuntimeError):
-    """An HTTP error from Bedrock, already summarised (bedrock_error_summary).
+class BedrockHTTPError(agent_loop.ModelHTTPError):
+    """An HTTP error from Bedrock, already summarised (bedrock_error_summary), with its
+    status, which the agent loop reads to decide whether a retry could succeed.
 
     Summarised inside the call, not by the caller: reading the error body can block, and
     the agent loop bounds a model call's wall-clock time only while it is running."""
 
 
-def invoke_model(model: str, fields: dict, timeout: float = BEDROCK_TIMEOUT_S) -> dict:
+def invoke_model(model: str, fields: dict, timeout: float = MODEL_CALL_TIMEOUT_S) -> dict:
     """One Bedrock InvokeModel (Messages API) call through the sigv4 proxy — unsigned in,
     signed out — returning the parsed response."""
     body = json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 1024, **fields}).encode()
@@ -337,13 +342,13 @@ def invoke_model(model: str, fields: dict, timeout: float = BEDROCK_TIMEOUT_S) -
             "Content-Type": "application/json",
         },
     )
-    timeout = min(timeout, BEDROCK_TIMEOUT_S)
+    timeout = min(timeout, MODEL_CALL_TIMEOUT_S)
     deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             payload = json.loads(_read_bounded(resp, MAX_RESPONSE_BYTES, deadline))
     except urllib.error.HTTPError as exc:
-        raise BedrockHTTPError(bedrock_error_summary(exc)) from None
+        raise BedrockHTTPError(bedrock_error_summary(exc), exc.code) from None
     if not isinstance(payload, dict):
         raise ValueError("bedrock returned a non-object response")
     return payload
@@ -549,7 +554,11 @@ def run_task(spec: dict) -> dict:
             result["report"] = outcome["report"]
             result["turns"] = outcome["turns"]
             result["tool_calls"] = outcome["tool_calls"]
-            if "error" in outcome:
+            if "tools_refused" in outcome:
+                result["tools_refused"] = outcome["tools_refused"]
+            if "model_error" in outcome:
+                result["errors"]["bedrock"] = outcome["model_error"]
+            elif "error" in outcome:
                 result["errors"]["agent"] = outcome["error"]
         except BedrockHTTPError as exc:
             result["errors"]["bedrock"] = str(exc)

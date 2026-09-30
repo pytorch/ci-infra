@@ -844,9 +844,10 @@ class TestRunTask:
             )
 
         monkeypatch.setattr(sandbox.urllib.request, "urlopen", refuse)
-        with pytest.raises(sandbox.BedrockHTTPError, match="AccessDeniedException"):
+        with pytest.raises(sandbox.BedrockHTTPError, match="AccessDeniedException") as exc:
             sandbox.invoke_model("m", {"messages": []})
         assert reads, "the body was read inside the call"
+        assert exc.value.status == 403, "the loop reads the status to decide on a retry"
 
     @pytest.mark.parametrize("ref", [None, 0, [], ""], ids=["null", "zero", "list", "empty"])
     def test_non_string_ref_falls_back_to_main(self, monkeypatch, ref):
@@ -944,6 +945,22 @@ class TestRunTaskLoop:
     @pytest.fixture(autouse=True)
     def no_real_git(self, monkeypatch):
         monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
+
+    def _run(self, monkeypatch, outcome):
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox.agent_loop, "run_agent", lambda *a, **kw: outcome)
+        return sandbox.run_task({"repo": "org/repo", "model": "m"})
+
+    def test_a_failed_model_call_is_a_bedrock_error_with_the_progress_so_far(self, monkeypatch):
+        result = self._run(monkeypatch, {"report": "", "turns": 3, "tool_calls": 5, "model_error": "HTTP 503"})
+        assert result["errors"] == {"bedrock": "HTTP 503"}
+        assert (result["turns"], result["tool_calls"]) == (3, 5)
+
+    def test_a_refused_tool_budget_reaches_the_result(self, monkeypatch):
+        result = self._run(monkeypatch, {"report": "r", "turns": 4, "tool_calls": 9, "tools_refused": "context window"})
+        assert result["tools_refused"] == "context window"
+        assert result["errors"] == {}
 
     def test_a_slow_error_body_is_bounded_by_the_loop_deadline(self, monkeypatch):
         import time as _time

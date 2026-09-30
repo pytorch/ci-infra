@@ -83,6 +83,14 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   and each model call is bounded by the loop's wall clock as a whole. Tools read through git (`HEAD:<path>`), never the
   filesystem. The result also carries `turns` and `tool_calls`.
 
+  When a budget refuses a tool call — 120 calls, 768 KiB of tool output, the context
+  window, or time — and the model then answers from what it has read, the answer is
+  returned with `tools_refused` naming that budget, so it can be told from one written
+  after complete reading. A turn may use up to 16000 tokens, thinking included, and
+  300 s. A throttled (429), failed (5xx) or dropped model call is retried up to three
+  times with backoff while at least 30 s of the loop's time is left; a call that still
+  fails ends the run with `errors.bedrock`, keeping `turns` and `tool_calls`.
+
   `ref` is a branch, a tag, `refs/pull/<n>/head` or a commit sha, fetched at depth 1. A
   sha must be the full 40 hex characters — an abbreviated one is fetched as a ref name
   and fails. Anything that is not a plain ref name (a refspec, a range, an option) is a

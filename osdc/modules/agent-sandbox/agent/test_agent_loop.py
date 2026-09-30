@@ -169,6 +169,23 @@ class TestTools:
         tools = _repo_with(tmp_path, {f"f{i}.txt": "hit\n" for i in range(100)})
         assert "more matches not shown" in tools.search("hit")
 
+    @pytest.mark.parametrize("name", ["café.txt", 'q"uote.txt', "back\\slash.txt"])
+    def test_search_names_a_path_the_way_the_other_tools_read_it(self, tmp_path, name):
+        """git quotes an unusual name by default (`"caf\\303\\251.txt"`); a path copied
+        from a match must open with read_file and match list_dir."""
+        tools = _repo_with(tmp_path, {name: "needle\n"})
+        assert tools.search("needle") == f"{name}:1:needle"
+        assert name in tools.list_dir("").split("\n")
+        assert tools.read_file(name).endswith("1: needle")
+
+    def test_a_long_matching_line_keeps_its_location_and_the_matches_after_it(self, tmp_path):
+        tools = _repo_with(tmp_path, {"a.min.js": "needle" + "x" * 100_000 + "\n", "b.txt": "needle\n"})
+        out = tools.search("needle").split("\n")
+        assert out[0].startswith("a.min.js:1:needle")
+        assert out[0].endswith("[line cut]")
+        assert len(out[0].encode()) < agent_loop.MAX_LINE_BYTES + 64
+        assert out[1] == "b.txt:1:needle"
+
     def test_output_is_clipped(self, repo, monkeypatch):
         monkeypatch.setattr(agent_loop, "MAX_TOOL_OUTPUT_BYTES", 20)
         assert agent_loop._clip("x" * 100).endswith("[output truncated]")
@@ -449,11 +466,26 @@ class TestLoop:
         assert out["tool_calls"] == 1
         assert out["error"] == "the model kept calling tools after its budget ran out"
 
-    def test_an_answer_after_a_refusal_is_accepted(self, repo, monkeypatch):
+    def test_an_answer_after_a_refusal_is_accepted_and_says_what_was_refused(self, repo, monkeypatch):
+        """The answer stands, but a caller can tell it from one written after complete
+        reading."""
         monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
         invoke = scripted(tool_use("list_dir", {}), answer("from what I had"))
         out = agent_loop.run_agent(invoke, "m", "p", repo)
-        assert out == {"report": "from what I had", "turns": 2, "tool_calls": 0}
+        assert out == {"report": "from what I had", "turns": 2, "tool_calls": 0, "tools_refused": "0 tool calls"}
+
+    def test_a_full_context_is_named_as_the_refusal(self, repo):
+        full = {
+            **tool_use("list_dir", {}),
+            "usage": {"input_tokens": agent_loop.CONTEXT_WINDOW_TOKENS, "output_tokens": 0},
+        }
+        out = agent_loop.run_agent(scripted(full, answer("ok")), "m", "p", repo)
+        assert out["tools_refused"] == "context window"
+        assert "error" not in out
+
+    def test_a_complete_run_names_no_refusal(self, repo):
+        out = agent_loop.run_agent(scripted(tool_use("list_dir", {}), answer("ok")), "m", "p", repo)
+        assert "tools_refused" not in out
 
     def test_dense_content_cannot_overflow_the_window_in_one_turn(self, repo, monkeypatch):
         """Five worst-case results in one turn, at one token per byte, must still fit."""
@@ -481,12 +513,75 @@ class TestLoop:
         assert time.monotonic() - started < 4
         assert out["error"] == "time limit of 1s reached during a model call"
 
-    def test_an_error_from_the_model_call_reaches_the_caller(self, repo):
-        def boom(model, fields, timeout=None):
+    def test_a_failed_model_call_keeps_the_progress_so_far(self, repo):
+        """The error ends the run, but the turns and tool calls before it are reported."""
+        calls = []
+
+        def invoke(model, fields, timeout=None):
+            calls.append(1)
+            if len(calls) == 1:
+                return tool_use("list_dir", {})
             raise ValueError("bad response")
 
-        with pytest.raises(ValueError, match="bad response"):
-            agent_loop.run_agent(boom, "m", "p", repo)
+        out = agent_loop.run_agent(invoke, "m", "p", repo, sleep=lambda s: None)
+        assert out == {"report": "", "turns": 1, "tool_calls": 1, "model_error": "bad response"}
+        assert len(calls) == 2, "a malformed body is not retried"
+
+    def test_a_throttled_call_is_retried(self, repo):
+        slept = []
+        answers = iter([agent_loop.ModelHTTPError("HTTP 429 (ThrottlingException)", 429), answer("ok")])
+
+        def invoke(model, fields, timeout=None):
+            item = next(answers)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        out = agent_loop.run_agent(invoke, "m", "p", repo, sleep=slept.append)
+        assert out == {"report": "ok", "turns": 1, "tool_calls": 0}
+        assert slept == [agent_loop.RETRY_BASE_S]
+
+    @pytest.mark.parametrize(
+        "error",
+        [agent_loop.ModelHTTPError("HTTP 503", 503), ConnectionResetError("reset")],
+        ids=["5xx", "connection"],
+    )
+    def test_transient_failures_are_retried_a_bounded_number_of_times(self, repo, error):
+        calls, slept = [], []
+
+        def invoke(model, fields, timeout=None):
+            calls.append(1)
+            raise error
+
+        out = agent_loop.run_agent(invoke, "m", "p", repo, sleep=slept.append)
+        assert len(calls) == agent_loop.MAX_CALL_RETRIES + 1
+        assert slept == [agent_loop.RETRY_BASE_S * 2**i for i in range(agent_loop.MAX_CALL_RETRIES)]
+        assert out["model_error"] == str(error)
+        assert out["turns"] == 0
+
+    def test_a_client_error_is_not_retried(self, repo):
+        calls = []
+
+        def invoke(model, fields, timeout=None):
+            calls.append(1)
+            raise agent_loop.ModelHTTPError("HTTP 400 (ValidationException)", 400)
+
+        out = agent_loop.run_agent(invoke, "m", "p", repo, sleep=lambda s: pytest.fail("must not wait"))
+        assert len(calls) == 1
+        assert out["model_error"] == "HTTP 400 (ValidationException)"
+
+    def test_no_retry_starts_without_time_for_a_call_to_finish(self, repo):
+        """A retry that could not finish before the deadline only delays the report."""
+        calls = []
+
+        def invoke(model, fields, timeout=None):
+            calls.append(1)
+            raise agent_loop.ModelHTTPError("HTTP 429", 429)
+
+        limit = agent_loop.MIN_RETRY_REMAINING_S + agent_loop.RETRY_BASE_S - 1
+        out = agent_loop.run_agent(invoke, "m", "p", repo, time_limit_s=limit, sleep=lambda s: pytest.fail("no wait"))
+        assert len(calls) == 1
+        assert out["model_error"] == "HTTP 429"
 
     def test_a_first_prompt_too_large_for_the_window_is_never_sent(self, repo):
         invoke = scripted(answer("never"))
