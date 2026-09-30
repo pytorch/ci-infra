@@ -27,8 +27,13 @@ LOOP_DEADLINE_S = 600
 # Per turn, and thinking counts toward it: a model that always thinks (Opus 5.5 runs
 # adaptive thinking whether asked or not) can spend much of a small budget before it
 # writes the answer. 16000 is the usual ceiling for a non-streaming call; the turn's
-# time is bounded separately (sandbox.MODEL_CALL_TIMEOUT_S and the loop deadline).
+# time is bounded separately (MAX_CALL_S, and the loop deadline).
 MAX_TOKENS = 16_000
+# One model call, as a whole: headers, body and any error body. A non-streaming response
+# arrives only when the turn is done, and a turn may think and write up to MAX_TOKENS.
+# The invoke function uses it as its socket timeout (sandbox.invoke_model); the loop
+# enforces it on the call's wall clock, and the loop deadline still bounds both.
+MAX_CALL_S = 300
 # Per tool call, and in total: every result is re-sent on every later turn.
 MAX_TOOL_OUTPUT_BYTES = 32 * 1024
 MAX_TRANSCRIPT_TOOL_BYTES = 768 * 1024
@@ -452,28 +457,38 @@ def _call_with_retries(invoke, model: str, fields: dict, remaining: float, deadl
                 raise
             sleep(wait)
             remaining = deadline - clock()
+            # A sleep can overrun; a retry started without room to finish only delays
+            # the report. The original error stands.
+            if remaining < MIN_RETRY_REMAINING_S:
+                raise
 
 
 def _call_within(invoke, model: str, fields: dict, remaining: float) -> dict:
-    """`invoke`, bounded by wall-clock time as a whole.
+    """`invoke`, bounded by wall-clock time as a whole: MAX_CALL_S, or what is left of
+    the loop when that is less.
 
-    `timeout` inside invoke is a per-socket-operation limit, so waiting for headers and
-    then for a slow body can each take nearly all of it. The call runs on a daemon thread
-    and is abandoned at the deadline; the task prints its result and exits, which ends
-    the thread with the process.
+    `timeout` inside invoke is a per-socket-operation limit, so waiting for headers, a
+    slow body and an error body can each take nearly all of it. The call runs on a daemon
+    thread and is abandoned at the limit; the task prints its result and exits, which
+    ends the thread with the process. Running out of the loop's time raises _Overran;
+    running out of the call's own limit with loop time left is a TimeoutError, which the
+    caller may retry.
     """
+    limit = min(remaining, MAX_CALL_S)
     box: dict = {}
 
     def target():
         try:
-            box["value"] = invoke(model, fields, timeout=remaining)
+            box["value"] = invoke(model, fields, timeout=limit)
         except BaseException as exc:  # re-raised on the caller's thread
             box["error"] = exc
 
     thread = threading.Thread(target=target, name="model-call", daemon=True)
     thread.start()
-    thread.join(max(0.0, remaining))
+    thread.join(max(0.0, limit))
     if thread.is_alive():
+        if limit < remaining:
+            raise TimeoutError(f"model call still running after {MAX_CALL_S}s")
         raise _Overran
     if "error" in box:
         raise box["error"]

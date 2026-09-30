@@ -36,10 +36,10 @@ GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
-# One agent-loop turn. Longer than BEDROCK_TIMEOUT_S because a non-streaming response
-# arrives only when the turn is done, and a turn may think and write up to
-# agent_loop.MAX_TOKENS. The loop's own deadline still bounds every call.
-MODEL_CALL_TIMEOUT_S = 300
+# One agent-loop turn: the loop's own per-call limit (agent_loop.MAX_CALL_S), used here
+# as the socket timeout. Longer than BEDROCK_TIMEOUT_S because a non-streaming response
+# arrives only when the turn is done.
+MODEL_CALL_TIMEOUT_S = agent_loop.MAX_CALL_S
 # The fetch carries the whole tree and the checkout writes it, so both get
 # CLONE_TIMEOUT_S; init and ls-files touch almost nothing, and a separate short budget
 # keeps a wedged one from spending the fetch's.

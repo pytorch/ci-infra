@@ -570,6 +570,40 @@ class TestLoop:
         assert len(calls) == 1
         assert out["model_error"] == "HTTP 400 (ValidationException)"
 
+    def test_a_sleep_that_overruns_does_not_start_a_retry_it_cannot_finish(self, repo):
+        """Checked before sleeping and again after: a sleep that overran leaves less time
+        than the retry needs, and the original error stands."""
+        calls = []
+        ticks = iter([0.0, 0.0, 0.0, 580.0])
+
+        def clock():
+            return next(ticks, 580.0)
+
+        def invoke(model, fields, timeout=None):
+            calls.append(1)
+            raise agent_loop.ModelHTTPError("HTTP 429", 429)
+
+        out = agent_loop.run_agent(invoke, "m", "p", repo, clock=clock, time_limit_s=600, sleep=lambda s: None)
+        assert len(calls) == 1
+        assert out["model_error"] == "HTTP 429"
+
+    def test_one_call_is_bounded_by_its_own_limit_and_then_retried(self, repo, monkeypatch):
+        """A call that hangs past MAX_CALL_S with loop time left is abandoned as a timeout
+        and retried; it does not spend the whole loop."""
+        monkeypatch.setattr(agent_loop, "MAX_CALL_S", 0.2)
+        calls = []
+
+        def hang(model, fields, timeout=None):
+            calls.append(timeout)
+            time.sleep(5)
+
+        started = time.monotonic()
+        out = agent_loop.run_agent(hang, "m", "p", repo, sleep=lambda s: None)
+        assert time.monotonic() - started < 3
+        assert len(calls) == agent_loop.MAX_CALL_RETRIES + 1
+        assert all(t == 0.2 for t in calls), "the call's own timeout is the per-call limit"
+        assert out["model_error"] == "model call still running after 0.2s"
+
     def test_no_retry_starts_without_time_for_a_call_to_finish(self, repo):
         """A retry that could not finish before the deadline only delays the report."""
         calls = []
