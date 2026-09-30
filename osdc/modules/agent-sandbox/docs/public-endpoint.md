@@ -52,8 +52,8 @@ The dispatcher side is ready: a manifest opts in to GitHub-hosted callers with
 - **Token replay.** `jti` is not consumed, so a leaked token is usable until it expires.
   Consuming it needs state shared by both dispatcher replicas.
 - **The `REQUIRE_AUTH=false` rollback.** With the flag off, a request with no
-  `Authorization` header gets the v1 Grant without any token check (`_grant_for` in
-  `dispatcher/http_api.py`). Today that reopens `/run` to `arc-runners` only; behind this
+  `Authorization` header and no `manifest` key gets the v1 Grant without any token check
+  (`_grant_for` in `dispatcher/http_api.py`); leaving `manifest` out is all it takes. Today that reopens `/run` to `arc-runners` only; behind this
   endpoint it would admit anonymous callers from the internet. Remove the unauthenticated
   path, or refuse to start with it while the endpoint exists, before going public.
 - **`/healthz` exposes capacity.** The ALB health check needs it, so keep it off the public
