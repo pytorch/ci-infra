@@ -199,8 +199,10 @@ refresher. That is load-bearing rather than tidy: seeding it in the manifest mea
 runs a refresh immediately after applying, so the window with no keys is minutes rather
 than up to six hours, and the dispatcher fails closed throughout it. If that refresh fails
 on a cluster with no keys yet, the deploy fails rather than report success while every
-call is refused; with a key set the dispatcher will still accept for at least another
-hour in place, it warns and keeps that set. Minutes, not seconds,
+call is refused — unless the Deployment was applied with `REQUIRE_AUTH: "false"` (the
+rollback), which still serves callers without a token, so it only warns; with a key set
+the dispatcher will still accept for at least another hour in place, it warns and keeps
+that set. Minutes, not seconds,
 and not a bound anyone has measured: the Job has to be scheduled and pull an image, the
 kubelet then notices the ConfigMap changed on its own sync period, and the dispatcher
 re-reads the mount only every `JWKS_RELOAD_INTERVAL_S`.

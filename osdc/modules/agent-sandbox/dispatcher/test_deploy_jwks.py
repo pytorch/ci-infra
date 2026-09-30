@@ -23,6 +23,9 @@ case "$1 $2" in
   "get configmap")
     [[ "${FAKE_GET:-0}" == 0 ]] || exit "$FAKE_GET"
     printf '%s' "${FAKE_KEYS:-}" ;;
+  "get deployment")
+    [[ "${FAKE_GET_DEPLOYMENT:-0}" == 0 ]] || exit "$FAKE_GET_DEPLOYMENT"
+    printf '%s' "${FAKE_REQUIRE_AUTH:-true}" ;;
 esac
 """
 
@@ -135,3 +138,18 @@ def test_the_wait_outlasts_the_fetch_jobs_own_deadline(tmp_path):
     oidc = (DEPLOY_SH.parent / "kubernetes/base/oidc.yaml").read_text()
     deadline = int(oidc.split("activeDeadlineSeconds:")[1].split()[0])
     assert timeout > deadline
+
+
+def test_a_rollback_deploy_without_keys_warns_instead_of_failing(tmp_path):
+    """REQUIRE_AUTH "false" still serves tokenless callers, so no keys is not an outage."""
+    done = run_block(tmp_path, fake_wait="1", fake_keys="", fake_require_auth="false")
+    assert done.returncode == 0, done.stderr
+    assert "REACHED_END" in done.stdout
+    assert "REQUIRE_AUTH is false" in done.stdout
+
+
+def test_an_unreadable_deployment_keeps_the_failure(tmp_path):
+    """Not knowing whether auth is off is not a reason to pass: fail closed."""
+    done = run_block(tmp_path, fake_wait="1", fake_keys="", fake_get_deployment="1", fake_require_auth="false")
+    assert done.returncode == 1
+    assert "holds no signing keys" in done.stderr
