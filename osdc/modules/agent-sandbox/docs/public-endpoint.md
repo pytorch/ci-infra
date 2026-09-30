@@ -33,8 +33,9 @@ The dispatcher side is ready: a manifest opts in to GitHub-hosted callers with
 3. **TLS and DNS.** An ACM certificate and a Route53 alias for a hostname under a zone
    the PyTorch infra account owns. HTTPS only; no port-80 listener.
 4. **A NetworkPolicy rule** admitting the ALB. With IP targets the ALB connects to the
-   pods from its own subnets, so `sandbox-agent-ingress` needs an `ipBlock` for those
-   subnet CIDRs on port 8080, next to the existing `arc-runners` rule.
+   pods from its own subnets, and on these IPv6 clusters it does so over IPv6, so
+   `sandbox-agent-ingress` needs an `ipBlock` for the ALB subnets' **IPv6** CIDRs (their
+   IPv4 CIDRs admit nothing) on port 8080, next to the existing `arc-runners` rule.
 5. **A rate-based WAF rule.** Per-IP limits are coarse because GitHub-hosted runners
    share addresses; they stop a flood, not a noisy tenant. Body size stays enforced by
    the dispatcher (`MAX_BODY_BYTES`, 64 KiB): WAF on an ALB inspects only the first
