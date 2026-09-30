@@ -39,8 +39,11 @@ GOOD_CLAIMS = {
 
 
 def a_manifest_loader(caller):
-    """Stands in for the v2 manifest loader: same signature, same return shape."""
-    return (authorize.V1_CLONE_REPO, authorize.V1_MODEL)
+    """Stands in for the v2 manifest loader: same signature, same return shape.
+
+    Reads the caller's own clone repo, exactly as the v1 path does — otherwise the two
+    parametrisations decide differently and POLICIES stops proving they agree."""
+    return (caller.get("clone_repo", authorize.V1_CLONE_REPO), authorize.V1_MODEL)
 
 
 # Both policy sources produce identical decisions, which is the claim being tested.
@@ -55,7 +58,7 @@ def claims(**overrides):
 def test_the_allowed_caller_gets_a_grant(policy):
     grant = authorize_fn(claims(), {"task": "summarise the diff"}, policy)
     assert grant.caller == "pytorch/ciforge"
-    assert grant.clone_repo == "pytorch/pytorch"
+    assert grant.clone_repo == "pytorch/ciforge"  # this caller reviews its own PRs
     assert grant.task == "summarise the diff"
 
 
@@ -72,7 +75,7 @@ def test_the_request_cannot_choose_the_repository(policy):
     """The headline property. A caller naming another repo gets the policy's one, and
     http_api then refuses the request outright rather than silently substituting."""
     grant = authorize_fn(claims(), {"repo": "attacker/evil", "model": "some.expensive.model"}, policy)
-    assert grant.clone_repo == "pytorch/pytorch"
+    assert grant.clone_repo == "pytorch/ciforge"  # the caller's policy repo, not the body's
     assert grant.model == authorize.V1_MODEL
 
 
@@ -235,3 +238,69 @@ def test_an_unparseable_require_auth_value_crashes_rather_than_disabling_auth(mo
     monkeypatch.setenv("REQUIRE_AUTH", "tru")
     with pytest.raises(RuntimeError, match="REQUIRE_AUTH"):
         http_api._flag("REQUIRE_AUTH", "false")
+
+
+class TestPullRequestSelector:
+    """`pr` is a SELECTOR, like `ref`: it picks what to look at inside the
+    policy-pinned repository, so it comes from the request and is bounded by the fact
+    that the repository itself does not."""
+
+    @POLICIES
+    def test_a_pull_request_number_reaches_the_grant(self, policy):
+        assert authorize_fn(claims(), {"pr": 42}, policy).pr == 42
+
+    @POLICIES
+    def test_no_pull_request_is_zero_not_none(self, policy):
+        """Zero rather than None so the Job template has one thing to stringify."""
+        assert authorize_fn(claims(), {}, policy).pr == 0
+
+    @POLICIES
+    def test_a_boolean_is_refused_rather_than_read_as_pull_request_one(self, policy):
+        """isinstance(True, int) is True, so an unguarded check turns a caller that
+        sent {"pr": true} into a real review of a real pull request it never named."""
+        with pytest.raises(Denied, match="pr"):
+            authorize_fn(claims(), {"pr": True}, policy)
+
+    @POLICIES
+    @pytest.mark.parametrize("value", [-1, "7", 1.5, [7]], ids=["negative", "string", "float", "list"])
+    def test_a_non_integer_is_refused(self, policy, value):
+        with pytest.raises(Denied, match="pr"):
+            authorize_fn(claims(), {"pr": value}, policy)
+
+    @POLICIES
+    def test_the_repository_is_still_policy(self, policy):
+        """The selector does not widen what it selects from: a PR number names a pull
+        request OF THE PINNED REPO, so it cannot reach another repository's review."""
+        grant = authorize_fn(claims(), {"pr": 42}, policy)
+        assert grant.clone_repo == "pytorch/ciforge"
+
+
+class TestPerCallerCloneRepo:
+    """Without this the git proxy is unreachable: every Grant would name the v1 repo,
+    nothing would match kube.PRIVATE_REPOS, and no fetch would ever be routed."""
+
+    def test_ciforge_clones_itself(self):
+        grant = authorize_fn(claims(), {}, None)
+        assert grant.clone_repo == "pytorch/ciforge"
+
+    def test_a_caller_without_an_override_gets_the_v1_default(self, monkeypatch):
+        stripped = tuple({k: v for k, v in c.items() if k != "clone_repo"} for c in authorize.ALLOWED_CALLERS)
+        monkeypatch.setattr(authorize, "ALLOWED_CALLERS", stripped)
+        assert authorize_fn(claims(), {}, None).clone_repo == authorize.V1_CLONE_REPO
+
+    def test_the_caller_still_cannot_choose(self):
+        """Per-caller policy, not a request field. A repo in the body that disagrees is
+        refused by http_api; authorize never reads one."""
+        assert authorize_fn(claims(), {"repo": "attacker/evil"}, None).clone_repo == "pytorch/ciforge"
+
+    def test_every_private_repo_granted_is_routed_through_the_proxy(self):
+        """The load-bearing pairing. A caller granted a PRIVATE repo that kube does not
+        route fetches it anonymously and 404s; one kube routes but nginx does not
+        allowlist gets a 403. This catches the first half."""
+        import kube
+
+        granted = {c.get("clone_repo", authorize.V1_CLONE_REPO) for c in authorize.ALLOWED_CALLERS}
+        # pytorch/pytorch is public and deliberately not proxied; anything else granted
+        # here is private and must be.
+        for repo in granted - {authorize.V1_CLONE_REPO}:
+            assert repo in kube.PRIVATE_REPOS, f"{repo} is granted but not routed through git-proxy"

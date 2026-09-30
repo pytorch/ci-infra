@@ -21,3 +21,18 @@ spec:
   selector:
     matchLabels:
       app: sigv4-proxy
+---
+# Same reasoning for the git proxy: replicas: 2 with maxUnavailable: 0 keeps a ROLLOUT
+# safe, but says nothing about a node drain, which can take both at once.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: git-proxy
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: git-proxy
