@@ -323,14 +323,14 @@ class TestGitProxy:
         svcs = filter_services(all_services, namespace=NAMESPACE, name="git-proxy")
         assert len(svcs) == 1, f"Expected Service 'git-proxy' in '{NAMESPACE}'."
 
-    def test_git_proxy_holds_no_kubernetes_identity(self) -> None:
+    def test_git_proxy_holds_no_kubernetes_identity(self, all_deployments: dict) -> None:
         """It holds a GitHub credential; it has no business holding a K8s one too."""
-        dep = _deployment(run_kubectl(["get", "deployments", "-n", NAMESPACE]), "git-proxy")
+        dep = _deployment(all_deployments, "git-proxy")
         assert dep["spec"]["template"]["spec"].get("automountServiceAccountToken") is not True
 
-    def test_the_task_pods_never_receive_the_credential(self) -> None:
+    def test_the_task_pods_never_receive_the_credential(self, all_deployments: dict) -> None:
         """The whole point: the pod learns the proxy's ADDRESS, never its token."""
-        dep = _deployment(run_kubectl(["get", "deployments", "-n", NAMESPACE]), "sandbox-dispatcher")
+        dep = _deployment(all_deployments, "sandbox-dispatcher")
         env = dep["spec"]["template"]["spec"]["containers"][0].get("env", [])
         for entry in env:
             assert "git-proxy-credentials" not in str(entry.get("valueFrom", "")), (

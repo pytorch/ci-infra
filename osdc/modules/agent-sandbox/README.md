@@ -421,6 +421,16 @@ token.
   holds slots for up to the clone plus invoke timeout and keeps every other consumer on
   `429` — a refusal rather than a hang, but still a denial of service. There is no
   per-caller rate or budget limit; the Grant bounds *what* a call may do, never how many.
+- **git-proxy authorizes on repository, not on caller.** `repo_allowed` matches the URL
+  path, and `git-proxy-ingress` admits every pod labelled `app: sandbox-task` — which is
+  every task pod, whatever `Grant.clone_repo` its caller was issued. So a task dispatched
+  by one allowed caller can reach any repo on the proxy's allowlist, not just its own.
+  Not reachable today: the task image clones `SANDBOX_REPO` and nothing else, and the
+  model has no tool that runs commands. It becomes reachable the moment a task can
+  execute arbitrary code, which is what the agentic option would add. Closing it means a
+  per-Job marker the dispatcher sets and the task cannot forge, or having the dispatcher
+  fetch the pack and hand it over — the same shape as the `GITHUB_TOKEN` init-container
+  note above.
 - **The clone reaches the internet directly.** `sandbox-task-egress` allows TCP 443
   to any address because `NetworkPolicy` selects on CIDR and GitHub's ranges move.
   Closing it means git behind a proxy the way Bedrock is, landing together with the

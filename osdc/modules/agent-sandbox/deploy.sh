@@ -191,6 +191,11 @@ if ! kubectl get secret git-proxy-credentials -n "$NAMESPACE" >/dev/null 2>&1; t
   printf '%s\n' "[agent-sandbox]              --from-literal=basic-auth=\"\$(printf 'x-access-token:%s' \"\$TOKEN\" | base64 | tr -d '\\n')\""
 fi
 
+# Hash the rendered nginx template BEFORE applying, so the restart below can tell a real
+# config change from a no-op deploy.
+GIT_PROXY_CONFIG_HASH_BEFORE=$(kubectl get configmap git-proxy-config -n "$NAMESPACE" \
+  -o jsonpath='{.data.default\.conf\.template}' 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+
 # --- Apply manifests (substitute both images, region, model, role ARN, API CIDR, DNS) ---
 echo "[agent-sandbox] Applying base manifests (task image: ${AGENT_IMAGE}, dispatcher: ${DISPATCHER_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
 kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
@@ -276,12 +281,24 @@ fi
 # wait for — task pods only exist while a request is in flight.
 echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
-# Force a roll first: git-proxy-config is a plain resource, not a configMapGenerator, so
-# it carries no content hash and an allowlist or TLS edit leaves the pod template
-# identical. nginx renders the template once at start and never re-reads it, so without
-# this the ConfigMap applies cleanly, rollout status returns immediately, and the running
-# pods keep the old config. Same pattern as modules/pypi-cache/deploy.sh.
-kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"
+# Roll git-proxy ONLY when its config actually changed. git-proxy-config is a plain
+# resource, not a configMapGenerator, so it carries no content hash and an allowlist or
+# TLS edit leaves the pod template identical — nginx renders the template once at start
+# and never re-reads it, so without a restart the ConfigMap applies cleanly, rollout
+# status returns immediately, and the running pods keep the old config.
+#
+# Conditional rather than unconditional: an unconditional restart costs ~90-120s of
+# rollout on every deploy of this module, almost always for a config nobody touched.
+# The hash is of the rendered template, so a substituted kube-dns address counts as a
+# change too.
+GIT_PROXY_CONFIG_HASH=$(kubectl get configmap git-proxy-config -n "$NAMESPACE" \
+  -o jsonpath='{.data.default\.conf\.template}' 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+if [[ "$GIT_PROXY_CONFIG_HASH" != "${GIT_PROXY_CONFIG_HASH_BEFORE:-}" ]]; then
+  echo "[agent-sandbox] git-proxy config changed — restarting it to pick up the new template"
+  kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"
+else
+  echo "[agent-sandbox] git-proxy config unchanged — no restart"
+fi
 # git-proxy too, and this is also what catches an absent git-proxy-credentials Secret:
 # the pod would otherwise sit in CreateContainerConfigError behind a green deploy, and
 # the first symptom would be a private clone failing inside a task.

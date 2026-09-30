@@ -42,7 +42,13 @@ data:
     # Required, not an optimisation: proxy_pass below interpolates variables, and nginx
     # refuses to resolve such an upstream at all without a resolver — every request would
     # 502. It also re-resolves on expiry rather than pinning one GitHub address forever.
-    resolver ${GIT_PROXY_RESOLVER} valid=30s ipv6=on ipv4=off;
+    #
+    # NO ADDRESS-FAMILY FLAGS, deliberately. The pod listens on v6 only, but github.com
+    # publishes no AAAA (verified 2026-09-29: `dig AAAA github.com` is empty) and this
+    # cluster's CoreDNS carries no dns64 plugin, so an `ipv4=off` here resolves nothing
+    # and 502s every fetch. The A answer egresses over the VPC CNI's IPv4 path, which is
+    # how task pods already clone public repos. Matches pypi-cache's nginx resolver.
+    resolver ${GIT_PROXY_RESOLVER} valid=30s;
 
     map $uri $repo_allowed {
         default                       0;
@@ -177,6 +183,10 @@ spec:
           # cannot write the rendered config and nginx then dies on mkdir of client_temp —
           # a crashloop with nothing listening on 8080. This variant runs as 101 natively,
           # owns those directories, and already listens on 8080.
+          # Tag, not a digest, by review decision — and this pod holds the GitHub token,
+          # so the trade-off is real: a moved upstream tag would be pulled onto a node
+          # without the layers cached. Pinning by digest, or building the image into the
+          # osdc project the way the task and dispatcher images are, is the follow-up.
           image: harbor:30002/dockerhub-cache/nginxinc/nginx-unprivileged:1.29-alpine
           ports:
             - name: proxy

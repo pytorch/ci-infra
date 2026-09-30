@@ -7,8 +7,9 @@
 # a dispatcher is buggy or someone runs a second one.
 #
 # Sized for 12 task slots (2 vCPU / 4 GiB / 20 GiB each = 24 / 48Gi / 240Gi) plus the
-# standing pods: 2 dispatchers (200m/256Mi, 500m/512Mi limits), 2 sigv4-proxies and
-# 2 git-proxies (100m/128Mi, 500m/256Mi limits each). 12 slots is 4 fleet nodes at 3
+# standing pods: 2 dispatchers (200m/256Mi req, 500m/512Mi lim), 2 sigv4-proxies
+# (100m/128Mi req, 500m/256Mi lim) and 2 git-proxies (50m/64Mi req, 500m/256Mi lim).
+# 12 slots is 4 fleet nodes at 3
 # per node.
 #
 # EVERY key carries rollout headroom on top of that, not just cpu. Three Deployments
