@@ -2,9 +2,11 @@
 
 Endpoints:
   GET  /healthz      -> {"status": "ok"}
-  POST /run          -> body {"ref"?,"task"?,"wait"?}
+  POST /run          -> body {"ref"?,"task"?,"wait"?,"pr"?}
                         wait=true (default): blocks, returns the task result
                         wait=false: returns {"task_id": ...} immediately
+                        `pr` is a pull request number of the policy-pinned repository:
+                        the task checks out refs/pull/<n>/head, overriding `ref`.
                         `repo` and `model` are still ACCEPTED, but they are policy, not
                         request: authorize.py decides both, and a supplied value that
                         disagrees is a 403 rather than a substitution.
@@ -143,6 +145,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(f"'{key}' must be a string")
         if "wait" in spec and not isinstance(spec["wait"], bool):
             raise ValueError("'wait' must be a boolean")
+        # Rejected here as a TYPE and again in authorize() as a VALUE, because the two
+        # answer different questions: this one is 400 "your body is malformed", that one
+        # is 403 "you may not have that". The bool guard is in both — `isinstance(True,
+        # int)` is True, so an unguarded check turns {"pr": true} into pull request 1.
+        # Type AND value here, not just type. authorize() checks the value too, but the
+        # migration window builds its Grant inline without calling it — so a check only
+        # there would let an unauthenticated {"pr": -1} through, coerce to 0 downstream,
+        # and silently review the default branch while the caller believed otherwise.
+        if "pr" in spec and (isinstance(spec["pr"], bool) or not isinstance(spec["pr"], int) or spec["pr"] < 0):
+            raise ValueError("'pr' must be a non-negative integer")
         return spec
 
     def _caller(self) -> str:
@@ -177,6 +189,10 @@ class Handler(BaseHTTPRequestHandler):
                 model=authorize.V1_MODEL,
                 task=spec.get("task", ""),
                 ref=spec.get("ref", ""),
+                # A selector, not a capability, so the migration window hands it over
+                # like `ref`: an unauthenticated caller reviews a pull request of the
+                # same policy-pinned repository an authorized one would.
+                pr=spec.get("pr", 0),
             )
         claims = oidc.verify(oidc.bearer_token(header))
         return authorize.authorize(claims, spec)

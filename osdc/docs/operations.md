@@ -200,15 +200,44 @@ Set these to suppress the interactive prompts in `just deploy` — required for 
          - buildkit
    ```
 
-2. Bootstrap state:
+2. **Bootstrap state.** Creates the tfstate bucket and lock table.
    ```bash
    just bootstrap my-new-cluster
    ```
 
-3. Deploy:
+3. **Deploy dark.** Set `pause_runners: true` on the cluster — a top-level
+   key, not under `arc-runners` — so every scale set renders `maxRunners: 0`.
+   The cluster registers with GitHub but takes no jobs.
    ```bash
+   just deploy-base my-new-cluster
+   ./create-osdc-secrets.sh my-new-cluster
    just deploy my-new-cluster
    ```
+
+4. **Validate.** Scale sets `RUNNING`, listener heartbeats healthy on the
+   org's runner-group page, then:
+   ```bash
+   just smoke my-new-cluster
+   ```
+   The "dispatch a real job" check can't pass while paused — that's step 6.
+
+5. **Seed the HF cache.** The bucket starts empty and mounts read-only, so
+   *every* model download fails with `OSError: [Errno 30] Read-only file
+   system` until it's filled. Mirror an established region with
+   [`hf_cache_sync.py`](https://github.com/pytorch/test-infra/blob/main/tools/scripts/hf_cache_sync.py):
+   ```bash
+   python3 hf_cache_sync.py --mirror --source meta-prod-aws-ue1 --to my-new-cluster --apply
+   ```
+
+6. **Take traffic.** Drop the local `pause_runners` edit, then dispatch
+   **OSDC: Deploy production** for the cluster — not a local deploy. The
+   cluster must be wired into
+   [`osdc-deploy-prod.yml`](../../.github/workflows/osdc-deploy-prod.yml) to
+   appear in the dropdown.
+
+7. **Check Grafana.** The new cluster should appear in **OSDC**, **OSDC
+   Services Status**, and **OSDC Cluster Utilization** — see
+   [`grafana/`](../../grafana/).
 
 ## Cluster lifecycle
 
