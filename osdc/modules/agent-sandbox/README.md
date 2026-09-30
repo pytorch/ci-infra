@@ -356,7 +356,8 @@ check run's title as screening does, so a proposal it accepts is not dropped for
 afterwards. Proposing is how the agent delivers its answer, so it stays open after the
 read budget is spent: once the agent has seen that — a refused read, or a note on its
 last proposal's result when the budget ran out without one — it may propose in one more
-turn, and any tool call after that ends the run.
+turn, and any tool call after that ends the run. Two turns are kept back for this (the
+proposal and the answer), so the turn limit cannot cut it short.
 
 The action applies what survives when called with `apply-effects: "true"`, `wait: "true"`
 and a `pr-number` (`action/apply_effects.py`), reading the result its own `/run` step just wrote

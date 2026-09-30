@@ -814,6 +814,22 @@ class TestProposals:
         assert len(invoke.seen) == 3
         assert out["error"] == "the model kept calling tools after its budget ran out"
 
+    def test_the_promised_proposal_turn_and_the_answer_fit_before_the_turn_limit(self, repo):
+        """A model that reads on every turn is told two turns before the end, so the
+        proposal turn it is promised and the answer after it both still happen."""
+        tools = RepoTools(repo.dest, ALLOWED)
+        reads = [tool_use("list_dir", {}, id_=f"r{i}") for i in range(agent_loop.MAX_TURNS - 2)]
+        propose = tool_use("propose_effect", {"effect": "pr_comment", "body": "LGTM"}, id_="p")
+        invoke = scripted(*reads, propose, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert "error" not in out
+        assert out["turns"] == agent_loop.MAX_TURNS
+        assert tools.proposals == [{"effect": "pr_comment", "body": "LGTM"}]
+        assert (
+            agent_loop.BUDGET_SPENT_NOTE
+            in invoke.seen[agent_loop.MAX_TURNS - 2]["messages"][-1]["content"][0]["content"]
+        )
+
     def test_a_refused_read_says_one_proposal_turn_is_left(self, repo, monkeypatch):
         """The refusal is the only thing the model sees; with effects allowed it must also
         say proposing is open for one more turn, or a review split over two is lost."""

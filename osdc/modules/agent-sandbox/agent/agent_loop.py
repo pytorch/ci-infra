@@ -690,8 +690,13 @@ def run_agent(
         # allowed read, or a proposal-only turn once the window is nearly full), so
         # exhaustion is checked here, not only per read. (Time needs no check here: the
         # top of the loop ends it once time is out.)
+        # With effects allowed the model is promised a proposal turn AND an answer turn
+        # after it is told, so two turns are kept back instead of one.
+        turns_kept = 2 if tools.effects else 1
         exhausted = (
-            f"{MAX_TOOL_CALLS} tool calls"
+            f"{MAX_TURNS} turns"
+            if turn >= MAX_TURNS - turns_kept
+            else f"{MAX_TOOL_CALLS} tool calls"
             if calls >= MAX_TOOL_CALLS
             else "tool output"
             if spent >= MAX_TRANSCRIPT_TOOL_BYTES
@@ -715,7 +720,7 @@ def run_agent(
                 "time"
                 if remaining <= answer_reserve
                 else f"{MAX_TURNS} turns"
-                if turn >= MAX_TURNS - 1
+                if turn >= MAX_TURNS - turns_kept
                 else f"{MAX_TOOL_CALLS} tool calls"
                 if calls >= MAX_TOOL_CALLS
                 else "tool output"
