@@ -114,7 +114,7 @@ def test_a_recorded_key_problem_fails_the_deploy_after_every_cluster_change():
     rollout checks: an earlier exit skipped the restart, and a re-run then read the new
     config as unchanged and never restarted git-proxy."""
     text = DEPLOY_SH.read_text()
-    exit_at = text.index('if [[ -n "$JWKS_FATAL" ]]; then\n  echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2\n  exit 1')
+    exit_at = text.index('if [[ -n "$GIT_PROXY_RESTART_FAILED$JWKS_FATAL" ]]; then\n  exit 1')
     assert text.index("# --- Prune objects") < exit_at
     assert text.index("# --- Revoke the sandbox's own AWS identity") < exit_at
     assert text.index("kubectl rollout restart deployment/git-proxy") < exit_at
@@ -167,3 +167,35 @@ def test_an_unreadable_deployment_keeps_the_failure(tmp_path):
     done = run_block(tmp_path, fake_wait="1", fake_keys="", fake_get_deployment="1", fake_require_auth="false")
     assert done.returncode == 1
     assert "holds no signing keys" in done.stderr
+
+
+def test_a_rollback_warning_says_when_the_key_state_is_unknown(tmp_path):
+    """An unreadable ConfigMap is not "no keys": the warning must not claim calls with a
+    token are already refused."""
+    done = run_block(tmp_path, fake_wait="1", fake_get="1", fake_require_auth="false")
+    assert done.returncode == 0, done.stderr
+    assert "could not be read" in done.stdout
+    assert "holds no signing keys" not in done.stdout
+
+
+def _restart_block() -> str:
+    text = DEPLOY_SH.read_text()
+    start = text.index('GIT_PROXY_RESTART_FAILED=""')
+    end = text.index("git-proxy config unchanged — no restart")
+    return text[start : text.index("fi\n", end) + 3]
+
+
+def test_a_failed_git_proxy_restart_is_recorded_not_fatal_on_the_spot(tmp_path):
+    """Under set -e an unguarded restart failure would skip the key fetch, the prune and
+    the IRSA revocation that follow it; it is recorded and fails the deploy at the end."""
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text('#!/usr/bin/env bash\n[[ "$1 $2" == "rollout restart" ]] && exit 1\nexit 0\n')
+    kubectl.chmod(0o755)
+    script = (
+        "set -euo pipefail\nNAMESPACE=ai-sandbox\nGIT_PROXY_CONFIG_HASH_BEFORE=old\n"
+        "git_proxy_config_hash() { echo new; }\n" + _restart_block() + 'echo "RECORDED=[$GIT_PROXY_RESTART_FAILED]"\n'
+    )
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    assert "RECORDED=[git-proxy config changed but the restart failed" in done.stdout
