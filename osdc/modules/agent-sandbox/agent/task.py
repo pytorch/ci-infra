@@ -28,6 +28,7 @@ SPEC_ENV = {
     "SANDBOX_REF": "ref",
     "SANDBOX_TASK": "task",
     "SANDBOX_MODEL": "model",
+    "SANDBOX_PR": "pr",
 }
 
 

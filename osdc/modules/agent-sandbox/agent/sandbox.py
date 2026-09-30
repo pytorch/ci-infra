@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Sandbox task library: clone a public repo, then ask Bedrock about it.
+"""Sandbox task library: check out a repository, then ask Bedrock about it.
 
-Imported by task.py, which runs it once per pod. It holds NO credentials — it clones
-public repos anonymously and reaches Bedrock through the sigv4 proxy, which signs
-with its own IRSA identity. This process never sees a token.
+Imported by task.py, which runs it once per pod. It holds NO credentials — and that
+stays true for a PRIVATE repository: public ones it fetches from github.com anonymously,
+private ones it fetches through GIT_PROXY, which holds the GitHub credential and adds it
+on the way out. Bedrock is the same shape, through the sigv4 proxy signing with its own
+IRSA identity. This process never sees a token of either kind.
 
 The HTTP surface lives in the dispatcher (../dispatcher/http_api.py): it turns each
 request into one Job, so nothing here has to serialize or refuse concurrent work.
@@ -14,6 +16,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -23,44 +26,96 @@ import urllib.request
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
+# Set to reach PRIVATE repositories: the proxy holds the GitHub credential this process
+# deliberately does not. Empty means fetch github.com directly and anonymously, which is
+# the pre-proxy behaviour and reaches public repositories only.
+GIT_PROXY = os.environ.get("GIT_PROXY", "")
 DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 CLONE_TIMEOUT_S = 120
 BEDROCK_TIMEOUT_S = 120
+# The fetch carries the whole tree and the checkout writes it, so both get
+# CLONE_TIMEOUT_S; init and ls-files touch almost nothing, and a separate short budget
+# keeps a wedged one from spending the fetch's.
+GIT_STEP_TIMEOUT_S = 30
 # The proxy's response is caller-influenced (the prompt is), so bound it.
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BODY_BYTES = 8 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 
 
-def clone_repo(repo: str, ref: str, dest: str) -> int:
-    """Shallow, anonymous clone of a public repo. Returns the tracked-file count.
+# What `ref` is allowed to look like. A fetch argument is a REFSPEC, not a ref: git reads
+# `<src>:<dst>`, a leading `+` as force, and `*` as a glob, so `refs/heads/*:refs/heads/*`
+# fetches every branch and leaves FETCH_HEAD on whichever one sorted first — the wrong
+# tree, with a plausible file count and an empty `errors`. `--` stops git parsing the
+# value as an OPTION; it does not stop git parsing it as a refspec, which is a separate
+# bug and this is its fix.
+#
+# The permitted shape is the one the callers actually use: a sha, `refs/pull/<n>/head`, or
+# a branch/tag name. Slashes and dots are in because tags carry them (`v2.1.0`,
+# `release/2.9`); `:`, `*`, `+`, `^`, `?`, `~`, whitespace and everything else are out.
+# `..` is excluded separately so a ref cannot spell a range, and a leading `-` so it
+# cannot look like an option even where `--` is missing.
+REF_ALLOWED = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
 
-    FIXME(prototype): `ref` is a branch or tag only, never a commit sha —
-    `git clone --branch` resolves nothing else, and a caller pinning a sha gets a
-    clone failure that doesn't say why. Accepting a sha means `git init` +
-    `fetch --depth 1 origin <ref>` + `checkout FETCH_HEAD`, and fetch-by-object-id
-    is a server-side setting that has to be confirmed per repo. Deferred with the
-    wider question of how the sandbox should check code out at all: a private repo
-    needs a token, which this worker deliberately never holds, so that path wants
-    mitmproxy in front of it the way Bedrock has the sigv4 proxy.
+
+def _check_ref(ref: str) -> str:
+    """The ref, if it is a ref. Raises ValueError if it is a refspec or an option."""
+    if not REF_ALLOWED.match(ref) or ".." in ref or "//" in ref or ref.endswith(("/", ".lock")):
+        raise ValueError(f"refusing to fetch {ref!r}: not a plain ref name")
+    return ref
+
+
+def clone_repo(repo: str, ref: str, dest: str) -> int:
+    """Shallow, anonymous checkout of one ref of a public repo. Returns the tracked-file
+    count.
+
+    fetch-then-checkout rather than `git clone --branch`, because `--branch` resolves a
+    BRANCH OR TAG and nothing else — which left the two refs a review needs unreachable:
+    `refs/pull/<n>/head` and a commit sha. A fetch takes any of the four, and a pull
+    request's head ref lives in the BASE repository, so this reaches a fork's PR without
+    ever naming the fork.
+
+    A PRIVATE repository needs a credential, which this process never holds, so those
+    fetches go through GIT_PROXY — see kubernetes/base/git-proxy.yaml. Unset, this talks
+    to github.com anonymously and reaches public repositories only.
+
+    Fetching a bare sha needs the server to allow it (`uploadpack.allowReachableSHA1InWant`).
+    github.com does: verified 2026-09-23 by fetching a full commit sha of pytorch/ci-infra
+    into an empty repo. It is a server-side setting, so a future GitHub Enterprise or
+    mirror host may refuse — the failure is git's own "want ... not valid", captured as a
+    clone error like any other.
     """
-    subprocess.run(
-        ["git", "clone", "--depth", "1", "--branch", ref, f"https://github.com/{repo}.git", dest],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=CLONE_TIMEOUT_S,
-        # A private repo would otherwise make git prompt for a username and block
-        # until the clone timeout instead of failing.
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-    )
-    listing = subprocess.run(
-        ["git", "-C", dest, "ls-files"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    url = f"http://{GIT_PROXY}/{repo}.git" if GIT_PROXY else f"https://github.com/{repo}.git"
+    # Plain HTTP to the proxy is deliberate and matches the Bedrock path: it is a
+    # ClusterIP inside the namespace, the NetworkPolicy admits only task pods, and the
+    # request carries no credential to protect — the proxy adds one on its way out.
+    #
+    # GIT_TERMINAL_PROMPT=0 still matters with a proxy in front: a repo the proxy's
+    # allowlist refuses answers 403, and git would otherwise prompt for a username and
+    # block until the timeout instead of failing with the reason.
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+    def git(*args: str, timeout: int) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], check=True, capture_output=True, text=True, timeout=timeout, env=env)
+
+    git("init", "-q", dest, timeout=GIT_STEP_TIMEOUT_S)
+    # The URL is passed to fetch rather than configured as a remote: nothing here pushes
+    # or re-fetches, and an unconfigured remote is one less thing a later step can follow.
+    # `--` is load-bearing. git permutes arguments, so without it a `ref` of
+    # `--upload-pack=...` is parsed as an OPTION rather than a refspec: over https that
+    # silently fetches the default branch (wrong tree, empty `errors`), and over a
+    # local/ssh transport git executes it. The old `--branch <ref>` form was immune
+    # because it consumed ref as an option VALUE; this restores that property. It does
+    # NOT make the value a ref rather than a refspec — REF_ALLOWED above does that.
+    git("-C", dest, "fetch", "--depth", "1", "--", url, _check_ref(ref), timeout=CLONE_TIMEOUT_S)
+    # Detached at FETCH_HEAD. There is no local branch and no `origin`, which is correct
+    # for a tree that is read once and thrown away with the pod.
+    # CLONE_TIMEOUT_S, not the short budget: this is the write half of what `git clone`
+    # used to do in one call, and writing a large tree under gVisor is slow enough that
+    # 30s would fail a fetch that fully succeeded.
+    git("-C", dest, "checkout", "-q", "FETCH_HEAD", timeout=CLONE_TIMEOUT_S)
+
+    listing = git("-C", dest, "ls-files", timeout=GIT_STEP_TIMEOUT_S)
     return len([line for line in listing.stdout.splitlines() if line.strip()])
 
 
@@ -163,7 +218,17 @@ def build_prompt(repo: str, ref: str, task: str, file_count: int, entries: list[
     """Prompt the model with what the agent actually observed in the clone, and
     tell it not to fill gaps — an ungrounded answer looks identical to a correct
     one, which would make the canary's 'Bedrock returned a report' assertion
-    meaningless."""
+    meaningless.
+
+    `entries` is REPOSITORY CONTENT and reaches the model verbatim, which `pr` widens:
+    a pull request head is authored by whoever opened it, including from a fork, so a
+    file named to read as an instruction is now attacker-supplied rather than merely
+    caller-supplied. Nothing here filters it, and quoting or fencing would not help —
+    the model reads the whole prompt either way. What bounds it is that the model has no
+    tools and no credentials: the worst outcome is a misleading report handed back to
+    the caller that asked for it. It stops being bounded the moment the agent can act on
+    its own output, which is the gate for the agentic option in the README.
+    """
     lines = [
         f"You are inspecting a checkout of {repo} at ref {ref}.",
         f"It has {file_count} tracked files.",
@@ -192,20 +257,50 @@ def _str_field(spec: dict, key: str, default: str) -> str:
     return value if isinstance(value, str) and value else default
 
 
+def _pr_field(spec: dict) -> int:
+    """The pull request number, or 0 for "not a review".
+
+    Arrives as a STRING from task.py, which reads env vars, and as an int from a direct
+    caller (tests, canary). Anything else is 0 rather than an exception: run_task never
+    raises, and a spec the dispatcher already type-checked cannot get here malformed.
+    """
+    value = spec.get("pr")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    # isdecimal(), not isdigit(): '\u00b2'.isdigit() is True and int() then raises,
+    # which would escape run_task entirely and leave task.py printing no JSON at all.
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return 0
+
+
 def run_task(spec: dict) -> dict:
-    """Clone the repo, then (optionally) ask Bedrock about it. Never raises —
+    """Check out a ref (or a pull request head) and ask Bedrock about it. Never raises —
     each stage's failure is captured so callers see exactly what worked."""
     repo = spec["repo"]
     ref = _str_field(spec, "ref", "main")
     task = _str_field(spec, "task", "Summarize this repository.")
     model = _str_field(spec, "model", DEFAULT_MODEL)
+    pr = _pr_field(spec)
     result: dict = {"cloned": False, "file_count": 0, "top_level": [], "report": "", "errors": {}}
+
+    if pr:
+        # A pull request is just another ref to check out, and it wins over `ref`: the two
+        # name different commits, and silently reviewing the branch a caller also sent
+        # would be the wrong tree with no sign that anything was ignored.
+        ref = f"refs/pull/{pr}/head"
+        result["pr"] = pr
 
     with tempfile.TemporaryDirectory() as workdir:
         try:
             result["file_count"] = clone_repo(repo, ref, workdir)
             result["cloned"] = True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
+            # ValueError is _check_ref rejecting the ref. Reported like any other clone
+            # failure rather than raised: run_task's contract is that it never does, and
+            # an exception here would leave task.py printing no result JSON at all.
             result["errors"]["clone"] = getattr(exc, "stderr", None) or str(exc)
             return result
 
