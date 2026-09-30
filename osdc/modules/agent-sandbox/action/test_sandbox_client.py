@@ -332,10 +332,31 @@ def test_a_task_that_reported_errors_fails_the_step_but_keeps_its_outputs(fake, 
 
 
 def test_a_transport_failure_is_not_retried(tmp_path, fake, capsys):
+    """A failure after a possible admission is never retried: there is no idempotency
+    key, so a retry could run the task twice. Counted, not inferred from the exit."""
+    posts = []
+
+    class Refusing:
+        def open(self, request, timeout):
+            url = request if isinstance(request, str) else request.full_url
+            if url.endswith("/run"):
+                posts.append(url)
+            raise sandbox_client.urllib.error.URLError("connection refused")
+
     env = env_for(fake, tmp_path)
-    env["INPUT_ENDPOINT"] = "http://127.0.0.1:1"
-    assert run(env) == 1
+    assert sandbox_client.main(env, opener=Refusing(), token_opener=OPENER) == 1
     assert "could not complete /run" in capsys.readouterr().out
+    assert len(posts) == 1
+
+
+def test_a_malformed_endpoint_is_an_error_line_not_a_traceback(tmp_path, fake, capsys):
+    """InvalidURL is an http.client.HTTPException, not an OSError."""
+    env = env_for(fake, tmp_path)
+    env["INPUT_ENDPOINT"] = "http://127.0.0.1:bad"
+    assert run(env) == 1
+    out = capsys.readouterr().out
+    assert "::error::could not complete /run" in out
+    assert "unavailable" in out, "the /healthz reading fails the same way and is reported"
 
 
 def test_a_non_json_success_body_fails_cleanly(fake, tmp_path, capsys):

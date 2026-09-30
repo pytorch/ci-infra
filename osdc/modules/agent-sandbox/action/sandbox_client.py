@@ -16,6 +16,7 @@ the task may still be running and there is no idempotency key.
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import os
@@ -69,7 +70,7 @@ def mint_token(opener, env: dict, audience: str = AUDIENCE) -> str:
     try:
         with opener.open(request, timeout=TOKEN_TIMEOUT_S) as response:
             document = json.loads(response.read(MAX_RESPONSE_BYTES))
-    except (OSError, ValueError) as exc:
+    except (OSError, http.client.HTTPException, ValueError) as exc:
         raise ClientError(f"could not mint an OIDC token: {exc}") from None
     token = document.get("value") if isinstance(document, dict) else None
     if not isinstance(token, str) or not token:
@@ -104,7 +105,7 @@ def healthz(opener, endpoint: str) -> str:
     try:
         with opener.open(f"{endpoint}/healthz", timeout=HEALTHZ_TIMEOUT_S) as response:
             return response.read(4096).decode(errors="replace")
-    except (OSError, urllib.error.URLError) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         return f"unavailable ({exc})"
 
 
@@ -205,8 +206,10 @@ def main(env: dict | None = None, opener=None, token_opener=None) -> int:
     except (ClientError, ValueError) as exc:
         print(f"::error::{_command_data(exc)}", flush=True)
         return 1
-    except (OSError, urllib.error.URLError) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         # Transport failure: not retried, because the task may have been admitted.
+        # HTTPException covers a malformed endpoint (InvalidURL) and a response cut
+        # short (BadStatusLine, IncompleteRead), none of which is an OSError.
         detail = f"could not complete /run ({exc}); dispatcher health: {healthz(opener, endpoint)}"
         print(f"::error::{_command_data(detail)}", flush=True)
         return 1
