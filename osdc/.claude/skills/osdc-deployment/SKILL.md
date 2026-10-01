@@ -360,7 +360,7 @@ Key workflows (all callable as reusable workflows via `workflow_call` from the o
 | `osdc-lint.yml` | `just lint` |
 | `osdc-test.yml` | `just test` |
 | `osdc-pre-merge.yml` | Lint + test on PR |
-| `osdc-plan-prod.yml` | `just plan <cluster>` (read-only tofu plan; CI-safe) |
+| `osdc-plan-prod.yml` | `just plan <cluster>` (read-only tofu plan; CI-safe). Runs on PRs that change a file its `paths` filter matches: every file `just plan` or its tofu reads, plus `osdc-plan-prod.yml`, `_osdc-plan.yml` and `_osdc-deploy.yml`. When `just plan` or its tofu starts reading a new file, add it there; `scripts/python/test_plan_prod_paths.py` (in `just test`) catches most omissions — its docstring lists what it cannot see, notably files read inside scripts the recipe runs or sources (e.g. `cluster-config.py`). |
 | `osdc-deploy-prod.yml` | Per-cluster prod deploy. Calls `_osdc-deploy.yml` |
 | `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip_lint_test` input (firefighting only). |
 | `_osdc-plan.yml` | Reusable: `just plan <cluster>` and tee to `plan.txt` |

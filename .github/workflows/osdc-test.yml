@@ -6,10 +6,16 @@ on:
     paths:
       - "osdc/**"
       - ".github/workflows/osdc-test.yml"
+      # osdc/scripts/python/test_plan_prod_paths.py reads these.
+      - ".github/workflows/osdc-plan-prod.yml"
+      - ".github/workflows/_osdc-plan.yml"
   pull_request:
     paths:
       - "osdc/**"
       - ".github/workflows/osdc-test.yml"
+      # osdc/scripts/python/test_plan_prod_paths.py reads these.
+      - ".github/workflows/osdc-plan-prod.yml"
+      - ".github/workflows/_osdc-plan.yml"
 
 permissions:
   contents: read
