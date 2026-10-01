@@ -237,7 +237,18 @@ Set these to suppress the interactive prompts in `just deploy` — required for 
 
 7. **Check Grafana.** The new cluster should appear in **OSDC**, **OSDC
    Services Status**, and **OSDC Cluster Utilization** — see
-   [`grafana/`](../../grafana/).
+   [`grafana/`](../../grafana/). The last two default to the `cluster`
+   selection saved in their JSON, which never picks up a new cluster on its
+   own: add the new cluster's `cluster_name` to that variable's
+   `current.text` and `current.value` in
+   [`osdc_services_status.json`](../../grafana/osdc_services_status.json)
+   and [`osdc_utilization.json`](../../grafana/osdc_utilization.json).
+   **OSDC** picks up clusters named `meta-prod-aws-*` or `lf-prod-aws-*` on
+   its own, but its ClickHouse queries hardcode the `runner_group_name` →
+   `cluster` mapping; update it as described in
+   [`grafana/AGENTS.md`](../../grafana/AGENTS.md). The Grafana UI's Save
+   dialog refuses these dashboards, and every merge to `main` that touches
+   [`grafana/`](../../grafana/) republishes them from the JSON.
 
 ## Cluster lifecycle
 
