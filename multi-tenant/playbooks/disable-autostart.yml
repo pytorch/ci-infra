@@ -1,0 +1,26 @@
+---
+# Takes a node out of ghad-manager auto-restart for maintenance, without a
+# full re-provision. Use this before/while working on a node so that a
+# reboot (planned or not) won't bring ghad-manager back up with stale CUDA
+# state (see pytorch/pytorch#190132). Re-arm with `just restart-ghad` or
+# `just restart-services` (or a full `just setup-host`) once the node is
+# confirmed healthy.
+- name: Disable ghad-manager autostart for maintenance
+  hosts: all
+  become: yes
+  vars:
+    ansible_host_key_checking: false
+  module_defaults:
+    shell:
+      executable: /bin/bash
+
+  tasks:
+    - name: Remove ghad-manager autostart flag
+      ansible.builtin.file:
+        path: /etc/gha-runner-config/autostart-enabled
+        state: absent
+
+    - name: Stop the runner manager service
+      ansible.builtin.systemd:
+        name: ghad-manager
+        state: stopped

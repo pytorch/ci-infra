@@ -1,0 +1,17 @@
+[Unit]
+Description=Wait for NVIDIA devices and reapply per-user cgroup device rules
+# DeviceAllow=/dev/nvidiaN in user-<uid>.slice is resolved to a major:minor
+# once, at slice-activation time. If a per-user slice (lingering user
+# session) activates before the NVIDIA driver has created /dev/nvidia*, that
+# rule is silently dropped and never retried, leaving NVML reporting 0
+# devices for that user (see pytorch/pytorch#190132). Restarting the slice
+# after devices exist re-resolves it.
+ConditionPathExists=/etc/gha-runner-config/autostart-enabled
+Before=ghad-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gha-reapply-nvidia-cgroups.sh
+
+[Install]
+WantedBy=multi-user.target
