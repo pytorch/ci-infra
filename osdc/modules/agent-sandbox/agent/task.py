@@ -31,6 +31,7 @@ SPEC_ENV = {
     "SANDBOX_PR": "pr",
     "SANDBOX_BASE": "base",
     "SANDBOX_DEADLINE": "deadline",
+    "SANDBOX_EFFECTS": "effects",
 }
 
 
