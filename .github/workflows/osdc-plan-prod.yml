@@ -2,8 +2,18 @@ name: "OSDC: Plan (prod)"
 
 on:
   pull_request:
+    # Must list every file `just plan` or its tofu reads, plus these workflows.
     paths:
-      - "osdc/**"
+      - "osdc/**/terraform/**"
+      - "osdc/base/scripts/bootstrap/**"
+      - "osdc/clusters.yaml"
+      - "osdc/justfile"
+      - "osdc/.env"
+      - ".env"
+      - "osdc/mise.*"
+      - "osdc/scripts/cluster-config.py"
+      - "osdc/scripts/mise-activate.sh"
+      - "osdc/scripts/state-config.sh"
       - ".github/workflows/osdc-plan-prod.yml"
       - ".github/workflows/_osdc-plan.yml"
       - ".github/workflows/_osdc-deploy.yml"
