@@ -181,7 +181,11 @@ def test_the_request_never_chooses_the_model():
     assert grant.model == MANIFESTS["ciforge-experiments"].model
 
 
-@pytest.mark.parametrize("field", ["task", "ref", "repo"])
+def test_a_base_reaches_the_grant():
+    assert authorize_fn(claims(), request(base="a" * 40), MANIFESTS).base == "a" * 40
+
+
+@pytest.mark.parametrize("field", ["task", "ref", "base", "repo"])
 def test_a_non_string_field_is_denied(field):
     with pytest.raises(Denied, match="must be strings"):
         authorize_fn(claims(), request(**{field: {"$ref": "x"}}), MANIFESTS)
