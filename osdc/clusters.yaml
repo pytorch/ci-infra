@@ -62,7 +62,10 @@ defaults:
     pdb_enabled: true
     pdb_min_available: 1
   arc:
-    chart_version: "0.14.1-jeanschmidt.18"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
+    # Clusters using arc-runners.additional_orgs need >= 0.14.1-jeanschmidt.19
+    # (scale-set resourceName decoupling); on older charts every secondary-org
+    # Helm release collides with the primary org's resources.
+    chart_version: "0.14.1-jeanschmidt.20"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
     replica_count: 4
     log_level: info
     controller_cpu_request: "1"
@@ -178,8 +181,6 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
-      # Held level with the prod clusters so staging exercises the chart prod runs.
-      chart_version: "0.14.1-jeanschmidt.19"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -271,8 +272,6 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
-      # Held level with the prod clusters so staging exercises the chart prod runs.
-      chart_version: "0.14.1-jeanschmidt.19"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -379,8 +378,6 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
-      # Held level with the prod clusters so staging exercises the chart prod runs.
-      chart_version: "0.14.1-jeanschmidt.19"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -467,8 +464,6 @@ clusters:
       vpc_cidr: "10.8.0.0/16"
     harbor:
       ecr_pullthrough: true
-    arc:
-      chart_version: "0.14.1-jeanschmidt.19"
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
@@ -521,11 +516,6 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
-    arc:
-      # additional_orgs below needs the resourceName decoupling this release
-      # carries; without it every secondary-org Helm release collides with the
-      # primary org's resources.
-      chart_version: "0.14.1-jeanschmidt.19"
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
@@ -578,11 +568,6 @@ clusters:
       vpc_cidr: "10.4.0.0/16"
     harbor:
       ecr_pullthrough: true
-    arc:
-      # additional_orgs below needs the resourceName decoupling this release
-      # carries; without it every secondary-org Helm release collides with the
-      # primary org's resources.
-      chart_version: "0.14.1-jeanschmidt.19"
     node_compactor:
       min_node_age_seconds: 300
     buildkit:

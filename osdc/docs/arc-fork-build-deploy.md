@@ -8,18 +8,21 @@
 **Why**: Adds capacity-aware autoscaling (proactive capacity) to the `ghalistener` binary. Stock ARC is count-based and capacity-unaware -- it scales runners without checking whether the cluster can actually fit the runner + workflow pod pair. The fork adds a CapacityMonitor goroutine that dynamically adjusts `maxRunners` reported to GitHub via the `X-ScaleSetMaxCapacity` header, backed by placeholder pod reservations.
 
 **What's changed**:
-- New package: `cmd/ghalistener/capacity/` — 4 production files (`config.go`, `monitor.go`, `placeholder.go`, `hud_client.go`) plus 5 test files (`config_test.go`, `monitor_test.go`, `placeholder_test.go`, `hud_client_test.go`, `pod_spec_test.go`)
+- New package: `cmd/ghalistener/capacity/` — 8 production files (`config.go`, `counting.go`, `hud_client.go`, `monitor.go`, `placeholder.go`, `placeholder_cleanup.go`, `placeholder_lifetime.go`, `schedulability.go`) plus 8 test files (`config_test.go`, `counting_test.go`, `hud_client_test.go`, `monitor_test.go`, `placeholder_test.go`, `placeholder_cleanup_test.go`, `pod_spec_test.go`, `schedulability_test.go`); ~7.3k LOC (2,322 production + 4,977 test)
 - Modified: `cmd/ghalistener/main.go` -- adds CapacityMonitor to the listener's errgroup when `CAPACITY_AWARE_ENABLED=true`
-- Everything else (controllers, CRDs, runner charts) runs stock
+- Modified: `cmd/ghalistener/metrics/` -- Prometheus metrics for the capacity monitor, since `.6` (`metrics.go`, `metrics_test.go`, regenerated `mocks_test.go`, new `testdata/listener_metrics.yaml`)
+- Modified: `gha-runner-scale-set` chart -- optional `resourceName` value, since `.19`, that names the Kubernetes resources separately from `runnerScaleSetName` (the name registered with GitHub): the scale-set-name helper in `templates/_helpers.tpl` is `.Values.resourceName | default .Values.runnerScaleSetName | default .Release.Name` (plus `values.yaml` and `tests/template_test.go`)
+- Modified: `gha-runner-scale-set-controller` chart -- `values.yaml` defaults `image.repository` to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller`
+- Controllers and CRDs run stock (nothing under `controllers/`, `apis/`, `config/`, or the charts' `crds/` is modified)
 
 ## Helm Chart
 
 Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image (multi-arch `linux/amd64` + `linux/arm64`) and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.17`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
+- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.20`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
 - **Image tags**: the workflow publishes two tags per build:
-  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.17` to match the chart)
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.20` to match the chart)
   - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>-<short_sha>` (immutable tag with the source commit baked in, useful for pinning and debugging)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
@@ -137,14 +140,14 @@ This runs `modules/arc/deploy.sh`, which:
 3. **Applies RBAC** from `modules/arc/kubernetes/capacity-monitor-rbac.yaml`
 4. **Helm upgrade** of the fork chart:
    - Chart: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.17`)
+   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.20`)
    - Image: defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<chart_version>`. Override with `arc.image_repository` / `arc.image_tag` in `clusters.yaml` for local Harbor builds.
 
 Other deploy.sh config knobs (all from `clusters.yaml`):
 
 | Key | Default | What |
 |-----|---------|------|
-| `arc.chart_version` | `0.14.1-jeanschmidt.17` | Helm chart version (fork) |
+| `arc.chart_version` | `0.14.1-jeanschmidt.20` | Helm chart version (fork) |
 | `arc.image_repository` | `ghcr.io/jeanschmidt/gha-runner-scale-set-controller` | Controller image repo (override for local Harbor builds) |
 | `arc.image_tag` | _(chart_version)_ | Controller image tag (override for local Harbor builds) |
 | `arc.replica_count` | `2` | Controller replicas |
@@ -167,7 +170,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_MAX_BURST_CAPACITY` | `0` | `{{MAX_BURST_CAPACITY}}` (from runner def) | Caps the maximum total placeholder pairs (running + pending) the provisioner will create per cycle. `0` means unlimited. Used to prevent burst node provisioning from overloading downstream services (Harbor, pypi-cache) |
 | `CAPACITY_AWARE_RECALCULATE_INTERVAL` | `30s` | `30s` | Fallback reconciliation interval (event-driven is primary) |
 | `CAPACITY_AWARE_REPORT_INTERVAL` | `5s` | _(unset — uses code default)_ | How often the monitor reports state via `X-ScaleSetMaxCapacity` |
-| `CAPACITY_AWARE_PLACEHOLDER_TIMEOUT` | `5m` | `20m` | How long a placeholder can stay Pending before being deleted |
+| `CAPACITY_AWARE_PLACEHOLDER_TIMEOUT` | `5m` | `20m` | Two roles. **Pending timeout**: the whole pair is deleted when either pod is still Pending longer than this after creation. **Lifetime**: each placeholder pod runs `sleep <lifetime>` with `RestartPolicy: Never`; the lifetime is fixed per pair (derived from the listener pod and slot, so both pods share it) at 1.5x to just under 2x this value (30m to just under 40m at `20m`), counted from container start. When it ends, the next provisioning cycle deletes the terminal pair and, if demand still calls for it, creates a replacement in the same cycle. Not a disable switch: `<= 0` only removes the lifetime (`sleep infinity`), and the Pending check then deletes every Pending pair on the next cycle. |
 | `CAPACITY_AWARE_WORKFLOW_CPU` | _(empty)_ | `{{VCPU}}` (from runner def) | Workflow placeholder CPU request |
 | `CAPACITY_AWARE_WORKFLOW_MEMORY` | _(empty)_ | `{{MEMORY}}` (from runner def) | Workflow placeholder memory request |
 | `CAPACITY_AWARE_WORKFLOW_GPU` | `0` | `{{GPU_COUNT}}` (from runner def) | Workflow placeholder GPU count |
@@ -274,9 +277,15 @@ On ARC upgrades:
 The `capacity/` package is entirely ours -- no upstream merge conflicts possible. The fork surface is broader than just `main.go` and `capacity/`:
 
 - `cmd/ghalistener/main.go` — modified to wire the capacity monitor into the errgroup
-- `cmd/ghalistener/capacity/` — entirely new package, 4 production files plus 5 test files (~4500 LOC including tests)
+- `cmd/ghalistener/main_test.go` — new; tests the listener's initial `MaxRunners` seed (0 while the capacity monitor is enabled)
+- `cmd/ghalistener/capacity/` — entirely new package (files and size under "What's changed" at the top of this doc)
+- `cmd/ghalistener/metrics/` — capacity-monitor metrics in `metrics.go` and `metrics_test.go`, the regenerated `mocks_test.go`, and the new `testdata/listener_metrics.yaml`
 - `Dockerfile` — `LABEL org.opencontainers.image.source` rewritten to point at the fork
 - `charts/*/Chart.yaml` — `version` and `appVersion` bumped to `<upstream>-jeanschmidt.<N>` on every fork publish
+- `charts/gha-runner-scale-set-controller/values.yaml` — `image.repository` defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller`; an upstream-owned line, so like `Chart.yaml` it can conflict on rebase
+- `charts/gha-runner-scale-set/` — `templates/_helpers.tpl`, `values.yaml`, and `tests/template_test.go` for the optional `resourceName` value
+- `go.mod` — `github.com/prometheus/client_model` moved from an indirect to a direct dependency
+- `.gitignore` — ignores a locally built `ghalistener` binary while keeping `cmd/ghalistener/` tracked
 - Various other commits across feature branches (e.g., "Drop runner-class from runner placeholders", "Split runner/workflow placeholder fleets", "Require runner-class in workflow affinity") that touch additional files outside `capacity/`
 
 ## Stale Listener Recovery
