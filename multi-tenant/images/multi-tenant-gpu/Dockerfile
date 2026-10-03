@@ -4,13 +4,19 @@ SHELL ["/bin/bash", "-c"]
 
 USER root
 
-RUN usermod -u 1000 runner && \
-    groupmod -g 1000 runner && \
+# 1001 is what the base image already uses, and what the GitHub runner on ARC
+# runs as (actions/runner-images#10936). Pinning it here rather than relying on
+# the base keeps the uid deterministic if that image moves again. A job
+# container whose user does not match this cannot write the runner's
+# RUNNER_TEMP, which is outside GITHUB_WORKSPACE and so not covered by the
+# chmod in pytorch's setup-linux.
+RUN usermod -u 1001 runner && \
+    groupmod -g 1001 runner && \
     groupadd -g 2375 docker2 && \
-    usermod -aG 1000 runner && \
+    usermod -aG 1001 runner && \
     usermod -aG 2375 runner && \
     usermod -aG docker runner && \
-    chown -R 1000:1000 /home/runner
+    chown -R 1001:1001 /home/runner
 
 RUN apt-get update && \
     apt-get install -y \
