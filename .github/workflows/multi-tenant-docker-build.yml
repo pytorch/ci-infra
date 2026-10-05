@@ -1,0 +1,64 @@
+name: "Multi-tenant: Build runner image"
+
+# Builds the multi-tenant-gpu runner image (multi-tenant/images/multi-tenant-gpu)
+# and pushes it to ECR as `latest` plus a numeric date tag. setup-host.yml deploys
+# the newest numeric tag, so only main pushes; PRs build only.
+#
+# The weekly schedule picks up new ghcr.io/actions/actions-runner:latest releases.
+
+on:
+  pull_request:
+    paths:
+      - "multi-tenant/images/**"
+      - "multi-tenant/justfile"
+      - ".github/workflows/multi-tenant-docker-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "multi-tenant/images/**"
+      - ".github/workflows/multi-tenant-docker-build.yml"
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: multi-tenant-docker-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  id-token: write
+  contents: read
+
+defaults:
+  run:
+    working-directory: multi-tenant
+
+jobs:
+  build:
+    name: Build and push multi-tenant-gpu
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PUSH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Configure AWS credentials
+        if: env.PUSH == 'true'
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::308535385114:role/arc
+          role-session-name: gha-ecr-login
+          aws-region: us-east-1
+
+      - name: Login to ECR
+        if: env.PUSH == 'true'
+        run: |
+          aws ecr get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin 308535385114.dkr.ecr.us-east-1.amazonaws.com
+
+      - name: Build (and push on main)
+        run: just docker-build "${PUSH}"
