@@ -31,7 +31,7 @@ RUN apt-get update && \
         jq \
         kmod \
         libfontconfig1-dev \
-        libgl1-mesa-glx \
+        libgl1 \
         libjpeg-dev \
         libpango-1.0-0 \
         libpangoft2-1.0-0 \
