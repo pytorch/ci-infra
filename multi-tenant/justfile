@@ -73,12 +73,15 @@ restart-services limit=LIMIT: setup
 restart-ghad limit=LIMIT: setup
     uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/restart-ghad-service.yml -vv
 
-# Build and push the multi-tenant-gpu runner image to ECR
-docker-build:
+# Build and push the multi-tenant-gpu runner image to ECR (push=false: build only)
+docker-build push="true":
     #!/usr/bin/env bash
     set -euo pipefail
     date_tag="$(date +'%Y%m%d%H%M%S')"
     docker build -t multi-tenant-gpu images/multi-tenant-gpu
+    if [[ "{{ push }}" != "true" ]]; then
+        exit 0
+    fi
     for tag in latest "${date_tag}"; do
         docker tag multi-tenant-gpu:latest "{{ DOCKER_REPO }}:${tag}"
         docker push "{{ DOCKER_REPO }}:${tag}"

@@ -15,17 +15,17 @@ fi
 
 sudo groupadd -g $DOCKER_GROUP_ID dockerlink
 sudo usermod -aG dockerlink runner
-sudo useradd $RUNNER_USER --uid 1000 --gid 1000 --groups 1000,2375,docker,docker2,dockerlink --non-unique --shell /bin/bash
+sudo useradd $RUNNER_USER --uid 1001 --gid 1001 --groups 1001,2375,docker,docker2,dockerlink --non-unique --shell /bin/bash
 sudo usermod -a -G sudo $RUNNER_USER
 
 sudo cp -a /home/runner/. /home/$RUNNER_USER/.
 echo "RUNNER_UID=$RUNNER_UID" >> /home/$RUNNER_USER/.env
 mkdir -p /home/$RUNNER_USER/.docker
 sudo cat /docker/config.json | jq 'del(.currentContext)' > /home/$RUNNER_USER/.docker/config.json
-sudo chown -R 1000:1000 /home/$RUNNER_USER
+sudo chown -R 1001:1001 /home/$RUNNER_USER
 
 mkdir -p ~/.docker
 sudo cat /docker/config.json | jq 'del(.currentContext)' > ~/.docker/config.json
-sudo chown -R 1000:1000 ~/.docker
+sudo chown -R 1001:1001 ~/.docker
 
 sudo su - $RUNNER_USER -c "/bin/bash -c './config.sh --url $RUNNER_URL --token $GH_TOKEN --name ${INSTANCE_ID}-${RUNNER_UID} --labels $INSTANCE_LABEL --unattended --replace --ephemeral && ./run.sh'"
