@@ -10,8 +10,8 @@
 # any path with a token attached would let anything that can reach it read every repo
 # that token can, which is a larger set than any one task is granted. `repo_allowed`
 # below is the fence, it is a literal in git rather than a deploy-time substitution —
-# the same argument authorize.py makes for ALLOWED_CALLERS: this is the answer to "whose
-# private code may leave the cluster", so it belongs in review and in git history.
+# the same argument that keeps the capability manifests in git: this is the answer to
+# "whose private code may leave the cluster", so it belongs in review and in git history.
 #
 # READ ONLY, and the boundary is the LOCATION SET, not a check on the query string.
 # Only the two endpoints `git fetch` uses have a location at all:

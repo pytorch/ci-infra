@@ -2,16 +2,19 @@
 
 Endpoints:
   GET  /healthz      -> {"status": "ok"}
-  POST /run          -> body {"ref"?,"task"?,"wait"?,"pr"?}
+  POST /run          -> body {"manifest"?,"repo"?,"ref"?,"pr"?,"task"?,"wait"?}
+                        `manifest` names the capability manifest; required with a token.
                         wait=true (default): blocks, returns the task result
                         wait=false: returns {"task_id": ...} immediately
-                        `pr` is a pull request number of the policy-pinned repository:
-                        the task checks out refs/pull/<n>/head, overriding `ref`.
-                        `repo` and `model` are still ACCEPTED, but they are policy, not
-                        request: authorize.py decides both, and a supplied value that
-                        disagrees is a 403 rather than a substitution.
-  GET  /status/<id>  -> {"state": "running"|"done", ...result}, scoped to the caller
-                        that owns the task; anyone else's reads as 404.
+                        `repo` picks among the repositories the manifest allows; `pr` is a
+                        pull request number of that repository: the task checks out
+                        refs/pull/<n>/head, overriding `ref`. `model` is still ACCEPTED but
+                        is policy, not request, and a supplied value that disagrees with
+                        the Grant is a 403 rather than a substitution.
+  GET  /status/<id>[?manifest=<name>]
+                     -> {"state": "running"|"done", ...result}, scoped to the caller and
+                        manifest that own the task; anyone else's reads as 404. A token
+                        caller names the manifest it ran under.
 
 Everything below the parse is somebody else's file, so the rule for this one is that it
 owns request shape, status codes and response bodies — no task state, and no Kubernetes
@@ -25,10 +28,12 @@ import json
 import os
 import re
 import socket
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import authorize
 import kube
+import manifest
 import oidc
 import tasks
 
@@ -71,6 +76,17 @@ REQUIRE_AUTH = _flag("REQUIRE_AUTH", "false")
 
 TASK_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
+_MANIFESTS: dict | None = None
+
+
+def manifests() -> dict:
+    """The capability manifests, loaded once. __main__ calls this at startup so a bad
+    or missing manifest crashloops the pod instead of failing the first request."""
+    global _MANIFESTS
+    if _MANIFESTS is None:
+        _MANIFESTS = manifest.load_dir(manifest.MANIFEST_DIR)
+    return _MANIFESTS
+
 
 class Handler(BaseHTTPRequestHandler):
     # Whole-connection socket timeout (socketserver applies it in setup()). Without it
@@ -97,12 +113,16 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path.startswith("/status/"):
-            task_id = self.path[len("/status/") :]
+            url = urllib.parse.urlsplit(self.path)
+            task_id = url.path[len("/status/") :]
             if not TASK_ID_RE.match(task_id):
                 self._send(400, {"error": "malformed task id"})
                 return
+            # Blank values kept: `?manifest=` names a manifest (the empty one) just as
+            # `"manifest": ""` does in a /run body, and is refused the same way.
+            names = urllib.parse.parse_qs(url.query, keep_blank_values=True).get("manifest")
             try:
-                caller = self._caller()
+                caller = self._owner(names[0] if names else None)
             except oidc.InvalidToken as exc:
                 self._send(401, {"error": str(exc)})
                 return
@@ -136,11 +156,10 @@ class Handler(BaseHTTPRequestHandler):
         spec = json.loads(self.rfile.read(length) or "{}")
         if not isinstance(spec, dict):
             raise ValueError("body must be a JSON object")
-        # 'repo' is no longer required, and no longer decides anything: the repository to
-        # clone comes from the Grant. It is still type-checked, and still compared to the
-        # Grant below — a caller that names a different repo is told so rather than
-        # quietly getting the policy's one.
-        for key in ("repo", "ref", "task", "model"):
+        # 'repo' is not required. With a token it chooses among the repositories the
+        # manifest allows (authorize.py refuses any other); without one the repository is
+        # fixed, and a `repo` that differs is refused below rather than quietly replaced.
+        for key in ("manifest", "repo", "ref", "task", "model"):
             if key in spec and not isinstance(spec[key], str):
                 raise ValueError(f"'{key}' must be a string")
         if "wait" in spec and not isinstance(spec["wait"], bool):
@@ -157,19 +176,16 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("'pr' must be a non-negative integer")
         return spec
 
-    def _caller(self) -> str:
-        """Who is asking. Raises oidc.InvalidToken (401) or authorize.Denied (403).
+    def _owner(self, manifest_name: str | None) -> str:
+        """Who is asking, as a task-ownership key. Raises oidc.InvalidToken (401) or
+        authorize.Denied (403).
 
-        Literally _grant_for's answer with the body empty, rather than a second copy of
-        the same preamble — two copies of one authentication rule is how /status ends up
-        admitting a token /run would refuse. Reading a result is a smaller decision than
-        dispatching one, but "smaller" was never "different".
-
-        The unauthenticated identity is a real name rather than None, so it participates
-        in task ownership like any other: during the migration window unauthenticated
-        callers can read each other's results, and nobody else's.
+        Literally _grant_for's answer for an empty request under the named manifest, so
+        /status applies exactly the rules /run does. The unauthenticated identity is a
+        real key rather than None: during the migration window unauthenticated callers
+        can read each other's results, and nobody else's.
         """
-        return self._grant_for({}).caller
+        return self._grant_for({} if manifest_name is None else {"manifest": manifest_name}).owner
 
     def _grant_for(self, spec: dict):
         """Authenticate the caller and turn the request into a Grant.
@@ -179,23 +195,28 @@ class Handler(BaseHTTPRequestHandler):
         """
         header = self.headers.get("Authorization")
         if header is None and not REQUIRE_AUTH:
-            # The migration window. Unauthenticated callers get the v1 policy's Grant,
-            # which is the same clone target and model an authorized caller would get —
-            # so flipping REQUIRE_AUTH changes who may call, never what a call can do.
+            # The migration window. Unauthenticated callers get a fixed Grant — the v1
+            # clone target and the dispatcher's default model — not what any manifest
+            # grants. A request that NAMES a manifest is refused rather than served
+            # under it: the manifest would not be applied, and nothing in the result
+            # would say so. Keyed on presence, so `"manifest": ""` is refused too.
+            if "manifest" in spec:
+                raise oidc.InvalidToken("a request that names a manifest must carry a token")
             return authorize.Grant(
                 caller="unauthenticated",
+                manifest="",
                 workflow_ref="",
                 clone_repo=authorize.V1_CLONE_REPO,
                 model=authorize.V1_MODEL,
                 task=spec.get("task", ""),
                 ref=spec.get("ref", ""),
-                # A selector, not a capability, so the migration window hands it over
-                # like `ref`: an unauthenticated caller reviews a pull request of the
-                # same policy-pinned repository an authorized one would.
+                # A selector, not a capability, so the unauthenticated path hands it over
+                # like `ref`: it names a pull request of the v1 repository, the only one
+                # this Grant clones.
                 pr=spec.get("pr", 0),
             )
         claims = oidc.verify(oidc.bearer_token(header))
-        return authorize.authorize(claims, spec)
+        return authorize.authorize(claims, spec, manifests())
 
     def do_POST(self) -> None:
         if self.path != "/run":
@@ -219,9 +240,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"error": str(exc)})
             return
 
-        # Both of these are policy, not request. Refused rather than ignored, and both
-        # rather than just `repo`: a caller that asks for a cheap model, gets the
-        # policy's, and is told nothing has been misled about what it is spending.
+        # authorize.py already refused an authenticated `repo` the manifest does not
+        # allow; this catches the unauthenticated path, which is pinned to one repo. The
+        # model is policy on both paths. Refused rather than ignored: a caller that asks
+        # for a cheap model, gets the policy's, and is told nothing has been misled.
         #
         # Keyed on PRESENCE, not truthiness. `spec.get("repo")` skipped `"repo": ""`,
         # which disagrees with the policy repository as much as any other wrong value
@@ -242,14 +264,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": "AGENT_IMAGE not set — deploy.sh did not substitute the task image"})
             return
 
-        task_id = tasks.start_task(grant.caller)
+        task_id = tasks.start_task(grant.owner)
         if task_id is None:
             self._send(429, {"error": f"at capacity: {tasks.MAX_CONCURRENT_TASKS} tasks in flight"})
             return
 
         # One line per admitted task, so who dispatched what is answerable from the pod
         # log rather than only from the Job that has since been deleted.
-        print(f"[sandbox-dispatcher] task {task_id} granted to {grant.caller} ({grant.workflow_ref or 'no workflow'})")
+        print(
+            f"[sandbox-dispatcher] task {task_id} granted to {grant.caller} under "
+            f"{grant.manifest or 'no manifest'} ({grant.workflow_ref or 'no workflow'})"
+        )
 
         if spec.get("wait", True):
             result = tasks.run_and_record(task_id, grant)
