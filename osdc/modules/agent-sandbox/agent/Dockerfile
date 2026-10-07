@@ -17,8 +17,8 @@ RUN apt-get update \
         python3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY sandbox.py task.py /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/sandbox.py /usr/local/bin/task.py
+COPY sandbox.py agent_loop.py task.py /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/sandbox.py /usr/local/bin/agent_loop.py /usr/local/bin/task.py
 
 # task.py imports sandbox.py from the same directory.
 ENV PYTHONPATH=/usr/local/bin
