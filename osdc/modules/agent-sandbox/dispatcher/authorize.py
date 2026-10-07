@@ -66,6 +66,9 @@ class Grant:
     # the Job template has one thing to stringify and the agent one thing to parse.
     pr: int
     base: str = ""
+    # Writes the run may propose (manifest.EffectSpec). Empty for the unauthenticated
+    # path and for read-only manifests.
+    effects: tuple = ()
 
     @property
     def owner(self) -> str:
@@ -177,4 +180,5 @@ def authorize(claims: dict, request: dict, manifests: dict) -> Grant:
         ref=ref,
         pr=pr,
         base=base,
+        effects=manifest.effects,
     )

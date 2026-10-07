@@ -88,7 +88,8 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   last is kept for the answer) — and
   the model then answers from what it has read, the answer is returned with
   `tools_refused` naming that budget, so it can be told from one written after complete
-  reading. A turn may use up to 16000 tokens, thinking included, and
+  reading. (`tools_refused` is set whenever the model was told its budget is spent, which
+  with effects allowed can happen without a refused call.) A turn may use up to 16000 tokens, thinking included, and
   300 s. A throttled (429), failed (5xx) or dropped model call is retried up to three
   times with backoff while at least 30 s of the loop's time is left; a call that still
   fails ends the run with `errors.bedrock`, keeping `turns` and `tool_calls`.
@@ -335,6 +336,41 @@ To review a pull request, pass its head sha as `ref` (or `refs/pull/<n>/head`, t
 the dispatcher checks out when given a `pr` number) and the merge base as `base`, so the
 agent is given the diff.
 
+## Writes: proposed in the sandbox, applied outside it
+
+The agent never writes. When its manifest lists `capabilities.effects`, the agent gets a
+`propose_effect` tool and can propose a PR comment or a check run; the task returns the
+proposals in `effects`. The dispatcher screens them against the Grant
+(`dispatcher/effects.py`): the kind must be listed, bodies fit `max_bytes`, a check run's
+conclusion comes from the manifest's set and its name from the manifest. Effects need the
+request's `ref` to be a commit sha, and the task must report having checked out exactly
+that commit — so a run selected only by `pr` gets no effects; pass the head sha as `ref`.
+Every accepted effect is pinned to that commit and to the cloned repository, and opens
+with a provenance line. Every `@pytorchbot` or `@pytorchmergebot` mention in a body is
+put in a code span, so pytorch-bot cannot read it as a command. Rejections are reported
+in `errors.effects` (a warning, not a failed step); a run that did not finish proposes
+nothing.
+
+The tool is offered each effect's `max_bytes` less the provenance line, and checks a
+check run's title as screening does, so a proposal it accepts is not dropped for size
+afterwards. Proposing is how the agent delivers its answer, so it stays open after the
+read budget is spent: once the agent has seen that — a refused read, or a note on the
+result of the call that spent the budget — it may propose in one more turn, and any tool
+call after that ends the run. Two turns, and twice the time reserve (120 s), are kept back
+for this (the proposal and the answer), so neither limit cuts it short.
+
+The action applies what survives when called with `apply-effects: "true"`, `wait: "true"`
+and a `pr-number` (`action/apply_effects.py`), reading the result its own `/run` step just wrote
+in the same job, using the `github-token` input. That defaults to the job's token, which
+can write only to the calling repository; a caller that reviews another repository must
+pass a token for it (a GitHub App installation token), and the step refuses to start with
+the job's token otherwise. A comment is posted as a pull-request review with
+`commit_id` set to the reviewed commit, a check run is created on that commit, effects for
+another repository are refused, and nothing is written if the pull request has moved on.
+For PR-triggered callers, run the whole call — `/run` and the apply step — in a
+`workflow_run` job on the default branch, fed only the PR number by the untrusted stage;
+never apply an artifact produced by another job.
+
 ## Capacity
 
 A sandbox slot is **2 vCPU / 4 GiB / 20 GiB disk with requests == limits** (Guaranteed QoS), so
@@ -504,8 +540,8 @@ token.
   Nothing filters it; fencing it would not help, because the model reads the whole
   prompt either way. What bounds it is that the tools only read the checked-out commit
   and the agent holds no credentials, so the worst outcome is a misleading report
-  returned to the caller that asked for it. It stops being bounded once the agent can act
-  on its own output.
+  returned to the caller — or, where the manifest lists effects, a misleading comment or
+  neutral check on the pull request under review, which is all screening lets through.
 - **git-proxy authorizes on repository, not on caller.** `repo_allowed` matches the URL
   path, and `git-proxy-ingress` admits every pod labelled `app: sandbox-task` — which is
   every task pod, whatever `Grant.clone_repo` its caller was issued. So a task dispatched
