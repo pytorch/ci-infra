@@ -839,11 +839,17 @@ def reserve(
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
 
-            # Handle spot: prefix from cross-region selection — use a TEMPORARY config
-            # for prod-east1 without persisting the environment change to disk.
+            # Spot lives on the prod-east1 cluster. Route there for a spot: pick from
+            # the cross-region picker, or for --spot on prod (same as the
+            # non-interactive path) — via a TEMPORARY config, never persisted.
+            switch_to_spot_cluster = False
             if isinstance(gpu_type, str) and gpu_type.startswith("spot:"):
                 gpu_type = gpu_type[5:]  # strip prefix
                 spot = True
+                switch_to_spot_cluster = True
+            elif spot and _env_name == "prod" and Config.ENVIRONMENTS.get("prod-east1"):
+                switch_to_spot_cluster = True
+            if switch_to_spot_cluster:
                 rprint(f"\n[cyan]⚡ Switching to spot cluster (us-east-1) for {gpu_type.upper()}[/cyan]")
                 rprint("[dim]Spot instance: ~70% cheaper, may be preempted, separate disks.[/dim]\n")
                 # Build a temporary Config pointing at prod-east1 WITHOUT touching disk

@@ -8,7 +8,9 @@ fast-path (claim_direct) condition, and --no-connect.
 Everything that touches AWS / SSH / config / the ReservationManager is patched
 where the names are looked up (gpu_dev_cli.cli). All tests force --no-interactive
 and stub check_interactive_support -> False so the non-interactive disk picker is
-skipped and create_reservation / claim_direct are the only manager calls.
+skipped and create_reservation / claim_direct are the only manager calls. The
+exception is the interactive --spot routing section at the end, which answers
+every picker so only the spot-cluster switch varies.
 """
 import re
 from contextlib import contextmanager
@@ -392,3 +394,75 @@ def test_cpu_type_defaults_to_zero_gpus(cli_runner):
     assert r.exit_code == 0
     mgr.claim_direct.assert_called_once()
     assert mgr.claim_direct.call_args.kwargs["gpu_count"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Interactive --spot routing to the prod-east1 spot cluster
+# --------------------------------------------------------------------------- #
+@contextmanager
+def interactive_reserve_env(environment="prod"):
+    """Interactive reserve with every picker answered, so only the spot-routing
+    decision varies. Yields (prod_mgr, east1_mgr, Config mock)."""
+    from gpu_dev_cli.config import Config as RealConfig
+
+    prod_mgr, east1_mgr = MagicMock(name="prod_mgr"), MagicMock(name="east1_mgr")
+    for mgr in (prod_mgr, east1_mgr):
+        mgr.claim_direct.return_value = None
+        mgr.create_reservation.return_value = "resv-1234567890abcdef"
+        mgr.wait_for_reservation_completion.return_value = None
+    east1_config = MagicMock(name="east1_config")
+    config_cls = MagicMock(name="Config", return_value=east1_config)
+    config_cls.ENVIRONMENTS = RealConfig.ENVIRONMENTS
+
+    def make_mgr(cfg):
+        return east1_mgr if cfg is east1_config else prod_mgr
+
+    with patch.dict("os.environ", {}), \
+            patch("gpu_dev_cli.cli.ReservationManager", side_effect=make_mgr), \
+            patch("gpu_dev_cli.cli.Config", config_cls), \
+            patch("gpu_dev_cli.cli.load_config", return_value=_make_config(environment)), \
+            patch("gpu_dev_cli.cli.authenticate_user", return_value=USER_INFO), \
+            patch("gpu_dev_cli.auth._load_ssh_cache", return_value={"valid": True}), \
+            patch("gpu_dev_cli.cli.check_interactive_support", return_value=True), \
+            patch("gpu_dev_cli.cli.select_jupyter_interactive", return_value=False), \
+            patch("gpu_dev_cli.cli.ask_name_interactive", return_value=None), \
+            patch("gpu_dev_cli.cli._maybe_autoconnect"), \
+            patch("gpu_dev_cli.cli._maybe_show_sdk_tip"):
+        yield prod_mgr, east1_mgr, config_cls
+
+
+def _interactive_reserve(cli_runner, *extra):
+    return cli_runner.invoke(main, [
+        "reserve", "--interactive", "-t", "b200", "-g", "1", "-h", "2",
+        "--disk", "none", *extra,
+    ])
+
+
+def test_interactive_spot_on_prod_routes_to_spot_cluster(cli_runner):
+    with interactive_reserve_env("prod") as (prod_mgr, east1_mgr, config_cls):
+        r = _interactive_reserve(cli_runner, "--spot")
+    assert r.exit_code == 0, r.output
+    assert "Switching to spot cluster" in plain(r.output)
+    assert config_cls.return_value.aws_region == "us-east-1"
+    prod_mgr.create_reservation.assert_not_called()
+    east1_mgr.create_reservation.assert_called_once()
+    assert east1_mgr.create_reservation.call_args.kwargs["spot"] is True
+
+
+def test_interactive_without_spot_stays_on_prod(cli_runner):
+    with interactive_reserve_env("prod") as (prod_mgr, east1_mgr, _):
+        r = _interactive_reserve(cli_runner)
+    assert r.exit_code == 0, r.output
+    assert "Switching to spot cluster" not in plain(r.output)
+    east1_mgr.create_reservation.assert_not_called()
+    prod_mgr.create_reservation.assert_called_once()
+    assert prod_mgr.create_reservation.call_args.kwargs["spot"] is False
+
+
+def test_interactive_spot_on_spot_cluster_does_not_reswitch(cli_runner):
+    with interactive_reserve_env("prod-east1") as (prod_mgr, east1_mgr, _):
+        r = _interactive_reserve(cli_runner, "--spot")
+    assert r.exit_code == 0, r.output
+    assert "Switching to spot cluster" not in plain(r.output)
+    prod_mgr.create_reservation.assert_called_once()
+    assert prod_mgr.create_reservation.call_args.kwargs["spot"] is True
