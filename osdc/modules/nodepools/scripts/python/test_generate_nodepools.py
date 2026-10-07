@@ -353,7 +353,7 @@ class TestGenerateNodepoolYaml:
         nodepool_def = _make_nodepool_def(gpu=False)
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
         docs = self._parse(output)
-        assert docs[1]["spec"]["amiSelectorTerms"] == [{"alias": "al2023@latest"}]
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"alias": "al2023@v20260923"}]
 
     def test_gpu_ec2nodeclass_ami_name_glob(self):
         """The glob must carry the control plane's minor.
@@ -366,7 +366,7 @@ class TestGenerateNodepoolYaml:
         nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
         docs = self._parse(output)
-        assert docs[1]["spec"]["amiSelectorTerms"] == [{"name": "amazon-eks-node-al2023-x86_64-nvidia-1.35-*"}]
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"name": "amazon-eks-node-al2023-x86_64-nvidia-1.35-v20260923"}]
 
     def test_gpu_ec2nodeclass_refuses_an_unpinned_ami(self):
         nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")
@@ -382,7 +382,7 @@ class TestGenerateNodepoolYaml:
         nodepool_def = _make_nodepool_def()
         with patch.dict(os.environ, {"NODEPOOLS_EKS_VERSION": ""}, clear=False):
             docs = self._parse(generate_nodepool_yaml(nodepool_def, "nodepools"))
-        assert docs[1]["spec"]["amiSelectorTerms"] == [{"alias": "al2023@latest"}]
+        assert docs[1]["spec"]["amiSelectorTerms"] == [{"alias": "al2023@v20260923"}]
 
     def test_ami_selector_tags_replace_alias(self):
         """A def selecting its own AMI must not keep the stock alias alongside
@@ -422,7 +422,7 @@ class TestGenerateNodepoolYaml:
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
         docs = self._parse(output)
         ec2 = docs[1]
-        assert ec2["spec"]["amiSelectorTerms"] == [{"alias": "al2023@latest"}]
+        assert ec2["spec"]["amiSelectorTerms"] == [{"alias": "al2023@v20260923"}]
         assert "amiFamily" not in ec2["spec"]
 
     def test_cluster_name_placeholder(self):

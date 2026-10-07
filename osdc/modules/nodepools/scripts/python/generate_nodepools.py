@@ -35,6 +35,15 @@ if _scripts_python not in sys.path:
 from instance_specs import INSTANCE_SPECS  # noqa: E402
 from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # noqa: E402
 
+# Pins every stock AL2023 fleet (CPU alias and GPU name glob) to one EKS AMI
+# release. v20260930 ships kernel 6.12.110-135.201, which panics in
+# list_lru_add during page-cache reclaim and reboots the node, killing every
+# job on it: https://github.com/awslabs/amazon-eks-ami/issues/2845
+# v20260923 (kernel 6.12.103-129.197, same NVIDIA 580.178.04 driver) does not.
+# Go back to tracking latest once AWS ships a release with the fix. Keep in
+# step with buildkit/generate_buildkit.py and pypi-cache/ec2nodeclass.yaml.tpl.
+AL2023_AMI_VERSION = "v20260923"
+
 # List of startup taint entries. Each entry is a dict with:
 #   - ``key``, ``value``, ``effect`` (all str) — the Karpenter startupTaint to emit
 #   - ``module`` (str | None) — module-name gate:
@@ -281,7 +290,7 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         # fleet on 1.31 against a 1.35 control plane.
         ami_family_block = "  amiFamily: AL2023"
         ami_selector_block = f"""  amiSelectorTerms:
-    - name: "amazon-eks-node-al2023-x86_64-nvidia-{eks_version}-*\""""
+    - name: "amazon-eks-node-al2023-x86_64-nvidia-{eks_version}-{AL2023_AMI_VERSION}\""""
         if compactor_enabled:
             disruption_budget = os.environ.get("NODEPOOLS_GPU_DISRUPTION_BUDGET", "100%")
             consolidation_after = os.environ.get("NODEPOOLS_GPU_CONSOLIDATE_AFTER", "2m")
@@ -300,8 +309,8 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         gpu_tags = '    GPU: "nvidia"\n'
     else:
         ami_family_block = ""
-        ami_selector_block = """  amiSelectorTerms:
-    - alias: al2023@latest"""
+        ami_selector_block = f"""  amiSelectorTerms:
+    - alias: al2023@{AL2023_AMI_VERSION}"""
         if compactor_enabled:
             # Compactor-managed: all empty nodes can be cleaned simultaneously
             disruption_budget = os.environ.get("NODEPOOLS_CPU_DISRUPTION_BUDGET", "100%")

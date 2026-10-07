@@ -496,8 +496,11 @@ spec:
   # rotation picks up a kernel with the DirtyFrag fix (6.1.170+ or 6.12.83+),
   # remove osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
   # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
+  # Pinned off v20260930, whose kernel panics nodes under page-cache reclaim:
+  # https://github.com/awslabs/amazon-eks-ami/issues/2845. Keep in step with
+  # AL2023_AMI_VERSION in nodepools/scripts/python/generate_nodepools.py.
   amiSelectorTerms:
-    - alias: al2023@latest
+    - alias: al2023@v20260923
 
   subnetSelectorTerms:
     - tags:
