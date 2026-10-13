@@ -36,6 +36,22 @@ Learn more about [Terraform configurations for managing Datadog monitoring and o
 
 The focus of the [PyTorch CI working group](https://github.com/pytorch-fdn/tac/tree/main/working-groups/ci-wg) is to maintain, improve, monitor, and cost manage the existing PyTorch CI infrastructure.
 
+#### Infra Contacts
+
+Below is info for point of contacts for specific GitHub runner CI pipelines. ***Please do not contact with specific CI issues.***
+If you have an issue with CI, please submit an issue on the [Pytorch repo](https://github.com/pytorch/pytorch/issues).
+
+| Runners | Contact Name | Slack | GitHub |
+|-------|------|-------|------|
+| AMD ROCM | Jithun Nair| @Jithun Nair | ([jithunnair-amd](https://github.com/jithunnair-amd))
+| Windows | Andrey Talman | @Andrey Talman | ([atalman](https://github.com/atalman))
+| MacOS | Huy Do/Jean Schmidt | @Huy Do, @Jean Schmidt | ([huydhn](https://github.com/huydhn)) ([jeanschmidt](https://github.com/jeanschmidt)) 
+| IBM s390x | Andrea Frittoli | @Andrea Frittoli | ([afrittoli](https://github.com/afrittoli))
+| IBM ppc64le | Andrea Frittoli | @Andrea Frittoli | ([afrittoli](https://github.com/afrittoli))
+| RISC-v | Ludovic Henry | @Ludovic Henry | ([luhenry](https://github.com/luhenry))
+| OSDC LF | Thanh Ha/ Mick Tarsel  | @zxiiro, @Mick Tarsel | ([zxiiro](https://github.com/zxiiro)) ([mtarsel](https://github.com/mtarsel))
+| OSDC Meta | Huy Do/Jean Schmidt | @Huy Do, @Jean Schmidt | ([huydhn](https://github.com/huydhn)) ([jeanschmidt](https://github.com/jeanschmidt)) 
+
 ### Multi-Cloud Working Group
 
 The [PyTorch multi-cloud working group](https://github.com/pytorch-fdn/tac/tree/main/working-groups/multi-cloud-wg) has been created to develop a sustainable, equitable, community managed approach to the CI/CD pipeline for PyTorch in a multi-cloud environment.
