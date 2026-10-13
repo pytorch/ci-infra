@@ -51,7 +51,7 @@ Defs live in `modules/arc-runners/defs/` (CPU runners + A100 GPU + release defs)
 
 ## Old Label → New Label Mapping
 
-Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by vCPU, memory, and GPU resources. Linux only (Windows runners not yet on ARC).
+Maps each old runner label (the `scale-config.yml` labels, plus the `a.linux.*` and `linux.aws.*` GPU labels) to its OSDC ARC equivalent, usually matched by vCPU, memory, and GPU resources. The c5/c7i 2xlarge, 4xlarge, and 12xlarge labels and `linux.2xlarge.amx` map to memory-optimized runners with more memory than the old instance type; the g5/g6 4xlarge labels map to runners on the same instance type that are allocated 11 vCPU / 41 GiB of the instance's 16 vCPU / 64 GiB, with the same single GPU. Linux only (Windows runners not yet on ARC).
 
 ### x86 CPU — Intel AVX-512 (c5, c7i families)
 
@@ -60,16 +60,16 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | --- | --- | --- |
 | linux.large | c5.large | mt-l-x86iavx512-2-4 |
 | linux.c7i.large | c7i.large | mt-l-x86iavx512-2-4 |
-| linux.2xlarge | c5.2xlarge | mt-l-x86iavx512-8-16 |
-| linux.c7i.2xlarge | c7i.2xlarge | mt-l-x86iavx512-8-16 |
-| linux.4xlarge | c5.4xlarge | mt-l-x86iavx512-16-32 |
-| linux.4xlarge.for.testing.donotuse | c5.4xlarge | mt-l-x86iavx512-16-32 |
-| linux.c7i.4xlarge | c7i.4xlarge | mt-l-x86iavx512-16-32 |
+| linux.2xlarge | c5.2xlarge | mt-l-x86iavx512-8-64 |
+| linux.c7i.2xlarge | c7i.2xlarge | mt-l-x86iavx512-8-64 |
+| linux.4xlarge | c5.4xlarge | mt-l-x86iavx512-16-128 |
+| linux.4xlarge.for.testing.donotuse | c5.4xlarge | mt-l-x86iavx512-16-128 |
+| linux.c7i.4xlarge | c7i.4xlarge | mt-l-x86iavx512-16-128 |
 | linux.c7i.8xlarge | c7i.8xlarge | *— no equivalent* |
 | linux.9xlarge.ephemeral | c5.9xlarge | mt-l-x86iavx512-37-68 |
-| linux.12xlarge | c5.12xlarge | mt-l-x86iavx512-46-85 |
-| linux.12xlarge.ephemeral | c5.12xlarge | mt-l-x86iavx512-46-85 |
-| linux.c7i.12xlarge | c7i.12xlarge | mt-l-x86iavx512-46-85 |
+| linux.12xlarge | c5.12xlarge | mt-l-x86iavx512-48-384 |
+| linux.12xlarge.ephemeral | c5.12xlarge | mt-l-x86iavx512-48-384 |
+| linux.c7i.12xlarge | c7i.12xlarge | mt-l-x86iavx512-48-384 |
 | linux.16xlarge.spr | c7i.16xlarge | *— no equivalent* |
 | linux.24xlarge | c5.24xlarge | mt-l-x86iavx512-94-192 |
 | linux.24xlarge.ephemeral | c5.24xlarge | mt-l-x86iavx512-94-192 |
@@ -81,7 +81,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.2xlarge.amx | m7i-flex.2xlarge | mt-l-x86iamx-8-32 |
+| linux.2xlarge.amx | m7i-flex.2xlarge | mt-l-x86iamx-8-64 |
 | linux.4xlarge.amx | m7i-flex.4xlarge | *— no equivalent* |
 | linux.8xlarge.amx | m7i-flex.8xlarge | mt-l-x86iamx-32-128 |
 
@@ -93,7 +93,7 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 | mt-l-x86iamx-14-27 | c7i.12xlarge | 14 / 27 GiB |
 | mt-l-x86iamx-22-41 | c7i.12xlarge | 22 / 41 GiB |
 | mt-l-x86iamx-46-84 | c7i.12xlarge | 46 / 84 GiB |
-| mt-l-x86iamx-8-64 | r7i.48xlarge | 8 / 64 GiB |
+| mt-l-x86iamx-8-32 | m7i.12xlarge | 8 / 32 GiB |
 | mt-l-x86iamx-16-128 | r7i.48xlarge | 16 / 128 GiB |
 
 ### x86 CPU — Intel AVX2 (m4 family)
@@ -148,7 +148,7 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.g5.4xlarge.nvidia.gpu | g5.4xlarge | mt-l-x86aavx2-29-113-a10g |
+| linux.g5.4xlarge.nvidia.gpu | g5.4xlarge | mt-l-x86aavx2-11-41-a10g |
 | linux.g5.12xlarge.nvidia.gpu | g5.12xlarge | mt-l-x86aavx2-45-167-a10g-4 |
 | linux.g5.48xlarge.nvidia.gpu | g5.48xlarge | mt-l-x86aavx2-189-704-a10g-8 |
 
@@ -157,7 +157,7 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.g6.4xlarge.experimental.nvidia.gpu | g6.4xlarge | mt-l-x86aavx2-29-113-l4 |
+| linux.g6.4xlarge.experimental.nvidia.gpu | g6.4xlarge | mt-l-x86aavx2-11-41-l4 |
 | linux.g6.12xlarge.nvidia.gpu | g6.12xlarge | mt-l-x86aavx2-45-172-l4-4 |
 
 ### x86 GPU — B200 (p6-b200 family)
@@ -176,16 +176,20 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
 | a.linux.h100 | p5.48xlarge | mt-l-x86iamx-22-225-h100 |
+| linux.aws.h100 | p5.48xlarge | mt-l-x86iamx-22-225-h100 |
 | a.linux.h100.2 | p5.48xlarge | mt-l-x86iamx-44-450-h100-2 |
 | a.linux.h100.4 | p5.48xlarge | mt-l-x86iamx-88-900-h100-4 |
+| linux.aws.h100.4 | p5.48xlarge | mt-l-x86iamx-88-900-h100-4 |
 | a.linux.h100.8 | p5.48xlarge | mt-l-bx86iamx-176-1800-h100-8 |
+| linux.aws.h100.8 | p5.48xlarge | mt-l-bx86iamx-176-1800-h100-8 |
 
-### x86 GPU — A100 (p4d family)
+### x86 GPU — A100 (p4d, p4de families)
 
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
 | a.linux.a100 | p4d.24xlarge | mt-l-x86iavx512-11-125-a100 |
+| linux.aws.a100 | p4de.24xlarge | mt-l-x86iavx512-11-125-a100 |
 | a.linux.a100.2 | p4d.24xlarge | mt-l-x86iavx512-22-250-a100-2 |
 | a.linux.a100.4 | p4d.24xlarge | mt-l-x86iavx512-44-500-a100-4 |
 | a.linux.a100.8 | p4d.24xlarge | mt-l-bx86iavx512-88-1000-a100-8 |
@@ -216,32 +220,37 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 
 Several old labels map to the same new label. This is by design — the new naming describes **what the runner provides** (CPU features, vCPU, memory), not which AWS instance it runs on. From the workflow's perspective, 8 vCPU + 64 GiB on an r5 is the same as 8 vCPU + 64 GiB on an r7i. The old system leaked the instance type into the label, creating artificial distinctions that workflows shouldn't care about.
 
-Excluding trivial `.ephemeral` / `.nonephemeral` duplicates, these are the cases where different instance families collapse:
+Excluding trivial `.ephemeral` / `.nonephemeral` duplicates, these are the cases where different instance families collapse, plus aliases that name the same hardware (the T4 and H100 rows):
 
 
 | **New Label** | **Old Labels** | **Old Instance Types** |
 | --- | --- | --- |
 | mt-l-x86iavx512-2-4 | linux.large, linux.c7i.large | c5.large, c7i.large |
-| mt-l-x86iavx512-8-16 | linux.2xlarge, linux.c7i.2xlarge | c5.2xlarge, c7i.2xlarge |
-| mt-l-x86iavx512-16-32 | linux.4xlarge, linux.4xlarge.for.testing.donotuse, linux.c7i.4xlarge | c5.4xlarge, c7i.4xlarge |
-| mt-l-x86iavx512-46-85 | linux.12xlarge, linux.c7i.12xlarge | c5.12xlarge, c7i.12xlarge |
 | mt-l-x86iavx512-94-192 | linux.24xlarge, linux.c7i.24xlarge | c5.24xlarge, c7i.24xlarge |
-| mt-l-x86iavx512-8-64 | linux.r7i.2xlarge, linux.2xlarge.memory | r7i.2xlarge, r5.2xlarge |
-| mt-l-x86iavx512-16-128 | linux.r7i.4xlarge, linux.4xlarge.memory | r7i.4xlarge, r5.4xlarge |
+| mt-l-x86iavx512-8-64 | linux.2xlarge, linux.c7i.2xlarge, linux.r7i.2xlarge, linux.2xlarge.memory | c5.2xlarge, c7i.2xlarge, r7i.2xlarge, r5.2xlarge |
+| mt-l-x86iavx512-16-128 | linux.4xlarge, linux.4xlarge.for.testing.donotuse, linux.c7i.4xlarge, linux.r7i.4xlarge, linux.4xlarge.memory | c5.4xlarge, c7i.4xlarge, r7i.4xlarge, r5.4xlarge |
 | mt-l-x86iavx512-32-256 | linux.r7i.8xlarge, linux.8xlarge.memory | r7i.8xlarge, r5.8xlarge |
-| mt-l-x86iavx512-48-384 | linux.r7i.12xlarge, linux.12xlarge.memory | r7i.12xlarge, r5.12xlarge |
+| mt-l-x86iavx512-48-384 | linux.12xlarge, linux.c7i.12xlarge, linux.r7i.12xlarge, linux.12xlarge.memory | c5.12xlarge, c7i.12xlarge, r7i.12xlarge, r5.12xlarge |
 | mt-l-x86iavx512-29-115-t4 | linux.4xlarge.nvidia.gpu, linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge |
+| mt-l-x86iamx-22-225-h100 | a.linux.h100, linux.aws.h100 | p5.48xlarge |
+| mt-l-x86iamx-88-900-h100-4 | a.linux.h100.4, linux.aws.h100.4 | p5.48xlarge |
+| mt-l-bx86iamx-176-1800-h100-8 | a.linux.h100.8, linux.aws.h100.8 | p5.48xlarge |
+| mt-l-x86iavx512-11-125-a100 | a.linux.a100, linux.aws.a100 | p4d.24xlarge, p4de.24xlarge |
 
 **Note on r7i vs r5:** r7i is Sapphire Rapids (has AMX), while r5 is Cascade Lake (AVX-512 only). Both are mapped to `x86iavx512` in our current defs because the underlying OSDC memory-optimized NodePool runs on `r7a.48xlarge` (AMD EPYC, AVX-512 only — no AMX) regardless. The previous `r5.24xlarge` NodePool has been retired for ARC use (it is retained only for RE job-assigner workloads — see `docs/node-utilization-optimization.md`). The label reflects what is actually delivered, not what the old instance type could do.
 
 ### What do workflows actually lose?
 
-There are two categories of collapse, with different implications:
+There are three categories of collapse, with different implications:
 
 **1. The **`.ephemeral`** / **`.nonephemeral`** duplicates — no difference at all.** Both members of each pair run the exact same instance type with `is_ephemeral: true` in scale-config.yml. They were created as separate labels historically (likely during a migration from persistent to ephemeral runners), but the config is identical. Workflows just happened to pick one label or the other. Pure cruft.
 
-**2. The cross-instance-family collapses — the difference is CPU microarchitecture.** In the old system, a workflow author could target a specific CPU generation by picking the right label (e.g., `linux.r7i.2xlarge` for Sapphire Rapids with AMX vs `linux.2xlarge.memory` for Cascade Lake with AVX-512). In OSDC, the NodePool decides the instance type — and right now the memory-optimized NodePool runs on AMD `r7a.48xlarge` (AVX-512, no AMX), so both old labels collapse to `mt-...-x86iavx512-...`. A workflow that previously ran on r7i and depended on AMX instructions would silently lose that capability.
+**2. The cross-instance-family collapses — the difference is CPU microarchitecture, system memory, or GPU memory.** In the old system, a workflow author could target a specific CPU generation by picking the right label (e.g., `linux.r7i.2xlarge` for Sapphire Rapids with AMX vs `linux.2xlarge.memory` for Cascade Lake with AVX-512). In OSDC, the NodePool decides the instance type — and right now the memory-optimized NodePool runs on AMD `r7a.48xlarge` (AVX-512, no AMX), so both old labels collapse to `mt-...-x86iavx512-...`. A workflow that previously ran on r7i and depended on AMX instructions would silently lose that capability.
 
 In practice, **no PyTorch CI workflow uses AMX instructions directly** — the r7i and c7i runners were added as cheaper/newer alternatives, not because workflows needed AMX. The collapse is safe. If AMX becomes important later, the naming convention already supports it: create a separate `x86iamx` runner backed by a NodePool targeting Sapphire Rapids or newer instances.
 
-Same story for c5 vs c7i compute runners — different CPU generations, but the new label reflects what the NodePool actually provides, not what the old label promised.
+Same story for c5 vs c7i compute runners — different CPU generations, but the new label reflects what the NodePool actually provides, not what the old label promised. The c5/c7i 2xlarge, 4xlarge, and 12xlarge labels also gain memory, because they share the memory-optimized runners with the r5/r7i labels: a c5.2xlarge has 16 GiB, while `mt-l-x86iavx512-8-64` has 64 GiB.
+
+For `linux.aws.a100`, the difference is GPU memory: pytorch/pytorch's `.github/arc.yaml` lists it under p4de (A100 80GB), while `mt-l-x86iavx512-11-125-a100` runs on p4d.24xlarge (A100 40GB), so those jobs get half the GPU memory.
+
+**3. Same-hardware aliases — no difference at all.** The labels in the T4 and H100 rows name the same instance type (g4dn.4xlarge and p5.48xlarge respectively), so workflows get the same hardware whichever label they use.
