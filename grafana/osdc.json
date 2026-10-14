@@ -42,7 +42,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})",
+                      "expr": "${smoothing.fn}((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))${smoothing.range})",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -61,7 +61,7 @@
         "description": "The current number of workflow jobs assigned by the GitHub Actions service to ARC scale sets, by cluster.",
         "id": 1,
         "links": [],
-        "title": "Assigned Jobs [cluster, scale_set]",
+        "title": "Assigned Jobs [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -162,7 +162,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "(100 * (1 - (sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) / sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})))) and on(cluster) (sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) > 0)",
+                      "expr": "${smoothing.fn}(((100 * (1 - (sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) / sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})))) and on(cluster) (sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) > 0))${smoothing.range})",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -181,7 +181,7 @@
         "description": "Percent of jobs assigned to the scale set that are not yet running on a runner.",
         "id": 2,
         "links": [],
-        "title": "% of Assigned Jobs Not Running [cluster, scale_set]",
+        "title": "% of Assigned Jobs Not Running [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -291,7 +291,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "(100 * clamp_min(sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - 600 * max_over_time((clamp_min(sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])), 0))[28d:5m]), 0) / sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})) and on(cluster) (sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) > 0)",
+                      "expr": "${smoothing.fn}(((100 * clamp_min(sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - 600 * max_over_time((clamp_min(sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])), 0))[28d:5m]), 0) / sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})) and on(cluster) (sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) > 0))${smoothing.range_max2d})",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -307,10 +307,10 @@
             "transformations": []
           }
         },
-        "description": "Percent of assigned jobs that, based on historical peak runner start rate over the last 28 days, should already be running by now. A 10-minute grace window is applied: jobs that fit within what the system could start in 10 minutes at peak observed throughput are not counted. Reads near 0% when the system is ramping at expected speed; climbs when jobs are accumulating faster than capacity has historically allowed.",
+        "description": "Percent of assigned jobs that, based on historical peak runner start rate over the last 28 days, should already be running by now. A 10-minute grace window is applied: jobs that fit within what the system could start in 10 minutes at peak observed throughput are not counted. Reads near 0% when the system is ramping at expected speed; climbs when jobs are accumulating faster than capacity has historically allowed. Smoothing options longer than 2d are capped at 2d on this panel, because the 28-day baseline plus a longer window exceeds the Mimir query length limit.",
         "id": 9,
         "links": [],
-        "title": "Startup Throughput Adjusted % of Assigned Jobs Not Running [cluster, scale_set]",
+        "title": "Startup Throughput Adjusted % of Assigned Jobs Not Running [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -420,7 +420,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})",
+                      "expr": "${smoothing.fn}((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))${smoothing.range})",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -439,7 +439,7 @@
         "description": "The total number of jobs running.",
         "id": 3,
         "links": [],
-        "title": "Running Jobs [cluster, scale_set]",
+        "title": "Running Jobs [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -540,7 +540,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))[3h:]) - avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) / avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) and on(cluster) (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:]) > 0) unless on(cluster) (label_replace(vector(1), \"cluster\", \"meta-prod-aws-uw1\", \"\", \"\") and on() (count(count by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\"})) == count(count by(cluster) (gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*|lf-prod-aws-.*\"}))))",
+                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))${smoothing.range_min3h}) - avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))${smoothing.range_min3h})) / avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))${smoothing.range_min3h})) and on(cluster) (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))${smoothing.range_min3h}) > 0) unless on(cluster) (label_replace(vector(1), \"cluster\", \"meta-prod-aws-uw1\", \"\", \"\") and on() (count(count by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\"})) == count(count by(cluster) (gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*|lf-prod-aws-.*\"}))))",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -556,10 +556,10 @@
             "transformations": []
           }
         },
-        "description": "Week-over-week percentage change in the 3-hour rolling average of running jobs. meta-prod-aws-uw1 is hidden when all clusters are selected (its low traffic makes the week-over-week percentage too spiky to be useful) and reappears when an explicit cluster subset that includes it is selected.",
+        "description": "Week-over-week percentage change in the 3-hour rolling average of running jobs. meta-prod-aws-uw1 is hidden when all clusters are selected (its low traffic makes the week-over-week percentage too spiky to be useful) and reappears when an explicit cluster subset that includes it is selected. Smoothing options longer than 3h replace both 3h averages with averages over the selected window.",
         "id": 4,
         "links": [],
-        "title": "Running Jobs Week-over-Week % Change, 3h Avg [cluster, scale_set]",
+        "title": "Running Jobs Week-over-Week % Change, 3h Avg [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -678,7 +678,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))[3h:]) - avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) / avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) and on(cluster) (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:]) > 0) unless on(cluster) (label_replace(vector(1), \"cluster\", \"meta-prod-aws-uw1\", \"\", \"\") and on() (count(count by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\"})) == count(count by(cluster) (gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*|lf-prod-aws-.*\"}))))",
+                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))${smoothing.range_min3h}) - avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))${smoothing.range_min3h})) / avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))${smoothing.range_min3h})) and on(cluster) (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))${smoothing.range_min3h}) > 0) unless on(cluster) (label_replace(vector(1), \"cluster\", \"meta-prod-aws-uw1\", \"\", \"\") and on() (count(count by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\"})) == count(count by(cluster) (gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*|lf-prod-aws-.*\"}))))",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -694,10 +694,10 @@
             "transformations": []
           }
         },
-        "description": "Week-over-week percentage change in the 3-hour rolling average of assigned jobs. meta-prod-aws-uw1 is hidden when all clusters are selected (its low traffic makes the week-over-week percentage too spiky to be useful) and reappears when an explicit cluster subset that includes it is selected.",
+        "description": "Week-over-week percentage change in the 3-hour rolling average of assigned jobs. meta-prod-aws-uw1 is hidden when all clusters are selected (its low traffic makes the week-over-week percentage too spiky to be useful) and reappears when an explicit cluster subset that includes it is selected. Smoothing options longer than 3h replace both 3h averages with averages over the selected window.",
         "id": 5,
         "links": [],
-        "title": "Assigned Jobs Week-over-Week % Change, 3h Avg [cluster, scale_set]",
+        "title": "Assigned Jobs Week-over-Week % Change, 3h Avg [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -815,8 +815,8 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "editorMode": "builder",
-                      "expr": "clamp_min(sum by(cluster, name) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - sum by(cluster, name) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}), 0)",
+                      "editorMode": "code",
+                      "expr": "${smoothing.fn}((clamp_min(sum by(cluster, name) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - sum by(cluster, name) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}), 0))${smoothing.range}) and on(cluster, name) group by(cluster, name) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})",
                       "legendFormat": "{{cluster}} / {{name}}",
                       "range": true
                     },
@@ -833,7 +833,7 @@
         "description": "Estimated jobs waiting for a runner by scale set/machine type. Calculated as ARC assigned jobs minus ARC running jobs.",
         "id": 6,
         "links": [],
-        "title": "Assigned Jobs Waiting to Run by Scale Set [cluster, scale_set]",
+        "title": "Assigned Jobs Waiting to Run by Scale Set [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -964,7 +964,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfInterval(created_at, INTERVAL 5 MINUTE) AS time,\n  uniqExact(id) AS jobs\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n  AND arrayExists(label -> match(label, '^(mt|lf)-(rel-)?l-'), labels)\n  AND (\n    (runner_group_name = 'meta-prod-aws-ue2' AND match('meta-prod-aws-ue2', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'meta-prod-aws-uw1' AND match('meta-prod-aws-uw1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'meta-prod-aws-uw2' AND match('meta-prod-aws-uw2', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'lf-prod-aws-ue1' AND match('lf-prod-aws-ue1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'lf-prod-aws-ue2' AND match('lf-prod-aws-ue2', '^(${cluster:regex})$'))\n  )\n  AND $__timeFilter(created_at)\nGROUP BY time\nORDER BY time ASC"
+                      "rawSql": "SELECT time, jobs\nFROM (\n  SELECT\n    time,\n    raw,\n    sum(raw) OVER (ORDER BY time RANGE BETWEEN toUInt32(greatest(${smoothing.window_sec} - 300, 0)) PRECEDING AND CURRENT ROW)\n      / greatest(${smoothing.window_sec} / 300, 1) AS jobs\n  FROM (\n    SELECT\n      toStartOfInterval(created_at, INTERVAL 5 MINUTE) AS time,\n      uniqExact(id) AS raw\n    FROM default.workflow_job\n    WHERE match(repository_full_name, '^(${repository:regex})$')\n      AND arrayExists(label -> match(label, '^(mt|lf)-(rel-)?l-'), labels)\n      AND (\n        (runner_group_name = 'meta-prod-aws-ue2' AND match('meta-prod-aws-ue2', '^(${cluster:regex})$'))\n        OR (runner_group_name = 'meta-prod-aws-uw1' AND match('meta-prod-aws-uw1', '^(${cluster:regex})$'))\n        OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n        OR (runner_group_name = 'meta-prod-aws-uw2' AND match('meta-prod-aws-uw2', '^(${cluster:regex})$'))\n        OR (runner_group_name = 'lf-prod-aws-ue1' AND match('lf-prod-aws-ue1', '^(${cluster:regex})$'))\n        OR (runner_group_name = 'lf-prod-aws-ue2' AND match('lf-prod-aws-ue2', '^(${cluster:regex})$'))\n      )\n      AND created_at >= $__fromTime - INTERVAL ${smoothing.window_sec} SECOND\n      AND created_at <= $__toTime\n    GROUP BY time\n    ORDER BY time WITH FILL\n      FROM toStartOfInterval($__fromTime - INTERVAL ${smoothing.window_sec} SECOND, INTERVAL 5 MINUTE)\n      TO $__toTime + 1\n      STEP 300\n  )\n)\nWHERE time >= toStartOfInterval($__fromTime, INTERVAL 5 MINUTE)\n  AND (${smoothing.window_sec} > 0 OR raw > 0)\nORDER BY time ASC"
                     },
                     "version": "v0"
                   },
@@ -976,10 +976,10 @@
             "transformations": []
           }
         },
-        "description": "Count of unique GitHub Actions workflow jobs picked up by OSDC production runners for the selected repositories and clusters, aggregated in 5-minute buckets.",
+        "description": "Count of unique GitHub Actions workflow jobs picked up by OSDC production runners for the selected repositories and clusters, aggregated in 5-minute buckets. With Smoothing on, each bar is the average 5-minute count over the trailing window.",
         "id": 7,
         "links": [],
-        "title": "Jobs Submitted to OSDC Runners, per 5min [cluster, repository]",
+        "title": "Jobs Submitted to OSDC Runners, per 5min [cluster, repository, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -1080,7 +1080,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "clamp_min(300 * (sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m]))), 0)",
+                      "expr": "${smoothing.fn}((clamp_min(300 * (sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m]))), 0))${smoothing.range})",
                       "instant": false,
                       "interval": "5m",
                       "legendFormat": "{{cluster}}",
@@ -1100,7 +1100,7 @@
         "description": "Number of new jobs starting to run per 5-minute bucket. Computed as the derivative of running jobs plus the completion rate (since running = started - completed), scaled to a 5-minute window. A flat or low value while jobs are queued indicates the system is not adding runners fast enough; a high value indicates active ramp-up.",
         "id": 8,
         "links": [],
-        "title": "Runner Start Rate, Jobs per 5min [cluster, scale_set]",
+        "title": "Runner Start Rate, Jobs per 5min [cluster, scale_set, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -1455,7 +1455,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "count by(cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or vector(0)",
+                      "expr": "${smoothing.zero_fill_fn}((count by(cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or vector(0))${smoothing.range}) / scalar(${smoothing.zero_fill_fn}((vector(1))${smoothing.range}))",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -1474,7 +1474,7 @@
         "description": "Count of hf-cache rclone mounts whose container's LAST termination was OOMKilled (kube_pod_container_status_last_terminated_reason). This is a sticky signal: it stays set after the pod recovers and only clears when the pod is replaced (node recycle / rollout) — so it counts mounts that OOM'd recently, INCLUDING ones already back to Running. It is an upper bound / early-warning indicator, NOT a live 'currently broken' count (that would need a per-pod not-ready or waiting-reason metric, which is not currently shipped to Mimir for the hf-cache namespace). A sustained rise still means the small-tier OOM is active and jobs on those nodes can fail to start.",
         "id": 12,
         "links": [],
-        "title": "hf-cache Mounts OOM-killed — recent, incl. recovered [cluster]",
+        "title": "hf-cache Mounts OOM-killed — recent, incl. recovered [cluster, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -1912,6 +1912,26 @@
         "regexApplyTo": "value",
         "skipUrlSync": false,
         "sort": "alphabeticalAsc"
+      }
+    },
+    {
+      "kind": "CustomVariable",
+      "spec": {
+        "allowCustomValue": false,
+        "current": {
+          "text": "Off",
+          "value": "off"
+        },
+        "description": "Trailing moving average applied to the line graphs. Off shows the raw data.",
+        "hide": "dontHide",
+        "includeAll": false,
+        "label": "Smoothing",
+        "multi": false,
+        "name": "smoothing",
+        "options": [],
+        "query": "[{\"text\":\"Off\",\"value\":\"off\",\"fn\":\"\",\"range\":\"\",\"range_max2d\":\"\",\"range_min3h\":\"[3h:]\",\"zero_fill_fn\":\"\",\"window_sec\":\"0\"},{\"text\":\"5m\",\"value\":\"5m\",\"fn\":\"avg_over_time\",\"range\":\"[5m:1m]\",\"range_max2d\":\"[5m:1m]\",\"range_min3h\":\"[3h:]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"300\"},{\"text\":\"15m\",\"value\":\"15m\",\"fn\":\"avg_over_time\",\"range\":\"[15m:1m]\",\"range_max2d\":\"[15m:1m]\",\"range_min3h\":\"[3h:]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"900\"},{\"text\":\"30m\",\"value\":\"30m\",\"fn\":\"avg_over_time\",\"range\":\"[30m:1m]\",\"range_max2d\":\"[30m:1m]\",\"range_min3h\":\"[3h:]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"1800\"},{\"text\":\"1h\",\"value\":\"1h\",\"fn\":\"avg_over_time\",\"range\":\"[1h:1m]\",\"range_max2d\":\"[1h:1m]\",\"range_min3h\":\"[3h:]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"3600\"},{\"text\":\"3h\",\"value\":\"3h\",\"fn\":\"avg_over_time\",\"range\":\"[3h:1m]\",\"range_max2d\":\"[3h:1m]\",\"range_min3h\":\"[3h:]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"10800\"},{\"text\":\"6h\",\"value\":\"6h\",\"fn\":\"avg_over_time\",\"range\":\"[6h:1m]\",\"range_max2d\":\"[6h:1m]\",\"range_min3h\":\"[6h:1m]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"21600\"},{\"text\":\"12h\",\"value\":\"12h\",\"fn\":\"avg_over_time\",\"range\":\"[12h:1m]\",\"range_max2d\":\"[12h:1m]\",\"range_min3h\":\"[12h:1m]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"43200\"},{\"text\":\"1d\",\"value\":\"1d\",\"fn\":\"avg_over_time\",\"range\":\"[1d:2m]\",\"range_max2d\":\"[1d:2m]\",\"range_min3h\":\"[1d:2m]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"86400\"},{\"text\":\"3d\",\"value\":\"3d\",\"fn\":\"avg_over_time\",\"range\":\"[3d:11m]\",\"range_max2d\":\"[2d:7m]\",\"range_min3h\":\"[3d:11m]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"259200\"},{\"text\":\"7d\",\"value\":\"7d\",\"fn\":\"avg_over_time\",\"range\":\"[7d:31m]\",\"range_max2d\":\"[2d:7m]\",\"range_min3h\":\"[7d:31m]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"604800\"},{\"text\":\"14d\",\"value\":\"14d\",\"fn\":\"avg_over_time\",\"range\":\"[14d:61m]\",\"range_max2d\":\"[2d:7m]\",\"range_min3h\":\"[14d:61m]\",\"zero_fill_fn\":\"sum_over_time\",\"window_sec\":\"1209600\"}]",
+        "skipUrlSync": false,
+        "valuesFormat": "json"
       }
     }
   ]
