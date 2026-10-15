@@ -43,7 +43,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum(rate(gha_started_jobs_total{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}[5m])) * 300",
+                      "expr": "${smoothing.fn}((sum(rate(gha_started_jobs_total{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}[5m])) * 300)${smoothing.range})",
                       "legendFormat": "total jobs",
                       "range": true
                     },
@@ -60,7 +60,7 @@
         "description": "Number of GitHub Actions jobs started, in 5-minute buckets. Filter by $cluster and $runner to slice by runner scale set. Data source: gha_started_jobs_total counter.",
         "id": 10,
         "links": [],
-        "title": "Jobs started per 5min [cluster, runner]",
+        "title": "Jobs started per 5min [cluster, runner, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -165,7 +165,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum(gha_running_jobs{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"})",
+                      "expr": "${smoothing.fn}((sum(gha_running_jobs{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}))${smoothing.range})",
                       "legendFormat": "running jobs",
                       "range": true
                     },
@@ -182,7 +182,7 @@
         "description": "Total GitHub Actions jobs currently running across all runners in the current $cluster/$fleet/$runner selection. Instant gauge from gha_running_jobs.",
         "id": 11,
         "links": [],
-        "title": "Currently running jobs [cluster, runner]",
+        "title": "Currently running jobs [cluster, runner, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -511,7 +511,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() kube_node_status_allocatable{resource=\"cpu\"}) / sum(kube_node_status_allocatable{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"})",
+                      "expr": "${smoothing.fn}((sum(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() max by(cluster, node) (kube_node_status_allocatable{resource=\"cpu\"})) / sum(kube_node_status_allocatable{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range})",
                       "legendFormat": "CPU",
                       "range": true
                     },
@@ -532,7 +532,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum(node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() kube_node_status_allocatable{resource=\"memory\"}) / sum(kube_node_status_allocatable{resource=\"memory\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"})",
+                      "expr": "${smoothing.fn}((sum(node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() max by(cluster, node) (kube_node_status_allocatable{resource=\"memory\"})) / sum(kube_node_status_allocatable{resource=\"memory\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range})",
                       "legendFormat": "Memory",
                       "range": true
                     },
@@ -549,7 +549,7 @@
         "description": "",
         "id": 2,
         "links": [],
-        "title": "Total OSDC utilization over time [cluster, fleet]",
+        "title": "Total OSDC utilization over time [cluster, fleet, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -655,7 +655,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum by (cluster) (node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() kube_node_status_allocatable{resource=\"cpu\"}) / sum by (cluster) (kube_node_status_allocatable{resource=\"cpu\"} * on(cluster, node) group_left(nodepool) (node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1))",
+                      "expr": "${smoothing.fn}((sum by (cluster) (node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() max by(cluster, node) (kube_node_status_allocatable{resource=\"cpu\"})) / sum by (cluster) (kube_node_status_allocatable{resource=\"cpu\"} * on(cluster, node) group_left(nodepool) max by(cluster, node, nodepool) (node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1)))${smoothing.range})",
                       "legendFormat": "{{cluster}}",
                       "range": true
                     },
@@ -672,7 +672,7 @@
         "description": "",
         "id": 3,
         "links": [],
-        "title": "Per-cluster CPU utilization [cluster, fleet]",
+        "title": "Per-cluster CPU utilization [cluster, fleet, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -779,7 +779,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum by (cluster) (node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() kube_node_status_allocatable{resource=\"memory\"}) / sum by (cluster) (kube_node_status_allocatable{resource=\"memory\"} * on(cluster, node) group_left(nodepool) (node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1))",
+                      "expr": "${smoothing.fn}((sum by (cluster) (node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} * on(cluster, node) group_left() max by(cluster, node) (kube_node_status_allocatable{resource=\"memory\"})) / sum by (cluster) (kube_node_status_allocatable{resource=\"memory\"} * on(cluster, node) group_left(nodepool) max by(cluster, node, nodepool) (node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1)))${smoothing.range})",
                       "legendFormat": "{{cluster}}",
                       "range": true
                     },
@@ -796,7 +796,7 @@
         "description": "",
         "id": 4,
         "links": [],
-        "title": "Per-cluster Memory utilization [cluster, fleet]",
+        "title": "Per-cluster Memory utilization [cluster, fleet, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -903,7 +903,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum by (fleet) (label_replace(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}, \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\") * on(cluster, node) group_left() kube_node_status_allocatable{resource=\"cpu\"}) / sum by (fleet) (label_replace(kube_node_status_allocatable{resource=\"cpu\"} * on(cluster, node) group_left(nodepool) (node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1), \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\"))",
+                      "expr": "${smoothing.fn}((sum by (fleet) (label_replace(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}, \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\") * on(cluster, node) group_left() max by(cluster, node) (kube_node_status_allocatable{resource=\"cpu\"})) / sum by (fleet) (label_replace(kube_node_status_allocatable{resource=\"cpu\"} * on(cluster, node) group_left(nodepool) max by(cluster, node, nodepool) (node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1), \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\")))${smoothing.range}) and on(fleet) group by(fleet) (label_replace(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}, \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\"))",
                       "legendFormat": "{{fleet}}",
                       "range": true
                     },
@@ -920,7 +920,7 @@
         "description": "",
         "id": 5,
         "links": [],
-        "title": "Per-fleet CPU utilization [cluster, fleet]",
+        "title": "Per-fleet CPU utilization [cluster, fleet, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -1027,7 +1027,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum by (fleet) (label_replace(node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}, \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\") * on(cluster, node) group_left() kube_node_status_allocatable{resource=\"memory\"}) / sum by (fleet) (label_replace(kube_node_status_allocatable{resource=\"memory\"} * on(cluster, node) group_left(nodepool) (node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1), \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\"))",
+                      "expr": "${smoothing.fn}((sum by (fleet) (label_replace(node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}, \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\") * on(cluster, node) group_left() max by(cluster, node) (kube_node_status_allocatable{resource=\"memory\"})) / sum by (fleet) (label_replace(kube_node_status_allocatable{resource=\"memory\"} * on(cluster, node) group_left(nodepool) max by(cluster, node, nodepool) (node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} != bool -1), \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\")))${smoothing.range}) and on(fleet) group by(fleet) (label_replace(node_compactor_node_utilization_ratio{resource=\"memory\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}, \"fleet\", \"${1}${3}\", \"nodepool\", \"^(.+?)-([0-9]+xlarge|metal)(-.*)?$\"))",
                       "legendFormat": "{{fleet}}",
                       "range": true
                     },
@@ -1044,7 +1044,7 @@
         "description": "",
         "id": 6,
         "links": [],
-        "title": "Per-fleet Memory utilization [cluster, fleet]",
+        "title": "Per-fleet Memory utilization [cluster, fleet, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -1439,7 +1439,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} == 0)",
+                      "expr": "${smoothing.zero_fill_fn}((count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} == 0))${smoothing.range}) / scalar(${smoothing.zero_fill_fn}((vector(1))${smoothing.range}))",
                       "legendFormat": "empty (0%)",
                       "range": true
                     },
@@ -1460,7 +1460,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} > 0 < 0.10)",
+                      "expr": "${smoothing.zero_fill_fn}((count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} > 0 < 0.10))${smoothing.range}) / scalar(${smoothing.zero_fill_fn}((vector(1))${smoothing.range}))",
                       "legendFormat": "mostly empty (0-10%)",
                       "range": true
                     },
@@ -1481,7 +1481,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} >= 0.10 < 0.50)",
+                      "expr": "${smoothing.zero_fill_fn}((count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} >= 0.10 < 0.50))${smoothing.range}) / scalar(${smoothing.zero_fill_fn}((vector(1))${smoothing.range}))",
                       "legendFormat": "low (10-50%)",
                       "range": true
                     },
@@ -1502,7 +1502,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} >= 0.50 < 0.90)",
+                      "expr": "${smoothing.zero_fill_fn}((count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} >= 0.50 < 0.90))${smoothing.range}) / scalar(${smoothing.zero_fill_fn}((vector(1))${smoothing.range}))",
                       "legendFormat": "partial (50-90%)",
                       "range": true
                     },
@@ -1523,7 +1523,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} >= 0.90)",
+                      "expr": "${smoothing.zero_fill_fn}((count(node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"} >= 0.90))${smoothing.range}) / scalar(${smoothing.zero_fill_fn}((vector(1))${smoothing.range}))",
                       "legendFormat": "well-packed (≥90%)",
                       "range": true
                     },
@@ -1540,7 +1540,7 @@
         "description": "How many nodes sit in each utilization tier over time. The `empty` band shrinking is the direct signal that Karpenter+compactor are shedding idle nodes. Rising `well-packed` band = the bin-pack scheduler working.",
         "id": 8,
         "links": [],
-        "title": "Node count by utilization tier (CPU) [cluster, fleet]",
+        "title": "Node count by utilization tier (CPU) [cluster, fleet, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -1644,7 +1644,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "quantile(0.10, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"})",
+                      "expr": "${smoothing.fn}((quantile(0.10, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range})",
                       "legendFormat": "p10",
                       "range": true
                     },
@@ -1665,7 +1665,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "quantile(0.30, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"})",
+                      "expr": "${smoothing.fn}((quantile(0.30, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range})",
                       "legendFormat": "p30",
                       "range": true
                     },
@@ -1686,7 +1686,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "quantile(0.50, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"})",
+                      "expr": "${smoothing.fn}((quantile(0.50, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range})",
                       "legendFormat": "p50",
                       "range": true
                     },
@@ -1707,7 +1707,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "quantile(0.70, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"})",
+                      "expr": "${smoothing.fn}((quantile(0.70, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range})",
                       "legendFormat": "p70",
                       "range": true
                     },
@@ -1728,7 +1728,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "quantile(0.90, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"})",
+                      "expr": "${smoothing.fn}((quantile(0.90, node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range})",
                       "legendFormat": "p90",
                       "range": true
                     },
@@ -1745,7 +1745,7 @@
         "description": "Quantile spread across nodes. Wide gap between p10 and p90 = bimodal fleet with empty and packed nodes. Narrowing = more uniform packing. Rising p10 = tail of empty nodes catching up.",
         "id": 9,
         "links": [],
-        "title": "Per-node CPU utilization quantiles [cluster, fleet]",
+        "title": "Per-node CPU utilization quantiles [cluster, fleet, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -2058,7 +2058,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))[1h:1m] )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}))[1h:1m] )",
+                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))${smoothing.range_min1h} )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}))${smoothing.range_min1h} )",
                       "interval": "1h",
                       "legendFormat": "{{cluster}}",
                       "range": true
@@ -2073,10 +2073,10 @@
             "transformations": []
           }
         },
-        "description": "Total provisioned vCPU-hours divided by CI-hours per cluster, in 1h buckets. Numerator (a): sum_over_time of total provisioned (node capacity) vCPU on OSDC nodes sampled at 1m over each 1h window; respects $cluster and $fleet. Denominator (b): sum_over_time of concurrently running jobs sampled at 1m over the same window; respects $cluster and $runner. Integrating instantaneous concurrency at 1m attributes each job to every hour bucket it overlaps, so a job spanning several hours contributes its true per-hour share to each bucket instead of being counted only in its start hour. The ratio is the average provisioned vCPU per concurrently running CI job; higher means more idle provisioned capacity per unit of CI work. The 1-minute sampling factor cancels between numerator and denominator.",
+        "description": "Total provisioned vCPU-hours divided by CI-hours per cluster, in 1h buckets. Numerator (a): sum_over_time of total provisioned (node capacity) vCPU on OSDC nodes sampled at 1m over each 1h window; respects $cluster and $fleet. Denominator (b): sum_over_time of concurrently running jobs sampled at 1m over the same window; respects $cluster and $runner. Integrating instantaneous concurrency at 1m attributes each job to every hour bucket it overlaps, so a job spanning several hours contributes its true per-hour share to each bucket instead of being counted only in its start hour. The ratio is the average provisioned vCPU per concurrently running CI job; higher means more idle provisioned capacity per unit of CI work. The 1-minute sampling factor cancels between numerator and denominator. Smoothing options longer than 1h widen both sums from 1h to the selected window, so each point becomes the ratio of totals over that trailing window.",
         "id": 16,
         "links": [],
-        "title": "Provisioned vCPU-hours / CI-hours per cluster [cluster, fleet, runner]",
+        "title": "Provisioned vCPU-hours / CI-hours per cluster [cluster, fleet, runner, smoothing]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -2640,6 +2640,26 @@
         "regexApplyTo": "value",
         "skipUrlSync": false,
         "sort": "alphabeticalAsc"
+      }
+    },
+    {
+      "kind": "CustomVariable",
+      "spec": {
+        "allowCustomValue": false,
+        "current": {
+          "text": "Off",
+          "value": "off"
+        },
+        "description": "Trailing moving average applied to the line graphs. Off shows the raw data.",
+        "hide": "dontHide",
+        "includeAll": false,
+        "label": "Smoothing",
+        "multi": false,
+        "name": "smoothing",
+        "options": [],
+        "query": "[{\"text\":\"Off\",\"value\":\"off\",\"fn\":\"\",\"range\":\"\",\"range_min1h\":\"[1h:1m]\",\"zero_fill_fn\":\"\"},{\"text\":\"5m\",\"value\":\"5m\",\"fn\":\"avg_over_time\",\"range\":\"[5m:1m]\",\"range_min1h\":\"[1h:1m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"15m\",\"value\":\"15m\",\"fn\":\"avg_over_time\",\"range\":\"[15m:1m]\",\"range_min1h\":\"[1h:1m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"30m\",\"value\":\"30m\",\"fn\":\"avg_over_time\",\"range\":\"[30m:1m]\",\"range_min1h\":\"[1h:1m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"1h\",\"value\":\"1h\",\"fn\":\"avg_over_time\",\"range\":\"[1h:1m]\",\"range_min1h\":\"[1h:1m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"3h\",\"value\":\"3h\",\"fn\":\"avg_over_time\",\"range\":\"[3h:1m]\",\"range_min1h\":\"[3h:1m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"6h\",\"value\":\"6h\",\"fn\":\"avg_over_time\",\"range\":\"[6h:1m]\",\"range_min1h\":\"[6h:1m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"12h\",\"value\":\"12h\",\"fn\":\"avg_over_time\",\"range\":\"[12h:1m]\",\"range_min1h\":\"[12h:1m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"1d\",\"value\":\"1d\",\"fn\":\"avg_over_time\",\"range\":\"[1d:2m]\",\"range_min1h\":\"[1d:2m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"3d\",\"value\":\"3d\",\"fn\":\"avg_over_time\",\"range\":\"[3d:11m]\",\"range_min1h\":\"[3d:11m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"7d\",\"value\":\"7d\",\"fn\":\"avg_over_time\",\"range\":\"[7d:31m]\",\"range_min1h\":\"[7d:31m]\",\"zero_fill_fn\":\"sum_over_time\"},{\"text\":\"14d\",\"value\":\"14d\",\"fn\":\"avg_over_time\",\"range\":\"[14d:61m]\",\"range_min1h\":\"[14d:61m]\",\"zero_fill_fn\":\"sum_over_time\"}]",
+        "skipUrlSync": false,
+        "valuesFormat": "json"
       }
     }
   ]
