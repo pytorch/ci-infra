@@ -95,7 +95,7 @@ def outputs(tmp_path) -> dict:
 
 
 def test_a_finished_task_writes_its_outputs(fake, tmp_path, capsys):
-    assert run(env_for(fake, tmp_path, repo="pytorch/test-infra", ref="main")) == 0
+    assert run(env_for(fake, tmp_path, repo="pytorch/test-infra", ref="main", base="a" * 40)) == 0
     out = outputs(tmp_path)
     assert out["task-id"] == "0123456789ab"
     assert out["report"] == "looks fine"
@@ -108,6 +108,7 @@ def test_a_finished_task_writes_its_outputs(fake, tmp_path, capsys):
         "wait": True,
         "repo": "pytorch/test-infra",
         "ref": "main",
+        "base": "a" * 40,
     }
     assert auth == "Bearer tok"
     assert "::add-mask::tok" in capsys.readouterr().out

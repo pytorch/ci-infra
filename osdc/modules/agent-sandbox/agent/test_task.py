@@ -20,10 +20,17 @@ class TestSpecFromEnv:
                 "SANDBOX_REF": "release/2.9",
                 "SANDBOX_TASK": "summarize",
                 "SANDBOX_MODEL": "us.anthropic.x",
+                "SANDBOX_BASE": "a" * 40,
                 "PATH": "/usr/bin",
             }
         )
-        assert spec == {"repo": "org/repo", "ref": "release/2.9", "task": "summarize", "model": "us.anthropic.x"}
+        assert spec == {
+            "repo": "org/repo",
+            "ref": "release/2.9",
+            "task": "summarize",
+            "model": "us.anthropic.x",
+            "base": "a" * 40,
+        }
 
     def test_empty_values_are_dropped_so_run_task_defaults_apply(self):
         """The dispatcher sets every var, empty when the caller omitted it — passing
