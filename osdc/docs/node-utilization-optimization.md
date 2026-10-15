@@ -241,7 +241,7 @@ Some runner names don't exactly match their actual resource requests (the actual
 
 | Runner Name | Name Implies | Actual Request |
 |-------------|-------------|----------------|
-| `l-x86iavx512-94-768` | 94c/768Gi | 94c/740Gi |
+| `l-x86iavx512-94-768` | 94c/768Gi | 94c/700Gi |
 | `l-bx86iavx512-94-344-t4-8` | 94c/344Gi | 94c/344Gi |
 | `l-x86iavx512-94-192` | 94c/192Gi | 94c/170Gi |
 | `l-arm64g2-6-32` | 6c/32Gi | 6c/29Gi |
