@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 
+import effects
 import kube
 
 # Per replica. The namespace ResourceQuota is the cluster-wide bound — this exists so a
@@ -58,9 +59,16 @@ def _run_to_completion(task_id: str, grant) -> dict:
                 # A pod that died before printing (OOM, eviction, image pull) has no
                 # result to parse; say so rather than reporting an empty one.
                 try:
-                    return kube.task_result(task_id)
+                    result = kube.task_result(task_id)
                 except kube.ApiError:
                     return {"errors": {"task": f"pod failed: {detail}"}}
+                # The failure is the dispatcher's fact, not the task's: it is recorded
+                # over whatever the pod printed, and a failed pod proposes nothing.
+                errors = result.get("errors")
+                result["errors"] = errors if isinstance(errors, dict) else {"result": errors}
+                result["errors"]["dispatch"] = f"pod failed: {detail}"
+                result.pop("effects", None)
+                return result
             time.sleep(POLL_INTERVAL_S)
     except (kube.ApiError, OSError) as exc:
         return {"errors": {"dispatch": str(exc)}}
@@ -168,7 +176,8 @@ def run_and_record(task_id: str, grant) -> dict:
     fix has to decide what a crashed task records and whether the exception still
     propagates to the caller. Reachability is low, the loss is permanent.
     """
-    result = _run_to_completion(task_id, grant)
+    # Proposed writes are screened against the Grant before anyone can read them back.
+    result = effects.screen(_run_to_completion(task_id, grant), grant)
     _finish(task_id, result)
     return result
 
