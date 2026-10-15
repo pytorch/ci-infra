@@ -610,6 +610,21 @@ class TestRunTask:
         """clone_repo is faked in these tests, so there is no checkout to read a sha from."""
         monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
 
+    @pytest.fixture(autouse=True)
+    def one_turn_agent(self, monkeypatch):
+        """These tests are about stages, not the loop: a one-turn agent that asks
+        `invoke_bedrock` (which each test patches) keeps them readable. The loop is
+        tested in test_agent_loop.py and TestRunTaskLoop."""
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools, **kw: {
+                "report": sandbox.invoke_bedrock(model, prompt),
+                "turns": 1,
+                "tool_calls": 0,
+            },
+        )
+
     def test_a_base_puts_the_diff_in_the_prompt(self, monkeypatch):
         prompts = []
         monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
@@ -623,6 +638,20 @@ class TestRunTask:
         assert result["head_sha"] == "f" * 40
         for expected in ("+x = 1", "TRUNCATED", "a.py"):
             assert expected in prompts[0]
+
+    def test_a_diff_too_large_for_the_window_is_cut_to_fit(self, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(sandbox.agent_loop, "prompt_budget_bytes", lambda: 4000)
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: ["README.md"])
+        monkeypatch.setattr(sandbox, "diff_against", lambda repo, dest, base: (["a.py"], 1, "+" + "é" * 5000, False))
+        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: prompts.append(prompt) or "ok")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "base": "a" * 40})
+        assert len(prompts[0].encode()) <= 4000
+        assert "TRUNCATED" in prompts[0]
+        assert "+é" in prompts[0]
+        assert result["diff_truncated"] is True
+        assert result["errors"] == {}
 
     def test_a_diff_that_cannot_be_computed_stops_the_task(self, monkeypatch):
         def boom(repo, dest, base):
@@ -688,11 +717,16 @@ class TestRunTask:
         monkeypatch.setattr(sandbox, "clone_repo", fake_clone)
         monkeypatch.setattr(sandbox, "diff_against", fake_diff)
         monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
-        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "ok")
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools, **kw: {"report": "ok", "turns": 1, "tool_calls": 0},
+        )
         result = sandbox.run_task({"repo": "org/repo", "model": "m", "pr": 7, "base": "a" * 40})
         assert seen == {"ref": "refs/pull/7/head", "base": "a" * 40}
         assert result["pr"] == 7
         assert result["changed_files"] == ["a.py"]
+        assert result["errors"] == {}, "the success path ran"
 
     def test_clone_failure_stops_before_bedrock(self, monkeypatch):
         def boom(*a, **kw):
@@ -795,6 +829,27 @@ class TestRunTask:
         result = sandbox.run_task({"repo": "org/repo", "model": "m"})
         assert "AccessDeniedException" in result["errors"]["bedrock"]
 
+    def test_invoke_model_summarises_an_http_error_inside_the_call(self, monkeypatch):
+        """The error body is read before invoke_model returns, so the loop's wall clock
+        covers it; run_task only formats the summary."""
+        reads = []
+
+        class Body(io.BytesIO):
+            def read(self, *a):
+                reads.append(a)
+                return super().read(*a)
+
+        def refuse(req, timeout):
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "Forbidden", {}, Body(json.dumps({"__type": "AccessDeniedException"}).encode())
+            )
+
+        monkeypatch.setattr(sandbox.urllib.request, "urlopen", refuse)
+        with pytest.raises(sandbox.BedrockHTTPError, match="AccessDeniedException") as exc:
+            sandbox.invoke_model("m", {"messages": []})
+        assert reads, "the body was read inside the call"
+        assert exc.value.status == 403, "the loop reads the status to decide on a retry"
+
     @pytest.mark.parametrize("ref", [None, 0, [], ""], ids=["null", "zero", "list", "empty"])
     def test_non_string_ref_falls_back_to_main(self, monkeypatch, ref):
         """`spec.get("ref", "main")` returns None for an explicit null, and None
@@ -831,7 +886,11 @@ class TestPullRequestCheckout:
 
         monkeypatch.setattr(sandbox, "clone_repo", fake_clone)
         monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
-        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "report")
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools, **kw: {"report": "report", "turns": 1, "tool_calls": 0},
+        )
         result = sandbox.run_task({"repo": "org/repo", "model": "m", **spec})
         return seen.get("ref"), result
 
@@ -839,6 +898,7 @@ class TestPullRequestCheckout:
         ref, result = self._ref_used(monkeypatch, {"pr": 1234})
         assert ref == "refs/pull/1234/head"
         assert result["pr"] == 1234
+        assert result["errors"] == {}, "the success path ran"
 
     def test_a_pr_wins_over_an_explicit_ref(self, monkeypatch):
         """The two name different commits. Reviewing the branch instead would be the
@@ -862,3 +922,127 @@ class TestPullRequestCheckout:
         ref, result = self._ref_used(monkeypatch, {"ref": "v2.9.0"})
         assert ref == "v2.9.0"
         assert "pr" not in result
+
+
+class TestLoopTimeLimit:
+    @pytest.mark.parametrize(
+        ("deadline", "now", "expected"),
+        [
+            (None, 0.0, 600),  # no deadline: the loop's own
+            ("", 0.0, 600),
+            ("junk", 0.0, 600),
+            ("nan", 0.0, 600),
+            ("inf", 0.0, 600),
+            ("1000900", 1000000.0, 600),  # 900 s left: the loop's own 600 s is nearer
+            ("1000900", 1000500.0, 370),  # 400 s left, less the result margin
+            ("1000900", 1000880.0, 0),  # already inside the margin
+            ("1000900", 1002000.0, 0),  # past it
+        ],
+    )
+    def test_the_loop_ends_before_the_task_deadline(self, deadline, now, expected):
+        assert sandbox.loop_time_limit(deadline, now) == expected
+
+
+class TestRunTaskLoop:
+    @pytest.fixture(autouse=True)
+    def no_real_git(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
+
+    def _run(self, monkeypatch, outcome):
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox.agent_loop, "run_agent", lambda *a, **kw: outcome)
+        return sandbox.run_task({"repo": "org/repo", "model": "m"})
+
+    def test_a_failed_model_call_is_a_bedrock_error_with_the_progress_so_far(self, monkeypatch):
+        result = self._run(monkeypatch, {"report": "", "turns": 3, "tool_calls": 5, "model_error": "HTTP 503"})
+        assert result["errors"] == {"bedrock": "HTTP 503"}
+        assert (result["turns"], result["tool_calls"]) == (3, 5)
+
+    def test_a_refused_tool_budget_reaches_the_result(self, monkeypatch):
+        result = self._run(monkeypatch, {"report": "r", "turns": 4, "tool_calls": 9, "tools_refused": "context window"})
+        assert result["tools_refused"] == "context window"
+        assert result["errors"] == {}
+
+    def test_a_slow_error_body_is_bounded_by_the_loop_deadline(self, monkeypatch):
+        import time as _time
+
+        def refuse(req, timeout):
+            class Slow(io.BytesIO):
+                def read(self, *a):
+                    _time.sleep(5)
+                    return b"{}"
+
+            raise urllib.error.HTTPError(req.full_url, 500, "Error", {}, Slow())
+
+        monkeypatch.setattr(sandbox.urllib.request, "urlopen", refuse)
+        tools = sandbox.agent_loop.RepoTools("/nonexistent")
+        started = _time.monotonic()
+        out = sandbox.agent_loop.run_agent(sandbox.invoke_model, "m", "p", tools, time_limit_s=1.5)
+        assert _time.monotonic() - started < 4
+        assert "during a model call" in out["error"]
+
+    def test_run_task_passes_the_deadline_to_the_loop(self, monkeypatch):
+        seen = {}
+
+        def fake_loop(invoke, model, prompt, tools, time_limit_s=None):
+            seen["limit"] = time_limit_s
+            return {"report": "ok", "turns": 1, "tool_calls": 0}
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox.time, "time", lambda: 1_000_500.0)
+        monkeypatch.setattr(sandbox.agent_loop, "run_agent", fake_loop)
+        sandbox.run_task({"repo": "org/repo", "model": "m", "deadline": "1000900"})
+        assert seen["limit"] == 400 - sandbox.RESULT_MARGIN_S
+
+    def test_run_task_drives_the_tool_loop(self, monkeypatch):
+        calls = []
+
+        def fake_invoke(model, fields, timeout=None):
+            calls.append(json.loads(json.dumps(fields)))  # a snapshot; the loop keeps appending
+            if len(calls) == 1:
+                return {
+                    "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "list_dir", "input": {}}],
+                }
+            return {"stop_reason": "end_turn", "content": [{"type": "text", "text": "all read"}]}
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox, "invoke_model", fake_invoke)
+        monkeypatch.setattr(sandbox.agent_loop.RepoTools, "run", lambda self, name, args: "README.md")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m"})
+        assert result["report"] == "all read"
+        assert (result["turns"], result["tool_calls"]) == (2, 1)
+        assert calls[1]["messages"][-1]["content"][0]["content"] == "README.md"
+
+    def test_a_budget_exhausted_by_the_loop_is_reported(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(
+            sandbox.agent_loop,
+            "run_agent",
+            lambda invoke, model, prompt, tools, **kw: {
+                "report": "partial",
+                "turns": 24,
+                "tool_calls": 40,
+                "error": "turn limit",
+            },
+        )
+        result = sandbox.run_task({"repo": "org/repo", "model": "m"})
+        assert result["report"] == "partial"
+        assert result["errors"]["agent"] == "turn limit"
+
+    def test_a_deeply_nested_model_response_is_an_error_not_a_crash(self, monkeypatch):
+        """json.loads raises RecursionError on deep enough nesting; that must become an
+        error in the result, not a pod that exits without one."""
+
+        def fake_invoke(model, fields, timeout=None):
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox, "invoke_model", fake_invoke)
+        result = sandbox.run_task({"repo": "org/repo", "model": "m"})
+        assert "recursion" in result["errors"]["bedrock"]

@@ -21,6 +21,7 @@ class TestSpecFromEnv:
                 "SANDBOX_TASK": "summarize",
                 "SANDBOX_MODEL": "us.anthropic.x",
                 "SANDBOX_BASE": "a" * 40,
+                "SANDBOX_DEADLINE": "1000900",
                 "PATH": "/usr/bin",
             }
         )
@@ -30,6 +31,7 @@ class TestSpecFromEnv:
             "task": "summarize",
             "model": "us.anthropic.x",
             "base": "a" * 40,
+            "deadline": "1000900",
         }
 
     def test_empty_values_are_dropped_so_run_task_defaults_apply(self):
