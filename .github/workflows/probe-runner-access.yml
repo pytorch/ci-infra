@@ -1,0 +1,51 @@
+# THROWAWAY — delete once the question is answered.
+#
+# ci-infra runs every workflow on `ubuntu-latest`. This checks whether the repo is
+# allowed on the LF EC2 fleet (`linux.2xlarge`, used today by test-infra) and whether
+# that runner can build Docker images.
+#
+# Why: gpu-dev's `tofu apply` builds a 27.9 GB image via local-exec and pushes it to
+# ECR — ~40 min, almost all upload, from whoever's laptop runs the apply.
+#
+# Reading the result:
+#   runs, docker present -> usable for the gpu-dev image build
+#   runs, docker absent  -> reachable but can't build images
+#   stays QUEUED         -> ci-infra is not on that runner group's allow-list
+#                           (queue time is the signal; cancel the run)
+
+name: "probe: runner access"
+
+# pull_request (not workflow_dispatch) so this runs from the PR branch without being
+# merged — workflow_dispatch only works for workflows already on the default branch.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/probe-runner-access.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    # same-repo branches only; fork PRs don't get self-hosted runners
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: linux.2xlarge
+    timeout-minutes: 10
+    steps:
+      - name: Report capabilities
+        run: |
+          echo "== runner =="
+          echo "arch:   $(uname -m)"
+          echo "cpus:   $(nproc)"
+          echo "mem:    $(free -g 2>/dev/null | awk '/^Mem:/{print $2" GB"}' || echo unknown)"
+          echo
+          echo "== disk (need ~60 GB free to build a 27.9 GB image) =="
+          df -h / /var/lib/docker 2>/dev/null || df -h
+          echo
+          echo "== docker =="
+          if command -v docker >/dev/null 2>&1; then
+            docker version 2>&1 | head -20 || echo "docker binary present but daemon unreachable"
+            docker buildx version 2>&1 || echo "no buildx"
+          else
+            echo "NO DOCKER BINARY"
+          fi
