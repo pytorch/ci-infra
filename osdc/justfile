@@ -2298,6 +2298,27 @@ load-test cluster *args:
             --root-dir "${ROOT}" \
             {{args}}
 
+# Run drain/undrain slow test (uw1 staging only). --dry-run makes no API calls.
+drain-test cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    CLUSTER="{{cluster}}"
+    if [[ "$CLUSTER" != "meta-staging-aws-uw1" ]]; then
+        echo "drain-test is restricted to meta-staging-aws-uw1" >&2
+        exit 1
+    fi
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        uv run "{{UPSTREAM}}/integration-tests/drain-test/scripts/python/drain_test_run.py" \
+            --cluster-id "$CLUSTER" \
+            --clusters-yaml "{{CLUSTERS_YAML}}" \
+            --upstream-dir "{{UPSTREAM}}" \
+            --root-dir "{{ROOT}}" \
+            {{args}}
+
 # Run production workload test against a cluster
 workload-test cluster *args:
     #!/usr/bin/env bash

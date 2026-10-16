@@ -37,6 +37,9 @@ just test-compactor <cluster>                    # Run node-compactor e2e tests 
 just test-janitor <cluster>                      # Run image-cache-janitor e2e tests (base/kubernetes/image-cache-janitor/tests/e2e/)
 just smoke <cluster>                             # Run smoke tests against a deployed cluster
 just integration-test <cluster> [args...]        # Run full integration test via integration-tests/scripts/python/run.py. CI passes --skip-drain --skip-smoke --skip-compactor
+just drain-test meta-staging-aws-uw1             # Real drain/undrain slow test; requires staging AWS + canary GitHub access
+just drain-test meta-staging-aws-uw1 --dry-run   # Print canary workflow without cluster/GitHub calls
+just drain-test meta-staging-aws-uw1 --restore-only # Resume and verify runner limits/taints; no canary jobs
 just generate-arc-runners <cluster>              # Generate ARC scale-set YAMLs (no apply)
 just lint                                        # Lint all code (shell, Python, Docker, k8s, tf)
 just lint-fix                                    # Auto-fix lint issues (ruff, shfmt, tofu fmt, taplo)
@@ -364,9 +367,13 @@ Key workflows (all callable as reusable workflows via `workflow_call` from the o
 | `osdc-deploy-prod.yml` | Per-cluster prod deploy. Calls `_osdc-deploy.yml` |
 | `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip_lint_test` input (firefighting only). |
 | `_osdc-plan.yml` | Reusable: `just plan <cluster>` and tee to `plan.txt` |
-| `_osdc-slow-tests.yml` | Reusable: `just load-test`, `just test-compactor`, `just test-janitor` |
+| `_osdc-slow-tests.yml` | Reusable: `just load-test`, `just test-compactor`, `just test-janitor`, `just drain-test` |
 | `osdc-capacity-report.yml` | `just simulate-cluster` + `just analyze-utilization`, periodic |
 
 When adding a new `just` recipe that CI should run, plumb it through the corresponding reusable workflow.
+
+The drain/undrain test is restricted to `meta-staging-aws-uw1` and must not overlap with any other slow test. It runs after compactor and janitor, within the pre-merge workflow's existing `osdc-staging` lock. It creates a unique temporary canary branch/PR, pins probes to the uw1 runner group, and verifies both live limits and listener advertised capacity; recipe exit 0 and node taints alone are insufficient. Its restoration baseline is the configured `runner_max_map.py` output, not a possibly drained snapshot. Queue waits have controller-side deadlines because Actions job timeouts do not bound queue time.
+
+Cleanup uses finally/atexit/SIGINT/SIGTERM plus a same-job `always()` verified restore step, with no independent recovery agent. A forced kill or lost runner can still strand staging. Check live limits after cancellation and use `just drain-test meta-staging-aws-uw1 --restore-only` if needed. Full live acceptance (normal and cancellation) and dispatch side effects are documented in `docs/ci-pre-merge.md`; do not run that battery merely to validate offline code edits.
 
 The OSDC-rooted CI jobs — the `deploy`/`smoke`/`integration` jobs in `_osdc-deploy.yml`, plus `osdc-drain.yml` and `osdc-undrain.yml` — set up their toolchain via the local composite action `./.github/actions/osdc-setup` (installs just + mise + `uv sync`). Its setup steps are retried on transient failures by **retry-by-duplication** (`continue-on-error` on the first attempt plus a copy gated on `steps.<id>.outcome == 'failure'`), chosen over a retry action deliberately: GitHub Actions has no native step retry, and a retry action would run unpinnable third-party code on the deploy / merge-queue path. `actions/checkout` and `aws-actions/configure-aws-credentials` are intentionally NOT wrapped because they already retry internally. On the deploy path, the `smoke` step is also retried once by duplication, with a 180s settle wait before the retry, because smoke failures are usually transient post-deploy cluster churn.
