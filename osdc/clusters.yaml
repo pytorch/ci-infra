@@ -597,9 +597,14 @@ clusters:
     arc-runners-b200:
       capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
-      # us-east-2 H100 capacity reservation (p5.48xlarge, 8× H100).
+      # us-east-2 H100 capacity reservations (p5.48xlarge, 8× H100 each):
+      #   cr-0c3f05dffb85ed832 — 1 node  (us-east-2c, ends 2026-12-15)
+      #   cr-074232b88fcfc092d — 3 nodes (us-east-2b, 2026-10-23 → 2026-12-18)
+      # Total: 4 nodes, 32 H100 GPUs. arc-runners-h100/defs/*.yaml
+      # max_runners are sized assuming this count.
       capacity_reservation_ids:
         - cr-0c3f05dffb85ed832
+        - cr-074232b88fcfc092d
     nodepools-b200:
       # us-east-2 B200 capacity reservation (p6-b200.48xlarge, 8× B200 each).
       # One reserved node total = 8 B200 GPUs. arc-runners-b200/defs/*.yaml

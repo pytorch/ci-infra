@@ -11,3 +11,4 @@ runner:
   max_runners:
     default: 2
     meta-prod-aws-uw1: 12
+    meta-prod-aws-ue2: 8
