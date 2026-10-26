@@ -10,6 +10,8 @@ runner:
   gpu: 1
   imex_channels: 0
   # Fixed-capacity cap: 1 reserved 8-GPU node / 1 GPU per runner = 8 concurrent runners.
+  # Per-cluster overrides scale this to the cluster's reserved node count
+  # (clusters.<id>.nodepools-h100.capacity_reservation_ids).
   max_runners:
     default: 8
     meta-prod-aws-uw1: 48
