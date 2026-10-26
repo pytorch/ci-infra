@@ -79,7 +79,10 @@ data:
 
       if [ "$all_checks_pass" = true ]; then
         echo "All mirror configs present - skipping reconfiguration"
-        exit 0
+        # Still remove the startup taint: a previous run may have written the
+        # marker and then failed on the taint PATCH (e.g. API throttling),
+        # and exiting here would leave the node tainted forever.
+        exec python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/registry-mirror
       else
         echo "Configuration drift detected - proceeding with reconfiguration"
         rm -f "$MARKER_FILE"

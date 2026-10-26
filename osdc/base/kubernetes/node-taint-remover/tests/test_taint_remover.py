@@ -119,6 +119,33 @@ def test_retry_on_http_500():
         assert urlopen.call_count == 4
 
 
+def test_retry_on_http_429_patch_throttled():
+    """HTTP 429 on PATCH (APF / etcd throttling) is transient — retry."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),  # GET
+            _http_error(429, b"etcdserver: throttle: too many requests"),  # PATCH 429
+            _FakeResp(200, json.dumps(node).encode()),  # GET retry
+            _FakeResp(200, b"{}"),  # PATCH success
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+        assert urlopen.call_count == 4
+
+
+def test_permanent_error_on_http_404():
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),  # GET
+            _http_error(404, b"not found"),
+        ]
+        with pytest.raises(taint_remover.PermanentApiError, match="Permanent error"):
+            taint_remover.remove_taint_forever("my-startup-taint")
+
+
 def test_permanent_error_on_http_403():
     target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
     node = _node(taints=[_instance_type_taint(), target])

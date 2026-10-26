@@ -126,7 +126,7 @@ def remove_taint_forever(taint_key: str) -> None:
     """Remove `taint_key` from this node. Retries forever on transient errors.
 
     Exits the function (returns) once the taint is gone (or was never present).
-    Raises RuntimeError on permanent errors (HTTP 4xx other than 401/409/422).
+    Raises RuntimeError on permanent errors (HTTP 4xx other than 401/409/422/429).
     """
     ctx = _ssl_context()
 
@@ -159,7 +159,9 @@ def remove_taint_forever(taint_key: str) -> None:
                 log.info("Unauthorized (HTTP 401) — retrying with a fresh token.")
                 attempt = 0
                 continue
-            if 500 <= status < 600:
+            if 500 <= status < 600 or status == 429:
+                # 429: API Priority and Fairness / etcd throttling under a
+                # mass node launch. Same as GET — back off and retry.
                 log.warning("PATCH returned HTTP %s: %s — retrying.", status, body)
             elif 400 <= status < 500:
                 raise PermanentApiError(f"Permanent error from K8s API (HTTP {status}): {body!r}")

@@ -69,7 +69,10 @@ data:
         echo ""
         echo "✓ All checks passed - configuration is correct"
         echo "✓ Skipping reconfiguration to avoid unnecessary kubelet restart"
-        exit 0
+        # Still remove the startup taint: a previous run may have written the
+        # marker and then failed on the taint PATCH (e.g. API throttling),
+        # and exiting here would leave the node tainted forever.
+        exec python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/perf-tuning
       else
         echo ""
         echo "⚠️  Configuration drift detected - proceeding with reconfiguration"
