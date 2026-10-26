@@ -115,6 +115,11 @@ variable "cluster_admin_role_names" {
   default     = ""
 }
 
+variable "control_plane_tier" {
+  description = "EKS control plane scaling tier"
+  type        = string
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

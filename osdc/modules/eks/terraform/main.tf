@@ -91,6 +91,8 @@ module "eks" {
   authentication_mode      = var.authentication_mode
   cluster_admin_role_names = var.cluster_admin_role_names
 
+  control_plane_tier = var.control_plane_tier
+
   tags = local.tags
 }
 
