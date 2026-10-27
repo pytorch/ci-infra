@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Remove a specific startup taint from this node via the Kubernetes API.
 
-Retries forever on transient errors (network timeouts, HTTP 429/5xx). HTTP 429
-and 5xx back off exponentially with jitter and honour Retry-After, so a fleet of
+Retries forever on transient errors (network timeouts, HTTP 429/5xx), backing
+off exponentially with jitter and honouring Retry-After, so a fleet of
 throttled nodes does not keep hammering an overloaded API server. Idempotent:
 returns success if the taint is already absent.
 
@@ -32,13 +32,12 @@ from pathlib import Path
 TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
 CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 
-BACKOFF_SCHEDULE = (5, 10, 30)
-
-# HTTP 429/5xx mean the API server is shedding load: back off exponentially
-# (with jitter, so nodes launched in one burst fall out of phase) up to the
-# same 5-minute ceiling kubelet uses for CrashLoopBackOff.
-SERVER_BACKOFF_BASE = 5
-SERVER_BACKOFF_CAP = 300
+# Transient failures (HTTP 429/5xx, timeouts, connection errors) usually mean
+# the API server is shedding load: back off exponentially (with jitter, so
+# nodes launched in one burst fall out of phase) up to the same 5-minute
+# ceiling kubelet uses for CrashLoopBackOff.
+BACKOFF_BASE = 5
+BACKOFF_CAP = 300
 
 log = logging.getLogger("taint_remover")
 
@@ -148,22 +147,18 @@ def _patch_remove_taint(token: str, ctx: ssl.SSLContext, index: int, key: str) -
     return _request("PATCH", url, token, ctx, body=body, content_type="application/json-patch+json")
 
 
-def _next_backoff(attempt: int) -> int:
-    return BACKOFF_SCHEDULE[min(attempt, len(BACKOFF_SCHEDULE) - 1)]
+def _backoff(attempt: int, retry_after: int | None = None) -> float:
+    """Delay before retrying after a transient failure.
 
-
-def _server_backoff(attempt: int, retry_after: int | None) -> float:
-    """Delay before retrying after HTTP 429/5xx.
-
-    Exponential from SERVER_BACKOFF_BASE, capped at SERVER_BACKOFF_CAP, with
-    "equal jitter" (uniform in [d/2, d]) so the delay still grows but nodes
-    throttled together spread out. Never shorter than the server's
-    Retry-After (itself capped at SERVER_BACKOFF_CAP).
+    Exponential from BACKOFF_BASE, capped at BACKOFF_CAP, with "equal jitter"
+    (uniform in [d/2, d]) so the delay still grows but nodes throttled
+    together spread out. Never shorter than the server's Retry-After (itself
+    capped at BACKOFF_CAP).
     """
-    ceiling = min(SERVER_BACKOFF_CAP, SERVER_BACKOFF_BASE * 2**attempt)
+    ceiling = min(BACKOFF_CAP, BACKOFF_BASE * 2**attempt)
     delay = random.uniform(ceiling / 2, ceiling)  # noqa: S311 — jitter, not crypto
     if retry_after is not None:
-        delay = max(delay, min(retry_after, SERVER_BACKOFF_CAP))
+        delay = max(delay, min(retry_after, BACKOFF_CAP))
     return delay
 
 
@@ -177,8 +172,10 @@ def remove_taint_forever(taint_key: str) -> None:
     """
     ctx = _ssl_context()
 
+    # Consecutive transient failures; drives the backoff. Not reset by the
+    # immediate 401/409/422 retries, so an overloaded API server is never
+    # hit faster just because a race happened in between.
     attempt = 0
-    server_attempt = 0
     # Index of the taint from the last GET. Kept across a PATCH rejected with
     # 429/5xx: the write was refused, so spec.taints is unchanged and a re-GET
     # would only add load. The PATCH's JSON Patch `test` op still guards
@@ -189,6 +186,7 @@ def remove_taint_forever(taint_key: str) -> None:
         # projected SA token is picked up on long retry sequences. Same
         # rationale for 401 below.
         token = _read_token()
+        retry_after = None
         try:
             if index is None:
                 node = _get_node(token, ctx)
@@ -208,40 +206,35 @@ def remove_taint_forever(taint_key: str) -> None:
                 # benign — re-read the node and retry.
                 log.info("Taint set changed concurrently (HTTP %s) — re-reading and retrying.", status)
                 index = None
-                attempt = 0
                 continue
             if status == 401:
                 log.info("Unauthorized (HTTP 401) — retrying with a fresh token.")
-                attempt = 0
                 continue
             if _is_server_backpressure(status):
                 # 429: API Priority and Fairness / etcd throttling under a
-                # mass node launch. Retry the PATCH (not the GET) with
-                # exponential backoff.
-                sleep_s = _server_backoff(server_attempt, retry_after)
-                log.warning("PATCH returned HTTP %s: %s — retrying in %.0fs.", status, body, sleep_s)
-                time.sleep(sleep_s)
-                server_attempt += 1
-                continue
-            if 400 <= status < 500:
+                # mass node launch. Retry the PATCH (not the GET) after the
+                # backoff below.
+                log.warning("PATCH returned HTTP %s: %s — retrying.", status, body)
+            elif 400 <= status < 500:
                 raise PermanentApiError(f"Permanent error from K8s API (HTTP {status}): {body!r}")
-            log.warning("Unexpected HTTP %s from PATCH: %s — retrying.", status, body)
-            index = None
+            else:
+                log.warning("Unexpected HTTP %s from PATCH: %s — retrying.", status, body)
+                index = None
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            # Timeouts and dropped connections are often the same overload
+            # as a 429, just without a status code — back off the same way.
             log.warning("Transient network error: %s — retrying.", e)
         except TransientApiError as e:
-            sleep_s = _server_backoff(server_attempt, e.retry_after)
-            log.warning("Transient API error: %s — retrying in %.0fs.", e, sleep_s)
-            time.sleep(sleep_s)
-            server_attempt += 1
-            continue
+            log.warning("Transient API error: %s — retrying.", e)
+            retry_after = e.retry_after
         except PermanentApiError:
             raise
         except Exception:
             log.exception("Unexpected exception in remove_taint_forever — re-raising.")
             raise
 
-        sleep_s = _next_backoff(attempt)
+        sleep_s = _backoff(attempt, retry_after)
+        log.info("Backing off %.0fs before retry %d.", sleep_s, attempt + 1)
         time.sleep(sleep_s)
         attempt += 1
 

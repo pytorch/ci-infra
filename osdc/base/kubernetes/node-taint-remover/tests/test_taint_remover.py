@@ -163,10 +163,43 @@ def test_http_429_backoff_grows_exponentially_and_caps(sleeps):
     assert sleeps == [5, 10, 20, 40, 80, 160, 300, 300]
 
 
-def test_server_backoff_jitter_stays_in_upper_half(monkeypatch):
+def test_backoff_jitter_stays_in_upper_half(monkeypatch):
     """Jitter spreads retries within [d/2, d] so the delay still grows."""
     monkeypatch.setattr(taint_remover.random, "uniform", lambda lo, _hi: lo)
-    assert [taint_remover._server_backoff(n, None) for n in range(4)] == [2.5, 5, 10, 20]
+    assert [taint_remover._backoff(n) for n in range(4)] == [2.5, 5, 10, 20]
+
+
+def test_network_timeouts_back_off_exponentially(sleeps):
+    """Client timeouts (often APF queueing past our deadline) back off like a 429."""
+    node = _node(taints=[_instance_type_taint()])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            TimeoutError("timed out"),
+            urllib.error.URLError("timed out"),
+            ConnectionResetError("reset"),
+            TimeoutError("timed out"),
+            _FakeResp(200, json.dumps(node).encode()),
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+    assert sleeps == [5, 10, 20, 40]
+
+
+def test_race_retries_do_not_reset_backoff(sleeps):
+    """A 422 between throttled PATCHes re-reads immediately but keeps the backoff growing."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),  # GET
+            _http_error(429, b"too many requests"),
+            _http_error(422, b"the test operation failed"),
+            _FakeResp(200, json.dumps(node).encode()),  # re-GET after 422
+            _http_error(429, b"too many requests"),
+            _FakeResp(200, b"{}"),
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+        assert _methods(urlopen) == ["GET", "PATCH", "PATCH", "GET", "PATCH", "PATCH"]
+    assert sleeps == [5, 10]
 
 
 def test_http_429_honours_retry_after(sleeps):
@@ -184,7 +217,7 @@ def test_http_429_honours_retry_after(sleeps):
     assert sleeps == [120, 300]
 
 
-def test_get_http_503_uses_server_backoff(sleeps):
+def test_get_http_503_backs_off(sleeps):
     """GET 5xx/429 also backs off exponentially."""
     node = _node(taints=[_instance_type_taint()])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
