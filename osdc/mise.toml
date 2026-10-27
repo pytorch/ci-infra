@@ -17,7 +17,8 @@ gh = "2.95.0"
 # Linting tools
 shellcheck = "latest"
 shfmt = "latest"
-hadolint = "latest"
+# Pinned: 2.15 adds DL3066, which flags `USER runner` in base/docker/runner-base.
+hadolint = "2.14.0"
 "aqua:tamasfe/taplo" = "latest"
 "aqua:stackrox/kube-linter" = "v0.7.6"
 
