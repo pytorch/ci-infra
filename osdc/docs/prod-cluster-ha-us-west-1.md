@@ -1,5 +1,10 @@
 # Multi-region prod cluster: us-west-1 HA + scale-out
 
+> **Decommissioned (2026-10).** `meta-prod-aws-uw1` was removed after its H100
+> capacity reservations expired on 2026-10-28. Prod H100 runners now run only on
+> `meta-prod-aws-ue2`. The runner-group design described here still applies to
+> the remaining prod clusters (`meta-prod-aws-ue2`, `-ue1`, `-uw2`).
+
 Deploy a second production OSDC EKS cluster (`meta-prod-aws-uw1`) in
 us-west-1 alongside the existing `meta-prod-aws-ue2` (us-east-2) for
 active/active load sharing and regional HA.

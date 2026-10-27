@@ -229,7 +229,6 @@ H100 (`modules/arc-runners-h100/defs/`) and B200 (`modules/arc-runners-b200/defs
 - H100 reservations differ per cluster (`clusters.<id>.nodepools-h100.capacity_reservation_ids`), so the defs use the per-cluster `max_runners` dict:
   - `default`: 1 reserved 8-GPU node (8 GPUs) → `8 / 4 / 2 / 1` for 1× / 2× / 4× / 8× splits.
   - `meta-prod-aws-ue2`: 4 reserved nodes (32 GPUs) → `32 / 16 / 8 / 4`.
-  - `meta-prod-aws-uw1`: 6 reserved nodes (48 GPUs) → `48 / 24 / 12 / 6`.
 - B200 has 1 reserved 8-GPU node (8 total GPUs). Per-split values: `8 / 4 / 2 / 1` for 1× / 2× / 4× / 8× splits.
 
 CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.

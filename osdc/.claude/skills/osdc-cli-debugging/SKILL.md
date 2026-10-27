@@ -35,7 +35,6 @@ Accessible from this laptop (admin role `osdc_gha_prod` / `osdc_gha_staging`):
 - `meta-staging-aws-ue1` (us-east-1)
 - `meta-prod-aws-ue1` (us-east-1)
 - `arc-cbr-production` → `pytorch-arc-cbr-production` (us-east-2)
-- `arc-cbr-production-uw1` → `pytorch-arc-cbr-production-uw1` (us-west-1)
 
 For lf-* investigations: read `clusters.yaml`, read the module code, read the manifests in `base/` and `modules/` — but do not attempt live cluster commands. If the user explicitly asks for lf-* live state, tell them you cannot reach the cluster and ask them to run the command and paste output.
 
