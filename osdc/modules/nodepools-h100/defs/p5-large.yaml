@@ -11,7 +11,7 @@
 # why the full-node runner needs its own pool. We leave it at the generator
 # default (best-effort), matching g5-large. Do NOT add single-numa-node here.
 #
-# Both p5 pools draw from the same us-west-1 H100 capacity reservations (merged
+# Both p5 pools draw from the same per-cluster H100 capacity reservations (merged
 # in per-cluster from clusters.<id>.nodepools-h100.capacity_reservation_ids at
 # deploy time) — the reservation is a shared instance pool, so either pool can
 # launch a reserved node up to the total reserved count.
