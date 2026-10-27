@@ -56,13 +56,9 @@ KARPENTER_PDB_MIN=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_min_available 1)
 
 KARPENTER_VERSION="1.12.0"
 
-# Authenticate helm to ECR Public before pulling the Karpenter charts.
-# Anonymous pulls are rate-limited per source IP, and GitHub-hosted runners
-# share egress IPs, so anonymous pulls intermittently fail with 429 Too Many
-# Requests. The token goes into a throwaway registry config so a local
-# operator's ~/.config/helm is untouched. Best-effort: if the login fails
-# (e.g. the role lacks ecr-public:GetAuthorizationToken), fall back to
-# anonymous pulls.
+# Log in to ECR Public before pulling the charts. Anonymous pulls from shared
+# GitHub runner IPs often fail with 429 Too Many Requests. The token goes in a
+# temp file, not ~/.config/helm. If login fails, pull anonymously.
 HELM_REGISTRY_CONFIG="$(mktemp)"
 export HELM_REGISTRY_CONFIG
 trap 'rm -f "$HELM_REGISTRY_CONFIG"' EXIT
@@ -88,9 +84,8 @@ if [ -n "$KARPENTER_CRDS" ]; then
   done
 fi
 
-# Skip the CRD chart (and its registry pull) when the deployed release is
-# already at KARPENTER_VERSION. A failed or pending release isn't listed by
-# --deployed, so it still gets re-applied.
+# Skip the CRD chart when it's already deployed at this version. A failed
+# release isn't listed by --deployed, so it gets re-applied.
 INSTALLED_CRD_CHART=$(helm list -n karpenter --filter '^karpenter-crd$' --deployed -o yaml 2>/dev/null \
   | sed -n 's/^ *chart: //p')
 if [ "$INSTALLED_CRD_CHART" = "karpenter-crd-${KARPENTER_VERSION}" ]; then
