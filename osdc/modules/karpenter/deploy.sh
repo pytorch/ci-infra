@@ -59,38 +59,40 @@ KARPENTER_VERSION="1.12.0"
 # Log in to ECR Public before pulling the charts. Anonymous pulls from shared
 # GitHub runner IPs often fail with 429 Too Many Requests. The token goes in a
 # temp file, not ~/.config/helm. If login fails, pull anonymously.
-HELM_REGISTRY_CONFIG="$(mktemp)"
-export HELM_REGISTRY_CONFIG
-trap 'rm -f "$HELM_REGISTRY_CONFIG"' EXIT
-if aws ecr-public get-login-password --region us-east-1 2>/dev/null \
-  | helm registry login public.ecr.aws --username AWS --password-stdin >/dev/null 2>&1; then
+HELM_REGISTRY_TMP="$(mktemp)"
+trap 'rm -f "$HELM_REGISTRY_TMP"' EXIT
+export HELM_REGISTRY_CONFIG="$HELM_REGISTRY_TMP"
+if aws ecr-public get-login-password --region us-east-1 \
+  | helm registry login public.ecr.aws --username AWS --password-stdin >/dev/null; then
   echo "Authenticated to public.ecr.aws for chart pulls."
 else
   echo "WARNING: ECR Public login failed; pulling Karpenter charts anonymously (may hit 429)." >&2
+  unset HELM_REGISTRY_CONFIG
 fi
 
-# Helm does not update CRDs on `helm upgrade` — only on initial install.
-# CRDs are in a separate chart (karpenter-crd), not the main karpenter chart.
-# On first migration, existing CRDs owned by the `karpenter` release must be
-# relabeled so `karpenter-crd` can adopt them.
-KARPENTER_CRDS=$(kubectl get crds -o name 2>/dev/null \
-  | grep -E "karpenter\.(sh|k8s\.aws)" || true)
-if [ -n "$KARPENTER_CRDS" ]; then
-  for crd in $KARPENTER_CRDS; do
-    kubectl label "$crd" app.kubernetes.io/managed-by=Helm --overwrite
-    kubectl annotate "$crd" \
-      meta.helm.sh/release-name=karpenter-crd \
-      meta.helm.sh/release-namespace=karpenter --overwrite
-  done
-fi
-
-# Skip the CRD chart when it's already deployed at this version. A failed
-# release isn't listed by --deployed, so it gets re-applied.
-INSTALLED_CRD_CHART=$(helm list -n karpenter --filter '^karpenter-crd$' --deployed -o yaml 2>/dev/null \
-  | sed -n 's/^ *chart: //p')
-if [ "$INSTALLED_CRD_CHART" = "karpenter-crd-${KARPENTER_VERSION}" ]; then
+# Skip the CRD chart when it's already deployed at this version, unless
+# HELM_FORCE_UPGRADE=1. A failed release isn't listed by --deployed, so it
+# gets re-applied.
+INSTALLED_CRD_CHART=$(helm list -n karpenter --filter '^karpenter-crd$' --deployed -o yaml \
+  | sed -n 's/^ *chart: //p' || true)
+if [[ "${HELM_FORCE_UPGRADE:-}" != "1" && "$INSTALLED_CRD_CHART" == "karpenter-crd-${KARPENTER_VERSION}" ]]; then
   echo "Karpenter CRDs already at v${KARPENTER_VERSION}. Skipping."
 else
+  # Helm does not update CRDs on `helm upgrade` — only on initial install.
+  # CRDs are in a separate chart (karpenter-crd), not the main karpenter chart.
+  # On first migration, existing CRDs owned by the `karpenter` release must be
+  # relabeled so `karpenter-crd` can adopt them.
+  KARPENTER_CRDS=$(kubectl get crds -o name 2>/dev/null \
+    | grep -E "karpenter\.(sh|k8s\.aws)" || true)
+  if [ -n "$KARPENTER_CRDS" ]; then
+    for crd in $KARPENTER_CRDS; do
+      kubectl label "$crd" app.kubernetes.io/managed-by=Helm --overwrite
+      kubectl annotate "$crd" \
+        meta.helm.sh/release-name=karpenter-crd \
+        meta.helm.sh/release-namespace=karpenter --overwrite
+    done
+  fi
+
   echo "Updating Karpenter CRDs to v${KARPENTER_VERSION}..."
   helm upgrade --install karpenter-crd \
     "oci://public.ecr.aws/karpenter/karpenter-crd" \
