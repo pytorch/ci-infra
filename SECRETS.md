@@ -39,7 +39,7 @@ Related docs:
 | **Added by** | @jeanschmidt, @huydhn |
 | **Requested by** | @jeanschmidt, @huydhn |
 | **PoC** | @jeanschmidt, @huydhn · Meta |
-| **Used by** | `_osdc-deploy.yml`, `_osdc-slow-tests.yml`, `_osdc-plan.yml` — AWS account ID for the Meta-donated AWS account that hosts the OSDC ARC clusters (us-west-1 / us-west-2) |
+| **Used by** | `_osdc-deploy.yml`, `_osdc-slow-tests.yml`, `_osdc-plan.yml` — AWS account ID for the Meta-donated AWS account that hosts the OSDC ARC clusters (us-east-1 / us-east-2 / us-west-2) |
 
 ### `META_AWS_DEPLOY_PLAN_ROLE`
 

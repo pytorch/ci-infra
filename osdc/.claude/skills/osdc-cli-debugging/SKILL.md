@@ -24,14 +24,13 @@ mise exec -- kubectl get pods -n arc-runners
 
 All clusters are defined in `clusters.yaml` in the project root. Run `just list` for full details. Read the file directly for config values.
 
-The `<cluster>` argument to every `just` recipe is the **YAML key** (e.g. `meta-prod-aws-ue1`, `meta-staging-aws-uw1`, `arc-cbr-production`, `arc-cbr-production-uw1`), not the `cluster_name` field — they sometimes differ (e.g. `arc-cbr-production` resolves to `cluster_name: pytorch-arc-cbr-production`).
+The `<cluster>` argument to every `just` recipe is the **YAML key** (e.g. `meta-prod-aws-ue1`, `meta-staging-aws-ue1`, `arc-cbr-production`), not the `cluster_name` field — they sometimes differ (e.g. `arc-cbr-production` resolves to `cluster_name: pytorch-arc-cbr-production`).
 
 ## lf-* Clusters Are NOT Accessible From This Laptop
 
 The `lf-prod-aws-ue1` / `lf-prod-aws-ue2` clusters (state buckets `lf-osdc-tfstate-prod-*`, admin role `lf_osdc_admin`) are operated by another org. **From this laptop the operator has no AWS credentials, no kubeconfig access, and no tofu state read access for them.** Any `just kubeconfig lf-prod-*`, `kubectl` against an `lf-*` context, `aws eks describe-cluster --name lf-prod-*`, or `tofu init` against an `lf-osdc-*` state bucket will fail on authentication.
 
 Accessible from this laptop (admin role `osdc_gha_prod` / `osdc_gha_staging`):
-- `meta-staging-aws-uw1` (us-west-1)
 - `meta-staging-aws-ue1` (us-east-1)
 - `meta-prod-aws-ue1` (us-east-1)
 - `arc-cbr-production` → `pytorch-arc-cbr-production` (us-east-2)
@@ -46,7 +45,7 @@ Before running any kubectl or helm commands, configure kubeconfig using the just
 just kubeconfig <cluster>
 ```
 
-The just recipe reads `clusters.yaml` to resolve the cluster name and region automatically and delegates to `scripts/kubeconfig-lock.sh` (which serializes concurrent kubeconfig writes via a file lock). It aliases the kubectl context to the **cluster_name** (e.g. `pytorch-arc-cbr-production`, `meta-prod-aws-ue1`, `meta-staging-aws-uw1`) — there is no `eks-...` prefix. Switch contexts with `kubectl config use-context <cluster_name>` or scope a single call with `kubectl --context <cluster_name> ...`. Running `aws eks update-kubeconfig` by hand risks wrong cluster name, wrong region, or wrong kubeconfig context.
+The just recipe reads `clusters.yaml` to resolve the cluster name and region automatically and delegates to `scripts/kubeconfig-lock.sh` (which serializes concurrent kubeconfig writes via a file lock). It aliases the kubectl context to the **cluster_name** (e.g. `pytorch-arc-cbr-production`, `meta-prod-aws-ue1`, `meta-staging-aws-ue1`) — there is no `eks-...` prefix. Switch contexts with `kubectl config use-context <cluster_name>` or scope a single call with `kubectl --context <cluster_name> ...`. Running `aws eks update-kubeconfig` by hand risks wrong cluster name, wrong region, or wrong kubeconfig context.
 
 ## Corporate Proxy Bypass for kubectl / aws / EKS (MANDATORY)
 
@@ -202,7 +201,7 @@ Read `.data.commit`, `.data.branch`, `.data.timestamp`, `.data.user`, `.data.sta
 ```bash
 just kubeconfig meta-prod-aws-ue1
 PROD_COMMIT=$(kubectl get cm osdc-deploy-module-finish-karpenter -n osdc-system -o jsonpath='{.data.commit}')
-just kubeconfig meta-staging-aws-uw1
+just kubeconfig meta-staging-aws-ue1
 STAGING_COMMIT=$(kubectl get cm osdc-deploy-module-finish-karpenter -n osdc-system -o jsonpath='{.data.commit}')
 echo "prod=$PROD_COMMIT  staging=$STAGING_COMMIT"
 git log --oneline "$PROD_COMMIT..$STAGING_COMMIT" -- modules/karpenter/
@@ -262,13 +261,13 @@ kubectl get cm osdc-deploy-module-history-karpenter -n osdc-system -o jsonpath='
 
 Base infra terraform code lives in `modules/eks/terraform/` even though state is keyed under `${CLUSTER}/base/terraform.tfstate` (`base` here is the *state slot* name; the directory `base/terraform/` does not exist — the real code is in `modules/eks/terraform/`).
 
-Each cluster's state lives in its own `state_bucket` (defined in `clusters.yaml`, e.g. `ciforge-tfstate-meta-staging-aws-uw1`, `ciforge-tfstate-arc-cbr-prod`, `ciforge-tfstate-arc-cbr-prod-ue1`, `ciforge-tfstate-arc-cbr-prod-uw1`). Lock table is shared: `ciforge-terraform-locks`. To inspect state for a specific cluster, first init with the cluster's backend config:
+Each cluster's state lives in its own `state_bucket` (defined in `clusters.yaml`, e.g. `ciforge-tfstate-meta-staging-aws-ue1`, `ciforge-tfstate-arc-cbr-prod`, `ciforge-tfstate-arc-cbr-prod-ue1`, `ciforge-tfstate-arc-cbr-prod-uw1`). Lock table is shared: `ciforge-terraform-locks`. To inspect state for a specific cluster, first init with the cluster's backend config:
 
 ```bash
 cd modules/eks/terraform
 tofu init -reconfigure \
-    -backend-config="bucket=ciforge-tfstate-meta-staging-aws-uw1" \
-    -backend-config="key=meta-staging-aws-uw1/base/terraform.tfstate" \
+    -backend-config="bucket=ciforge-tfstate-meta-staging-aws-ue1" \
+    -backend-config="key=meta-staging-aws-ue1/base/terraform.tfstate" \
     -backend-config="region=us-west-2" \
     -backend-config="dynamodb_table=ciforge-terraform-locks"
 tofu show                    # Current state

@@ -6,8 +6,6 @@ fleet:
   name: m8g-metal
   arch: arm64
   gpu: false
-  exclude_regions:
-    - us-west-1
   instances:
     - type: m8g.metal-24xl
       weight: 100

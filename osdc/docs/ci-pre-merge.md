@@ -2,14 +2,14 @@
 
 ## What this is
 
-The pre-merge CI runs the OSDC validation battery against the `meta-staging-aws-uw1` cluster when PRs enter the merge queue. It is the gate that determines whether a PR is allowed to merge into `main`.
+The pre-merge CI runs the OSDC validation battery against the `meta-staging-aws-ue1` cluster when PRs enter the merge queue. It is the gate that determines whether a PR is allowed to merge into `main`.
 
 ## Workflow shape
 
 The workflow is defined in `.github/workflows/osdc-pre-merge.yml` and triggers on `merge_group` and `workflow_dispatch`. It is composed of four jobs:
 
 1. `changes` — uses `dorny/paths-filter` to detect whether the PR touches osdc-related files. Outputs `osdc: true|false`.
-2. `deploy-fast` — calls reusable `_osdc-deploy.yml` (lint+test → deploy `meta-staging-aws-uw1` → smoke + integration tests). Runs only when osdc files changed.
+2. `deploy-fast` — calls reusable `_osdc-deploy.yml` (lint+test → deploy `meta-staging-aws-ue1` → smoke + integration tests). Runs only when osdc files changed.
 3. `slow-tests` — calls reusable `_osdc-slow-tests.yml` (load-test → compactor + janitor). Runs after `deploy-fast` succeeds. Informational only.
 4. `pre-merge-ok` — marker job that always runs and reports SUCCESS when the gate is satisfied.
 
@@ -32,7 +32,7 @@ Dependency chain:
 
 | Aspect            | Fast (`deploy-fast`)                       | Slow (`slow-tests`)                  |
 |-------------------|--------------------------------------------|--------------------------------------|
-| What it runs      | lint + test, deploy meta-staging-aws-uw1, smoke, integration | load-test, compactor e2e, janitor e2e |
+| What it runs      | lint + test, deploy meta-staging-aws-ue1, smoke, integration | load-test, compactor e2e, janitor e2e |
 | Gates merge?      | Yes (via `pre-merge-ok`)                   | No (informational only)              |
 | Typical duration  | ~30-60 min                                 | ~2-3 h                               |
 | Failure effect    | Blocks merge                               | Surfaces red check, merge still allowed |
@@ -72,7 +72,7 @@ Repo Settings → Rules → "main" ruleset → Merge queue → Required status c
 
 - `pre-merge-ok`
 
-It MUST NOT contain individual job names like `Deploy meta-staging-aws-uw1`, `Smoke tests`, `Integration tests`, `Load tests`, `Compactor e2e tests`, `Janitor e2e tests`.
+It MUST NOT contain individual job names like `Deploy meta-staging-aws-ue1`, `Smoke tests`, `Integration tests`, `Load tests`, `Compactor e2e tests`, `Janitor e2e tests`.
 
 Why: those individual jobs may be SKIPPED (path filter excluded the PR) and never report. The merge queue would wait forever for a check that never arrives. The `pre-merge-ok` marker always runs and always reports.
 
@@ -90,9 +90,9 @@ Repo Settings → Rules → "main" ruleset → Merge queue → Build concurrency
 
 Slow-test failures DO NOT block merges (by design). They surface as a red check in the PR's Actions tab but the PR can still merge. Treat slow-test failures as a regression report for someone to investigate post-merge.
 
-- If load-test fails: check that the canary GitHub token still works and that the runner controller is healthy in `meta-staging-aws-uw1`.
-- If compactor fails: investigate node-compactor pod logs in `meta-staging-aws-uw1`.
-- If janitor fails: investigate image-cache-janitor in `meta-staging-aws-uw1`.
+- If load-test fails: check that the canary GitHub token still works and that the runner controller is healthy in `meta-staging-aws-ue1`.
+- If compactor fails: investigate node-compactor pod logs in `meta-staging-aws-ue1`.
+- If janitor fails: investigate image-cache-janitor in `meta-staging-aws-ue1`.
 
 No notification automation today — see follow-up section.
 

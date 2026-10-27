@@ -180,7 +180,7 @@ In most cases, reading the relevant source or docs in the knowledge base first w
 | `observability.md` | Three-Alloy observability architecture (metrics Deployment + logs DaemonSet + events Deployment -> Grafana Cloud) |
 | `observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |
 | `operations.md` | Operational procedures — bootstrap, deploy, and manage clusters |
-| `prod-cluster-ha-us-west-1.md` | Production cluster HA design notes for us-west-1 |
+| `prod-cluster-ha-us-west-1.md` | Production cluster HA design notes for us-west-1 (cluster since decommissioned; runner-group design still applies) |
 | `pypi-package-cache.md` | PyPI wheel cache architecture and operational guide |
 | `runner-image-autoresolve.md` | Deploy-time auto-resolution of the runner image to a digest-pinned reference; ConfigMap shape, rollback paths, failure modes |
 | `runner_naming_convention.md` | Compact runner label naming scheme (42-char limit, abbreviation rules) |

@@ -25,7 +25,7 @@ The module deploys per-cluster:
    Pods run as `serviceAccountName: pypi-cache` with `runAsNonRoot: true, runAsUser: 65534`,
    `readOnlyRootFilesystem: true`. Behind Service `pypi-cache-{slug}` on ports `8080` (http) and
    `9113` (metrics). Replicas: default 2; per-cluster overrides
-   (`arc-staging: 1`, `meta-staging-aws-uw1: 1`, `arc-cbr-production: 10`,
+   (`arc-staging: 1`, `meta-staging-aws-ue1: 1`, `arc-cbr-production: 10`,
    `meta-prod-aws-ue1: 10`, `lf-prod-aws-ue1: 6`,
    `lf-prod-aws-ue2: 6`). pypiserver runs with `--disable-fallback` — nginx, not pypiserver, owns
    the upstream-fallback path.
@@ -357,7 +357,7 @@ If pypi-cache is down, all pip installs on runners fail — there is no bypass.
 - `kubernetes/pdb.yaml.tpl` — per-slug PodDisruptionBudget (`minAvailable: 1`), keeps
   at least one pod per slug servable through node drains and rolling updates.
   **Gotcha**: clusters configured with `replicas: 1` (e.g. `arc-staging`,
-  `meta-staging-aws-uw1`) will block voluntary disruptions entirely — drain the node
+  `meta-staging-aws-ue1`) will block voluntary disruptions entirely — drain the node
   manually or temporarily bump replicas.
 - `scripts/python/generate_manifests.py` — slug fanout, resource computation, NVMe sizing
 - `scripts/python/wants_collector.py` — fallback log → S3 wants/, prebuilt-cache.txt

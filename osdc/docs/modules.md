@@ -16,9 +16,9 @@ The justfile auto-detects and runs these in order:
 
 `deploy.sh` receives three positional arguments:
 ```bash
-$1 = cluster-id      # e.g. "meta-staging-aws-uw1"
-$2 = cluster-name    # e.g. "meta-staging-aws-uw1"
-$3 = region           # e.g. "us-west-1"
+$1 = cluster-id      # e.g. "meta-staging-aws-ue1"
+$2 = cluster-name    # e.g. "meta-staging-aws-ue1"
+$3 = region           # e.g. "us-east-1"
 ```
 
 A module can use any combination of these — none of them is strictly required individually. The minimum is whatever produces a working phase: a kubernetes-only module needs only `kubernetes/kustomization.yaml` (e.g. `cache-enforcer`); a script-only module needs only `deploy.sh`; a module with all three runs all three phases in order.

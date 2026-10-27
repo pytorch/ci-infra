@@ -7,16 +7,16 @@
 
 Usage:
     # Get a single field
-    cluster-config.py meta-staging-aws-uw1 region              -> us-west-1
-    cluster-config.py meta-staging-aws-uw1 cluster_name        -> meta-staging-aws-uw1
-    cluster-config.py meta-staging-aws-uw1 base.vpc_cidr       -> 10.0.0.0/16
+    cluster-config.py meta-staging-aws-ue1 region              -> us-east-1
+    cluster-config.py meta-staging-aws-ue1 cluster_name        -> meta-staging-aws-ue1
+    cluster-config.py meta-staging-aws-ue1 base.vpc_cidr       -> 10.20.0.0/16
 
     # Get all base terraform vars as -var flags
-    cluster-config.py meta-staging-aws-uw1 tfvars
-        -> -var="cluster_name=meta-staging-aws-uw1" -var="aws_region=us-west-1" ...
+    cluster-config.py meta-staging-aws-ue1 tfvars
+        -> -var="cluster_name=meta-staging-aws-ue1" -var="aws_region=us-east-1" ...
 
     # Check if a module is enabled
-    cluster-config.py meta-staging-aws-uw1 has-module arc      -> exits 0 (true) or 1 (false)
+    cluster-config.py meta-staging-aws-ue1 has-module arc      -> exits 0 (true) or 1 (false)
 
     # List all cluster IDs
     cluster-config.py --list

@@ -46,8 +46,8 @@ def clusters_yaml(tmp_path):
             "logging": {"namespace": "logging"},
         },
         "clusters": {
-            "meta-staging-aws-uw1": {
-                "cluster_name": "meta-staging-aws-uw1",
+            "meta-staging-aws-ue1": {
+                "cluster_name": "meta-staging-aws-ue1",
                 "aws_region": "us-west-2",
                 "modules": ["eks", "karpenter", "nodepools", "arc", "arc-runners"],
                 "harbor": {"core_replicas": 1},
@@ -88,8 +88,8 @@ def clusters_yaml(tmp_path):
 
 @pytest.fixture
 def cfg_staging(clusters_yaml):
-    """Return loaded config for meta-staging-aws-uw1."""
-    return load_cluster_config(clusters_yaml, "meta-staging-aws-uw1")
+    """Return loaded config for meta-staging-aws-ue1."""
+    return load_cluster_config(clusters_yaml, "meta-staging-aws-ue1")
 
 
 @pytest.fixture
@@ -201,8 +201,8 @@ ALL_MODULES = [
 
 class TestLoadClusterConfig:
     def test_valid_cluster(self, clusters_yaml):
-        cfg = load_cluster_config(clusters_yaml, "meta-staging-aws-uw1")
-        assert cfg["cluster"]["cluster_name"] == "meta-staging-aws-uw1"
+        cfg = load_cluster_config(clusters_yaml, "meta-staging-aws-ue1")
+        assert cfg["cluster"]["cluster_name"] == "meta-staging-aws-ue1"
         assert cfg["cluster"]["aws_region"] == "us-west-2"
         assert "defaults" in cfg
 
@@ -233,7 +233,7 @@ class TestResolve:
         assert resolve(cfg_staging, "nonexistent.path") is None
 
     def test_top_level_key(self, cfg_staging):
-        assert resolve(cfg_staging, "cluster_name") == "meta-staging-aws-uw1"
+        assert resolve(cfg_staging, "cluster_name") == "meta-staging-aws-ue1"
 
 
 # ── normalize_modules ─────────────────────────────────────────────────────
@@ -317,7 +317,7 @@ class TestIsProdCluster:
 
     @pytest.mark.parametrize(
         "cluster_id",
-        ["meta-staging-aws-uw1", "meta-staging-aws-ue1", "meta-staging-aws-ue2"],
+        ["meta-staging-aws-ue1", "meta-staging-aws-ue2"],
     )
     def test_staging_clusters(self, cluster_id):
         assert is_prod_cluster(cluster_id) is False
@@ -358,8 +358,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
+            "meta-staging-aws-ue1",
+            "meta-staging-aws-ue1",
             cluster_modules=ALL_MODULES,
         )
         for job in (
@@ -503,8 +503,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
+            "meta-staging-aws-ue1",
+            "meta-staging-aws-ue1",
             cluster_modules=["arc-runners"],
         )
         assert "release-job" in result
@@ -515,8 +515,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
+            "meta-staging-aws-ue1",
+            "meta-staging-aws-ue1",
             cluster_modules=["nodepools"],
         )
         assert "release-job" not in result
@@ -542,8 +542,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "c-mt",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
+            "meta-staging-aws-ue1",
+            "meta-staging-aws-ue1",
             cluster_modules=["arc-runners"],
         )
         assert "release-job" in result
@@ -622,8 +622,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
+            "meta-staging-aws-ue1",
+            "meta-staging-aws-ue1",
             cluster_modules=ALL_MODULES,
             runner_group="default",
             release_runner_group="rel-rg",
@@ -945,8 +945,8 @@ class TestResolveOrgTarget:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
+            "meta-staging-aws-ue1",
+            "meta-staging-aws-ue1",
             cluster_modules=["arc-runners"],
             runner_group=group,
         )
@@ -1002,7 +1002,7 @@ class TestCleanupStalePrs:
             MagicMock(returncode=0),
         ]
 
-        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-ue1")
 
         assert mock_run.call_count == 6
 
@@ -1022,7 +1022,7 @@ class TestCleanupStalePrs:
     @patch("phases.run_cmd")
     def test_handles_pr_list_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stderr="auth required", stdout="")
-        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-ue1")
         # Should not raise, just log and return
         assert mock_run.call_count == 1
 
@@ -1037,7 +1037,7 @@ class TestCleanupStalePrs:
             MagicMock(returncode=0, stdout=empty_runs),  # in_progress runs
         ]
 
-        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-ue1")
         # pr list + 2 run list calls, no close/cancel calls
         assert mock_run.call_count == 3
 
@@ -1079,7 +1079,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-meta-staging-aws-uw1",
+            branch="osdc-integration-test-meta-staging-aws-ue1",
             dry_run=True,
         )
 
@@ -1107,7 +1107,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test workflow\n",
-            branch="osdc-integration-test-meta-staging-aws-uw1",
+            branch="osdc-integration-test-meta-staging-aws-ue1",
             dry_run=True,
         )
 
@@ -1142,7 +1142,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-meta-staging-aws-uw1",
+            branch="osdc-integration-test-meta-staging-aws-ue1",
             dry_run=False,
         )
 
@@ -1341,7 +1341,7 @@ class TestEnsureCanaryRepo:
 
 
 def test_branch_name():
-    assert branch_name("meta-staging-aws-uw1") == "osdc-integration-test-meta-staging-aws-uw1"
+    assert branch_name("meta-staging-aws-ue1") == "osdc-integration-test-meta-staging-aws-ue1"
     assert branch_name("meta-prod-aws-ue2") == "osdc-integration-test-meta-prod-aws-ue2"
 
 
@@ -1469,7 +1469,7 @@ class TestParseArgs:
             [
                 "run.py",
                 "--cluster-id",
-                "meta-staging-aws-uw1",
+                "meta-staging-aws-ue1",
                 "--clusters-yaml",
                 "/tmp/c.yaml",
                 "--upstream-dir",
@@ -1479,7 +1479,7 @@ class TestParseArgs:
             ],
         ):
             args = parse_args()
-        assert args.cluster_id == "meta-staging-aws-uw1"
+        assert args.cluster_id == "meta-staging-aws-ue1"
         assert str(args.clusters_yaml) == "/tmp/c.yaml"
         assert str(args.upstream_dir) == "/tmp/upstream"
         assert str(args.root_dir) == "/tmp/root"
@@ -1536,7 +1536,7 @@ class TestParseArgs:
             [
                 "run.py",
                 "--cluster-id",
-                "meta-staging-aws-uw1",
+                "meta-staging-aws-ue1",
                 "--clusters-yaml",
                 "/tmp/c.yaml",
                 "--upstream-dir",
@@ -1554,7 +1554,7 @@ class TestParseArgs:
             [
                 "run.py",
                 "--cluster-id",
-                "meta-staging-aws-uw1",
+                "meta-staging-aws-ue1",
                 "--clusters-yaml",
                 "/tmp/c.yaml",
                 "--upstream-dir",
@@ -1574,7 +1574,7 @@ class TestParseArgs:
             [
                 "run.py",
                 "--cluster-id",
-                "meta-staging-aws-uw1",
+                "meta-staging-aws-ue1",
                 "--clusters-yaml",
                 "/tmp/c.yaml",
                 "--upstream-dir",
@@ -1621,7 +1621,7 @@ class TestClearStagingPools:
     def test_no_active_pods_skips(self, mock_run):
         """When no runner pods are found, skip pool clear."""
         mock_run.return_value = MagicMock(returncode=0, stdout="\n", stderr="")
-        clear_staging_pools("meta-staging-aws-uw1")
+        clear_staging_pools("meta-staging-aws-ue1")
         # Only the initial kubectl get pods call
         assert mock_run.call_count == 1
 
@@ -1633,7 +1633,7 @@ class TestClearStagingPools:
             stdout="",
             stderr="connection refused",
         )
-        clear_staging_pools("meta-staging-aws-uw1")
+        clear_staging_pools("meta-staging-aws-ue1")
         assert mock_run.call_count == 1
 
     @patch("phases.time.sleep")
@@ -1655,7 +1655,7 @@ class TestClearStagingPools:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
-        clear_staging_pools("meta-staging-aws-uw1", force=True)
+        clear_staging_pools("meta-staging-aws-ue1", force=True)
 
         assert mock_run.call_count == 6
         # Verify delete pods call
@@ -1682,7 +1682,7 @@ class TestClearStagingPools:
             stdout="pod1 Running\n",
             stderr="",
         )
-        clear_staging_pools("meta-staging-aws-uw1", force=False)
+        clear_staging_pools("meta-staging-aws-ue1", force=False)
         # Only the get-pods call, no delete/drain/redeploy
         assert mock_run.call_count == 1
 
@@ -1704,7 +1704,7 @@ class TestClearStagingPools:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
-        clear_staging_pools("meta-staging-aws-uw1", force=False)
+        clear_staging_pools("meta-staging-aws-ue1", force=False)
 
         assert mock_run.call_count == 5
         # Verify the drain and redeploy happened
@@ -1734,7 +1734,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-meta-staging-aws-uw1",
+            branch="osdc-integration-test-meta-staging-aws-ue1",
             dry_run=True,
         )
 
@@ -1763,7 +1763,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: new test\n",
-            branch="osdc-integration-test-meta-staging-aws-uw1",
+            branch="osdc-integration-test-meta-staging-aws-ue1",
             dry_run=True,
         )
 
@@ -1792,7 +1792,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-meta-staging-aws-uw1",
+            branch="osdc-integration-test-meta-staging-aws-ue1",
             dry_run=False,
         )
 
@@ -1819,7 +1819,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
@@ -1861,7 +1861,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
@@ -1904,7 +1904,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
@@ -1943,7 +1943,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
@@ -1982,7 +1982,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
@@ -2083,7 +2083,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
@@ -2118,7 +2118,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org="meta-pytorch",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
@@ -2158,7 +2158,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="meta-staging-aws-uw1",
+            cluster_id="meta-staging-aws-ue1",
             org=None,
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,

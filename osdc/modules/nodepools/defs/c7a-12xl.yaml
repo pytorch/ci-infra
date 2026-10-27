@@ -5,8 +5,6 @@ fleet:
   name: c7a-12xl
   arch: amd64
   gpu: false
-  exclude_regions:
-    - us-west-1
   instances:
     - type: c7a.12xlarge
       weight: 100  # ideal

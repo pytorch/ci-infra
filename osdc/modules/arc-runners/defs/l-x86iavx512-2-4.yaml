@@ -1,6 +1,5 @@
 # ARC runner definition: l-x86iavx512-2-4
 # Instance type: c7a.2xlarge (pool: c7a-2xl)
-# NOTE: c7a.2xlarge is NOT available in us-west-1 (meta-staging-aws-uw1). Will not schedule there.
 runner:
   name: l-x86iavx512-2-4
   instance_type: c7a.2xlarge

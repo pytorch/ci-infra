@@ -12,8 +12,6 @@ fleet:
   name: p4d-large
   arch: amd64
   gpu: true
-  exclude_regions:
-    - us-west-1
   instances:
     - type: p4d.24xlarge
       weight: 100

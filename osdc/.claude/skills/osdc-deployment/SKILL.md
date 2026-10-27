@@ -109,7 +109,7 @@ To create a new module: make a directory under `modules/`, add any of the files 
 
 Reading cluster config in scripts: `uv run scripts/cluster-config.py <cluster-id> <dot.path> [default]`. Supports nested paths (e.g., `harbor.core_replicas`). Falls back to `defaults:` section, then optional third argument.
 
-**`recycle_karpenter_nodes: true`** (cluster-level config, e.g. `meta-staging-aws-uw1`, `meta-staging-aws-ue1`): when set, `just deploy` calls `just recycle-nodes "$CLUSTER"` automatically after modules deploy and **skips** the ARC node-tainting step (tainting is pointless when nodes are being destroyed).
+**`recycle_karpenter_nodes: true`** (cluster-level config, e.g. `meta-staging-aws-ue1`, `meta-staging-aws-ue2`): when set, `just deploy` calls `just recycle-nodes "$CLUSTER"` automatically after modules deploy and **skips** the ARC node-tainting step (tainting is pointless when nodes are being destroyed).
 
 **`proactive_capacity_max: <int>`** (cluster-level): caps the warm-pool placeholder pairs the runner-set scaler will provision ahead of demand. Staging clusters set this to `0` to disable pre-provisioning entirely. See `docs/arc-fork-build-deploy.md` for how this is plumbed into the controller (`CAPACITY_AWARE_PROACTIVE_CAPACITY`).
 
@@ -272,7 +272,7 @@ harbor:
   registry_replicas: 4
   nginx_replicas: 6
   pdb_max_unavailable: 1     # Default: conservative production protection for core/registry/nginx
-  # staging clusters (meta-staging-aws-uw1, meta-staging-aws-ue1) override to "100%" (string, quoted)
+  # staging clusters (meta-staging-aws-ue1, meta-staging-aws-ue2) override to "100%" (string, quoted)
   # to effectively disable — staging runs 1 replica each
 ```
 

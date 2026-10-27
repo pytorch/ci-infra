@@ -37,7 +37,7 @@ log_error() { echo -e "${RED}x${NC} $*"; }
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <cluster-id>"
-  echo "  e.g. $0 meta-staging-aws-uw1"
+  echo "  e.g. $0 meta-staging-aws-ue1"
   exit 1
 fi
 

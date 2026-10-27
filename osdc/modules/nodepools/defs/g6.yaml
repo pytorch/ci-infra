@@ -5,8 +5,6 @@ fleet:
   name: g6
   arch: amd64
   gpu: true
-  exclude_regions:
-    - us-west-1
   # LF clusters (lf-prod-aws-ue1/ue2) get a different weight ladder than the
   # authored (Meta) default: g6.48xlarge never launches there (0 successes in
   # 211 CreateFleet attempts across both clusters — COPS-461), and the

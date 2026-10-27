@@ -4,8 +4,6 @@ fleet:
   name: r7a-large
   arch: amd64
   gpu: false
-  exclude_regions:
-    - us-west-1
   instances:
     - type: r7a.48xlarge
       weight: 100

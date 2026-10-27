@@ -68,7 +68,7 @@ The deploy reads these from `clusters.yaml` under `harbor.*` (defaults in parens
 - `harbor.core_replicas` (2)
 - `harbor.registry_replicas` (2)
 - `harbor.nginx_replicas` (3)
-- `harbor.pdb_max_unavailable` (1) — accepts integer or `"<N>%"` string; `meta-staging-aws-uw1` and `meta-staging-aws-ue1` use `"100%"` (regex `^([1-9][0-9]*|[1-9][0-9]?%|100%)$`).
+- `harbor.pdb_max_unavailable` (1) — accepts integer or `"<N>%"` string; `meta-staging-aws-ue1` and `meta-staging-aws-ue2` use `"100%"` (regex `^([1-9][0-9]*|[1-9][0-9]?%|100%)$`).
 
 ## Static IAM User for S3 (IRSA Workaround)
 
@@ -103,7 +103,7 @@ Images from `public.ecr.aws` are NOT mirrored to ECR (no rate limits to worry ab
 
 Three PDBs cover the multi-replica components only: `harbor-core`, `harbor-registry`, `harbor-nginx`. Single-replica components (`jobservice`, `portal`, `exporter`, internal `redis`/`database`) are intentionally NOT PDB-protected — a `minAvailable: 1` PDB on a 1-replica Deployment deadlocks node drains.
 
-- Single per-cluster knob: `harbor.pdb_max_unavailable` in `clusters.yaml`. Default `1` (conservative). `meta-staging-aws-uw1` and `meta-staging-aws-ue1` use `"100%"` (string, quoted) to effectively disable protection (staging runs 1 replica each).
+- Single per-cluster knob: `harbor.pdb_max_unavailable` in `clusters.yaml`. Default `1` (conservative). `meta-staging-aws-ue1` and `meta-staging-aws-ue2` use `"100%"` (string, quoted) to effectively disable protection (staging runs 1 replica each).
 - Chart has no native PDB support — standalone manifests templated from `base/kubernetes/harbor/pdb.yaml.tpl`, sed-substituted (`__MAX_UNAVAILABLE__`) and applied by the `_deploy-harbor` justfile recipe via `kubectl_apply_if_changed` after the Helm install completes.
 - Selectors: `app: harbor`, `component: <core|registry|nginx>`, `release: harbor` — mirror the chart's per-component Deployment selectors.
 - Known limits: (a) not active during first install (applied after Helm completes); (b) does NOT block `Recreate`-strategy rollouts of registry/jobservice (PDBs only block eviction-API calls); (c) orphaned on `helm uninstall` (Harbor is base infra, never uninstalled in practice).
