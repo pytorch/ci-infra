@@ -7,7 +7,7 @@ runner:
   vcpu: 88
   memory: 900Gi
   gpu: 4
-  # Fixed-capacity cap: 1 reserved 8-GPU node / 4 GPUs per runner = 2 concurrent runners.
+  # Fixed-capacity cap: (reserved 8-GPU nodes in the cluster × 8) / 4 GPUs per runner.
   max_runners:
     default: 2
     meta-prod-aws-uw1: 12

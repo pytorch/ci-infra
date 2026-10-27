@@ -15,6 +15,6 @@ nodepool:
   # capacity_reservation_ids are cluster-specific and live under
   # clusters.<id>.nodepools-b200 in clusters.yaml. The generator merges them
   # in at deploy time. arc-runners-b200/defs/*.yaml max_runners are sized
-  # assuming 2 reserved p6-b200.48xlarge nodes (16 B200 GPUs total).
+  # assuming 1 reserved p6-b200.48xlarge node (8 B200 GPUs total).
   baremetal: true
   user_data_script: scripts/b200-node-setup.sh

@@ -9,7 +9,7 @@ runner:
   memory: 225Gi
   gpu: 1
   imex_channels: 0
-  # Fixed-capacity cap: 1 reserved 8-GPU node / 1 GPU per runner = 8 concurrent runners.
+  # Fixed-capacity cap: (reserved 8-GPU nodes in the cluster × 8) / 1 GPU per runner.
   max_runners:
     default: 8
     meta-prod-aws-uw1: 48
