@@ -56,6 +56,19 @@ KARPENTER_PDB_MIN=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_min_available 1)
 
 KARPENTER_VERSION="1.12.0"
 
+# Log in to ECR Public before pulling the charts. Anonymous pulls from shared
+# GitHub runner IPs often fail with 429 Too Many Requests. The token goes in a
+# temp file, not ~/.config/helm. If login fails, pull anonymously.
+HELM_REGISTRY_CONFIG="$(mktemp)"
+export HELM_REGISTRY_CONFIG
+trap 'rm -f "$HELM_REGISTRY_CONFIG"' EXIT
+if aws ecr-public get-login-password --region us-east-1 \
+  | helm registry login public.ecr.aws --username AWS --password-stdin >/dev/null; then
+  echo "Authenticated to public.ecr.aws for chart pulls."
+else
+  echo "WARNING: ECR Public login failed; pulling Karpenter charts anonymously (may hit 429)." >&2
+fi
+
 # Helm does not update CRDs on `helm upgrade` — only on initial install.
 # CRDs are in a separate chart (karpenter-crd), not the main karpenter chart.
 # On first migration, existing CRDs owned by the `karpenter` release must be
@@ -71,12 +84,21 @@ if [ -n "$KARPENTER_CRDS" ]; then
   done
 fi
 
-echo "Updating Karpenter CRDs to v${KARPENTER_VERSION}..."
-helm upgrade --install karpenter-crd \
-  "oci://public.ecr.aws/karpenter/karpenter-crd" \
-  --version "${KARPENTER_VERSION}" \
-  --namespace karpenter --create-namespace \
-  --timeout 5m --wait
+# Skip the CRD chart when it's already deployed at this version, unless
+# HELM_FORCE_UPGRADE=1. A failed release isn't listed by --deployed, so it
+# gets re-applied.
+INSTALLED_CRD_CHART=$(helm list -n karpenter --filter '^karpenter-crd$' --deployed -o yaml \
+  | sed -n 's/^ *chart: //p' || true)
+if [[ "${HELM_FORCE_UPGRADE:-}" != "1" && "$INSTALLED_CRD_CHART" == "karpenter-crd-${KARPENTER_VERSION}" ]]; then
+  echo "Karpenter CRDs already at v${KARPENTER_VERSION}. Skipping."
+else
+  echo "Updating Karpenter CRDs to v${KARPENTER_VERSION}..."
+  helm upgrade --install karpenter-crd \
+    "oci://public.ecr.aws/karpenter/karpenter-crd" \
+    --version "${KARPENTER_VERSION}" \
+    --namespace karpenter --create-namespace \
+    --timeout 5m --wait
+fi
 
 echo "Installing Karpenter..."
 helm_upgrade_if_changed karpenter karpenter \
