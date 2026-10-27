@@ -79,10 +79,7 @@ data:
 
       if [ "$all_checks_pass" = true ]; then
         echo "All mirror configs present - skipping reconfiguration"
-        # Still remove the startup taint: a previous run may have written the
-        # marker and then failed on the taint PATCH (e.g. API throttling),
-        # and exiting here would leave the node tainted forever.
-        exec python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/registry-mirror
+        exit 0
       else
         echo "Configuration drift detected - proceeding with reconfiguration"
         rm -f "$MARKER_FILE"
@@ -243,12 +240,6 @@ data:
     mkdir -p /var/lib/registry-mirror-config || true
     echo "$(date -Iseconds 2>/dev/null || date)" > "$MARKER_FILE" || true
 
-    # Remove the per-DS startup taint so workload pods can schedule on this node.
-    # Declared in modules/nodepools/scripts/python/generate_nodepools.py
-    # (MODULE_STARTUP_TAINTS registry — added in a follow-up PR). Idempotent:
-    # silent no-op when the taint isn't present.
-    python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/registry-mirror
-
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -302,7 +293,16 @@ spec:
           image: public.ecr.aws/amazonlinux/amazonlinux:2023
           command: ["/bin/bash", "-c"]
           args:
-            - /scripts/configure-mirrors.sh
+            # Remove the startup taint after configure-mirrors.sh returns, not
+            # inside it, so every successful exit (including the "already
+            # configured" fast path taken when this init container restarts)
+            # clears the taint. Declared in
+            # modules/nodepools/scripts/python/generate_nodepools.py. Idempotent:
+            # silent no-op when the taint isn't present.
+            - |
+              set -euo pipefail
+              /scripts/configure-mirrors.sh
+              python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/registry-mirror
 
           env:
             - name: HARBOR_PORT

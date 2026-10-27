@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import email.message
 import io
 import json
 import sys
@@ -39,14 +40,21 @@ def _node(taints: list[dict] | None = None, instance_type_label: bool = True) ->
     }
 
 
-def _http_error(code: int, body: bytes = b"") -> urllib.error.HTTPError:
+def _http_error(code: int, body: bytes = b"", retry_after: str | None = None) -> urllib.error.HTTPError:
+    hdrs = email.message.Message()
+    if retry_after is not None:
+        hdrs["Retry-After"] = retry_after
     return urllib.error.HTTPError(
         url="https://[::1]:443/api/v1/nodes/node-1",
         code=code,
         msg="x",
-        hdrs=None,  # type: ignore[arg-type]
+        hdrs=hdrs,
         fp=io.BytesIO(body),
     )
+
+
+def _methods(urlopen) -> list[str]:
+    return [c.args[0].get_method() for c in urlopen.call_args_list]
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +70,16 @@ def _env_and_files(monkeypatch, tmp_path):
     monkeypatch.setattr(taint_remover, "CA_PATH", tmp_path / "ca.crt")
     # Eliminate real sleeps.
     monkeypatch.setattr(taint_remover.time, "sleep", lambda *_: None)
+    # Deterministic jitter: always take the top of the [d/2, d] range.
+    monkeypatch.setattr(taint_remover.random, "uniform", lambda _lo, hi: hi)
+
+
+@pytest.fixture
+def sleeps(monkeypatch) -> list[float]:
+    """Record every backoff sleep instead of discarding it."""
+    recorded: list[float] = []
+    monkeypatch.setattr(taint_remover.time, "sleep", recorded.append)
+    return recorded
 
 
 def _instance_type_taint() -> dict:
@@ -106,32 +124,77 @@ def test_retry_on_transient_url_error():
 
 
 def test_retry_on_http_500():
+    """PATCH 5xx retries the PATCH without re-GETting the node."""
     target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
             _FakeResp(200, json.dumps(node).encode()),  # GET
             _http_error(500, b"server boom"),  # PATCH 500
-            _FakeResp(200, json.dumps(node).encode()),  # GET retry
-            _FakeResp(200, b"{}"),  # PATCH success
+            _FakeResp(200, b"{}"),  # PATCH retry succeeds
         ]
         taint_remover.remove_taint_forever("my-startup-taint")
-        assert urlopen.call_count == 4
+        assert _methods(urlopen) == ["GET", "PATCH", "PATCH"]
 
 
 def test_retry_on_http_429_patch_throttled():
-    """HTTP 429 on PATCH (APF / etcd throttling) is transient — retry."""
+    """HTTP 429 on PATCH (APF / etcd throttling) is transient — retry the PATCH only."""
     target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
             _FakeResp(200, json.dumps(node).encode()),  # GET
             _http_error(429, b"etcdserver: throttle: too many requests"),  # PATCH 429
-            _FakeResp(200, json.dumps(node).encode()),  # GET retry
-            _FakeResp(200, b"{}"),  # PATCH success
+            _FakeResp(200, b"{}"),  # PATCH retry succeeds
         ]
         taint_remover.remove_taint_forever("my-startup-taint")
-        assert urlopen.call_count == 4
+        assert _methods(urlopen) == ["GET", "PATCH", "PATCH"]
+
+
+def test_http_429_backoff_grows_exponentially_and_caps(sleeps):
+    """Repeated 429s back off 5, 10, 20, ... up to the 300s cap, never re-GETting."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    throttled = [_http_error(429, b"too many requests") for _ in range(8)]
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [_FakeResp(200, json.dumps(node).encode()), *throttled, _FakeResp(200, b"{}")]
+        taint_remover.remove_taint_forever("my-startup-taint")
+        assert _methods(urlopen) == ["GET"] + ["PATCH"] * 9
+    assert sleeps == [5, 10, 20, 40, 80, 160, 300, 300]
+
+
+def test_server_backoff_jitter_stays_in_upper_half(monkeypatch):
+    """Jitter spreads retries within [d/2, d] so the delay still grows."""
+    monkeypatch.setattr(taint_remover.random, "uniform", lambda lo, _hi: lo)
+    assert [taint_remover._server_backoff(n, None) for n in range(4)] == [2.5, 5, 10, 20]
+
+
+def test_http_429_honours_retry_after(sleeps):
+    """A Retry-After longer than the computed backoff is respected (and capped)."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),  # GET
+            _http_error(429, b"slow down", retry_after="120"),
+            _http_error(429, b"slow down", retry_after="3600"),
+            _FakeResp(200, b"{}"),
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+    assert sleeps == [120, 300]
+
+
+def test_get_http_503_uses_server_backoff(sleeps):
+    """GET 5xx/429 also backs off exponentially."""
+    node = _node(taints=[_instance_type_taint()])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _http_error(503, b"unavailable"),
+            _http_error(429, b"too many requests"),
+            _FakeResp(200, json.dumps(node).encode()),
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+    assert sleeps == [5, 10]
 
 
 def test_permanent_error_on_http_404():
