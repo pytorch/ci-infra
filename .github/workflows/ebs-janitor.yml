@@ -1,0 +1,117 @@
+name: "EBS janitor"
+
+# Deletes or backs up detached EBS volumes in the Meta (fbossci) and LF fleet
+# accounts. See scripts/ebs_janitor/README.md.
+
+# yamllint disable-line rule:truthy
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "Account to clean up"
+        type: choice
+        options: [all, meta, lf]
+        default: all
+      execute:
+        description: "Act (needs main); otherwise dry run"
+        type: boolean
+        default: false
+      max_deletes:
+        description: "Volume deletes per account per run"
+        type: number
+        default: 500
+  pull_request:
+    paths:
+      - "scripts/ebs_janitor/**"
+      - ".github/workflows/ebs-janitor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: scripts/ebs_janitor
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - run: uv run --no-project --with-requirements requirements.txt pytest -q
+
+  config:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      execute: ${{ steps.c.outputs.execute }}
+      accounts: ${{ steps.c.outputs.accounts }}
+    steps:
+      - id: c
+        env:
+          EVENT: ${{ github.event_name }}
+          EXECUTE_INPUT: ${{ inputs.execute }}
+          ACCOUNT: ${{ inputs.account }}
+        run: |
+          # Scheduled runs stay dry runs until their reports have been reviewed.
+          SCHEDULE_EXECUTES=false
+          if [[ "$EVENT" == "schedule" ]]; then
+            execute="$SCHEDULE_EXECUTES"
+          else
+            execute="${EXECUTE_INPUT:-false}"
+          fi
+          case "${ACCOUNT:-all}" in
+            all) accounts='["meta","lf"]' ;;
+            *) accounts="[\"$ACCOUNT\"]" ;;
+          esac
+          echo "execute=$execute" >> "$GITHUB_OUTPUT"
+          echo "accounts=$accounts" >> "$GITHUB_OUTPUT"
+
+  janitor:
+    needs: [test, config]
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJSON(needs.config.outputs.accounts) }}
+    concurrency:
+      group: ebs-janitor-${{ matrix.account }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Same environments and roles as the OSDC plan/deploy workflows:
+    #   execute -> osdc-production (main only): META_AWS_DEPLOY_ROLE / LF_AWS_DEPLOY_ROLE_ARN
+    #   dry run -> osdc-staging:                META_AWS_DEPLOY_PLAN_ROLE / LF_AWS_PLAN_ROLE_ARN (read-only)
+    environment: ${{ needs.config.outputs.execute == 'true' && 'osdc-production' || 'osdc-staging' }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: scripts/ebs_janitor
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          aws-region: us-east-1
+          role-to-assume: >-
+            ${{ matrix.account == 'lf'
+            && (needs.config.outputs.execute == 'true' && secrets.LF_AWS_DEPLOY_ROLE_ARN || secrets.LF_AWS_PLAN_ROLE_ARN)
+            || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID,
+            needs.config.outputs.execute == 'true' && secrets.META_AWS_DEPLOY_ROLE || secrets.META_AWS_DEPLOY_PLAN_ROLE) }}
+      - name: Run janitor
+        env:
+          ACCOUNT: ${{ matrix.account }}
+          EXECUTE: ${{ needs.config.outputs.execute }}
+          MAX_DELETES: ${{ inputs.max_deletes || 500 }}
+        run: |
+          args=(--config "policies/${ACCOUNT}.yaml" --report-dir report --max-deletes "$MAX_DELETES")
+          if [[ "$EXECUTE" == "true" ]]; then args+=(--execute); fi
+          uv run --no-project --with-requirements requirements.txt python ebs_janitor.py "${args[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ebs-janitor-${{ matrix.account }}
+          path: scripts/ebs_janitor/report/

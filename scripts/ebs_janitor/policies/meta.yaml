@@ -1,0 +1,31 @@
+# Policy for the Meta fleet account (fbossci): OSDC clusters, gpu-dev and the
+# legacy EC2 runners. See ../README.md for what each setting does.
+min_age_days: 2
+grace_days: 14
+old_volume_days: 365
+snapshot_retention_days: 90
+keep_tag: ebs-janitor/keep
+
+# Root volumes left behind by legacy runners (pytorch/test-infra#7930). Deleted
+# without a snapshot, so only add patterns for AMIs whose disks hold nothing
+# but CI scratch space.
+runner_root:
+  names:
+    - gh-ci-action-runner
+    - meta-pytorch-action-runner
+  ami_name_patterns:
+    - "al2023-ami-2023.*"
+    - "Windows 20?? GHA CI*"
+  ami_owners:
+    - self
+    - amazon
+    - "391835788720"  # the Windows runner AMI is built in the LF account
+
+# gpu-dev keeps user data in snapshots; a detached gpu-dev volume is a leftover
+# from a reservation whose shutdown snapshot outlived the cleanup wait.
+gpu_dev:
+  enabled: true
+  snapshot_slack_seconds: 300
+
+regions: []  # empty: every enabled region
+exclude_regions: []
