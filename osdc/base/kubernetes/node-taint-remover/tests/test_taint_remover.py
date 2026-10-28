@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import email.message
+import http.client
 import io
 import json
 import sys
@@ -202,19 +203,109 @@ def test_race_retries_do_not_reset_backoff(sleeps):
     assert sleeps == [5, 10]
 
 
-def test_http_429_honours_retry_after(sleeps):
-    """A Retry-After longer than the computed backoff is respected (and capped)."""
+def _retry_after_sequence(node: dict) -> list:
+    return [
+        _FakeResp(200, json.dumps(node).encode()),  # GET
+        _http_error(429, b"slow down", retry_after="120"),
+        _http_error(429, b"slow down", retry_after="3600"),
+        _FakeResp(200, b"{}"),
+    ]
+
+
+def test_http_429_honours_retry_after(sleeps, monkeypatch):
+    """A Retry-After longer than the computed backoff is never undercut (capped at BACKOFF_CAP)."""
+    monkeypatch.setattr(taint_remover.random, "uniform", lambda lo, _hi: lo)
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = _retry_after_sequence(node)
+        taint_remover.remove_taint_forever("my-startup-taint")
+    assert sleeps == [120, 300]
+
+
+def test_http_429_retry_after_is_jittered(sleeps):
+    """The Retry-After floor is jittered up to 1.5x so nodes given the same value spread out."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = _retry_after_sequence(node)
+        taint_remover.remove_taint_forever("my-startup-taint")
+    assert sleeps == [180, 450]
+
+
+def test_http_date_retry_after_is_ignored(sleeps):
+    """A Retry-After given as an HTTP-date is ignored; the computed backoff applies."""
     target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
             _FakeResp(200, json.dumps(node).encode()),  # GET
-            _http_error(429, b"slow down", retry_after="120"),
-            _http_error(429, b"slow down", retry_after="3600"),
+            _http_error(429, b"slow down", retry_after="Wed, 21 Oct 2026 07:28:00 GMT"),
             _FakeResp(200, b"{}"),
         ]
         taint_remover.remove_taint_forever("my-startup-taint")
-    assert sleeps == [120, 300]
+    assert sleeps == [5]
+
+
+def test_repeated_race_backs_off(sleeps):
+    """A single 422 retries at once; consecutive ones back off instead of spinning."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),
+            _http_error(422, b"the test operation failed"),
+            _FakeResp(200, json.dumps(node).encode()),
+            _http_error(409, b"conflict"),
+            _FakeResp(200, json.dumps(node).encode()),
+            _http_error(422, b"the test operation failed"),
+            _FakeResp(200, json.dumps(node).encode()),
+            _FakeResp(200, b"{}"),
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+        assert _methods(urlopen) == ["GET", "PATCH"] * 4
+    assert sleeps == [5, 10]
+
+
+def test_unexpected_patch_status_rereads_and_backs_off(sleeps):
+    """A non-4xx/5xx PATCH status (e.g. a 3xx) re-reads the node after the backoff."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),
+            _http_error(302, b"found"),
+            _FakeResp(200, json.dumps(node).encode()),
+            _FakeResp(200, b"{}"),
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+        assert _methods(urlopen) == ["GET", "PATCH", "GET", "PATCH"]
+    assert sleeps == [5]
+
+
+def test_truncated_response_backs_off(sleeps):
+    """A connection dropped mid-response (http.client.IncompleteRead) is transient."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),  # GET
+            http.client.IncompleteRead(b"partial"),  # PATCH
+            _FakeResp(200, b"{}"),
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+        assert _methods(urlopen) == ["GET", "PATCH", "PATCH"]
+    assert sleeps == [5]
+
+
+def test_invalid_url_is_not_retried(sleeps):
+    """A configuration error surfaced by http.client (InvalidURL) re-raises instead of retrying."""
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = http.client.InvalidURL("nonnumeric port: 'abc'")
+        with pytest.raises(http.client.InvalidURL):
+            taint_remover.remove_taint_forever("my-startup-taint")
+        assert urlopen.call_count == 1
+    assert sleeps == []
 
 
 def test_get_http_503_backs_off(sleeps):
@@ -269,8 +360,8 @@ def test_retry_on_http_422_json_patch_test_failure():
         assert urlopen.call_count == 4
 
 
-def test_retry_on_http_401_picks_up_rotated_token(tmp_path, monkeypatch):
-    """HTTP 401 triggers a retry; the SA token is re-read so kubelet rotation is picked up."""
+def test_retry_on_http_401_picks_up_rotated_token(tmp_path, monkeypatch, sleeps):
+    """HTTP 401 backs off, re-reads the node and the SA token so kubelet rotation is picked up."""
     target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
     node = _node(taints=[_instance_type_taint(), target])
 
@@ -298,10 +389,26 @@ def test_retry_on_http_401_picks_up_rotated_token(tmp_path, monkeypatch):
         taint_remover.remove_taint_forever("my-startup-taint")
 
     # First two requests used the old token, the rest used the rotated one.
-    assert auth_headers[0] == "Bearer old-token"
-    assert auth_headers[1] == "Bearer old-token"
-    assert auth_headers[2] == "Bearer new-token"
-    assert auth_headers[-1] == "Bearer new-token"
+    assert auth_headers == ["Bearer old-token", "Bearer old-token", "Bearer new-token", "Bearer new-token"]
+    assert sleeps == [5]
+
+
+def test_repeated_http_401_backs_off_then_fails_on_get(sleeps):
+    """A token that stays rejected backs off, re-reads the node, and exits on the GET 401."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),  # GET
+            _http_error(401, b"unauthorized"),  # PATCH
+            _FakeResp(200, json.dumps(node).encode()),  # re-GET
+            _http_error(401, b"unauthorized"),  # PATCH
+            _http_error(401, b"unauthorized"),  # re-GET: permanent
+        ]
+        with pytest.raises(taint_remover.PermanentApiError):
+            taint_remover.remove_taint_forever("my-startup-taint")
+        assert _methods(urlopen) == ["GET", "PATCH", "GET", "PATCH", "GET"]
+    assert sleeps == [5, 10]
 
 
 def test_missing_node_name_env(monkeypatch, capsys):
