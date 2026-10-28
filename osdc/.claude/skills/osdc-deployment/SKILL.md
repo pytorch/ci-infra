@@ -37,6 +37,8 @@ just test-compactor <cluster>                    # Run node-compactor e2e tests 
 just test-janitor <cluster>                      # Run image-cache-janitor e2e tests (base/kubernetes/image-cache-janitor/tests/e2e/)
 just smoke <cluster>                             # Run smoke tests against a deployed cluster
 just integration-test <cluster> [args...]        # Run full integration test via integration-tests/scripts/python/run.py. CI passes --skip-drain --skip-smoke --skip-compactor
+just drain-test meta-staging-aws-uw1             # Real drain/undrain slow test; CI-only (osdc-pre-merge.yml dispatch)
+just drain-test meta-staging-aws-uw1 --dry-run   # Print canary workflow without cluster/GitHub calls
 just generate-arc-runners <cluster>              # Generate ARC scale-set YAMLs (no apply)
 just lint                                        # Lint all code (shell, Python, Docker, k8s, tf)
 just lint-fix                                    # Auto-fix lint issues (ruff, shfmt, tofu fmt, taplo)
@@ -364,9 +366,11 @@ Key workflows (all callable as reusable workflows via `workflow_call` from the o
 | `osdc-deploy-prod.yml` | Per-cluster prod deploy. Calls `_osdc-deploy.yml` |
 | `_osdc-deploy.yml` | Reusable: `just lint && just test` → `just deploy <cluster>` → `just smoke <cluster>` → `just integration-test <cluster> --skip-drain --skip-smoke --skip-compactor`. Pre-flight checks can be skipped with the `skip_lint_test` input (firefighting only). |
 | `_osdc-plan.yml` | Reusable: `just plan <cluster>` and tee to `plan.txt` |
-| `_osdc-slow-tests.yml` | Reusable: `just load-test`, `just test-compactor`, `just test-janitor` |
+| `_osdc-slow-tests.yml` | Reusable: `just load-test`, `just test-compactor`, `just test-janitor`, `just drain-test` |
 | `osdc-capacity-report.yml` | `just simulate-cluster` + `just analyze-utilization`, periodic |
 
 When adding a new `just` recipe that CI should run, plumb it through the corresponding reusable workflow.
+
+`just drain-test` is CI-only, runs under `_osdc-slow-tests.yml` against `meta-staging-aws-uw1`, and must not overlap with other slow tests. See `docs/ci-pre-merge.md` for full live acceptance and cancellation behavior.
 
 The OSDC-rooted CI jobs — the `deploy`/`smoke`/`integration` jobs in `_osdc-deploy.yml`, plus `osdc-drain.yml` and `osdc-undrain.yml` — set up their toolchain via the local composite action `./.github/actions/osdc-setup` (installs just + mise + `uv sync`). Its setup steps are retried on transient failures by **retry-by-duplication** (`continue-on-error` on the first attempt plus a copy gated on `steps.<id>.outcome == 'failure'`), chosen over a retry action deliberately: GitHub Actions has no native step retry, and a retry action would run unpinnable third-party code on the deploy / merge-queue path. `actions/checkout` and `aws-actions/configure-aws-credentials` are intentionally NOT wrapped because they already retry internally. On the deploy path, the `smoke` step is also retried once by duplication, with a 180s settle wait before the retry, because smoke failures are usually transient post-deploy cluster churn.
