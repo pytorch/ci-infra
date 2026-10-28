@@ -84,7 +84,7 @@ jobs:
     secrets: inherit
 
   # ------------------------------------------------------------------
-  # Slow set: load-test + compactor + janitor. Informational only —
+  # Slow set: load-test + compactor + janitor + drain-test. Informational only —
   # NOT a merge queue gate. Runs after the fast set succeeds on the
   # same already-deployed staging cluster. The workflow-level
   # concurrency group ensures no other workflow touches staging

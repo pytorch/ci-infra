@@ -7,6 +7,8 @@ name: "~ OSDC: Slow tests (reusable)"
 # region from `just region "${{ inputs.cluster }}"` or adding an
 # aws_region input. Do not call this reusable for non-us-west-1
 # clusters without first making that change.
+# Drain-test uses the same cluster input; its probes use that cluster's
+# configured runner group and runner name prefix.
 
 on:
   workflow_call:
@@ -133,3 +135,69 @@ jobs:
 
       - name: Run janitor e2e tests
         run: just test-janitor "${{ inputs.cluster }}"
+
+  drain-test:
+    name: Drain/undrain e2e test
+    # Controller requires OSDC_DRAIN_TEST_LIVE=true set by this job.
+    # Keep recovery in this job so both steps hold the same concurrency group.
+    # Share the per-cluster lock with deploy/plan and manual drain/undrain.
+    concurrency:
+      group: osdc-tofu-${{ inputs.cluster }}
+      cancel-in-progress: false
+    # Drain affects every runner; wait for ALL other slow tests to finish.
+    needs: [load-test, compactor, janitor]
+    # Cancel the test normally; the always() step attempts bounded recovery.
+    if: ${{ inputs.cluster == 'meta-staging-aws-uw1' && !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - if: ${{ success() && !cancelled() }}
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up OSDC toolchain
+        if: ${{ success() && !cancelled() }}
+        uses: ./.github/actions/osdc-setup
+
+      - name: Configure AWS credentials
+        if: ${{ success() && !cancelled() }}
+        id: aws
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Run drain/undrain test
+        id: drain
+        if: ${{ success() && !cancelled() }}
+        # Controller: 75 min main flow + 10 min cleanup + 5 min margin.
+        timeout-minutes: 90
+        run: >-
+          just drain-test "$CLUSTER"
+          --defer-recovery --run-timeout 4500 --cleanup-timeout 600
+          --start-timeout 1800 --finish-timeout 1800 --drain-timeout 300
+          --recovery-file "$RECOVERY_FILE"
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          RECOVERY_FILE: ${{ runner.temp }}/osdc-drain-${{ github.run_id }}-${{ github.run_attempt }}.json
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+          OSDC_DRAIN_TEST_LIVE: true
+
+      - name: Resume and verify cluster runners
+        id: restore
+        if: ${{ always() && steps.aws.outcome == 'success' }}
+        # Ten-minute controller budget plus startup margin; cancellation can cut this short.
+        timeout-minutes: 11
+        run: |
+          if [[ -f "$RECOVERY_FILE" ]]; then
+            just drain-test "$CLUSTER" --restore-only --restore-timeout 600 \
+              --recovery-file "$RECOVERY_FILE"
+          fi
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          RECOVERY_FILE: ${{ runner.temp }}/osdc-drain-${{ github.run_id }}-${{ github.run_attempt }}.json
+          OSDC_DRAIN_TEST_LIVE: true
