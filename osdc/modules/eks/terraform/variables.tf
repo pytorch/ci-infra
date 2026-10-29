@@ -75,3 +75,9 @@ variable "cluster_admin_role_names" {
   type        = string
   default     = ""
 }
+
+variable "control_plane_tier" {
+  description = "EKS control plane scaling tier: standard, or a Provisioned Control Plane tier such as tier-xl"
+  type        = string
+  default     = "standard"
+}

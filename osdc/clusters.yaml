@@ -705,6 +705,7 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.12.0.0/16"
+      control_plane_tier: tier-xl
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
@@ -737,6 +738,7 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.16.0.0/16"
+      control_plane_tier: tier-xl
     harbor:
       ecr_pullthrough: true
     node_compactor:

@@ -53,6 +53,14 @@ class TestEKSCluster:
         oidc_issuer = eks_cluster_info["cluster"].get("identity", {}).get("oidc", {}).get("issuer", "")
         assert oidc_issuer, f"OIDC provider not configured for cluster {cluster_name}"
 
+    def test_control_plane_tier(self, eks_cluster_info, cluster_config):
+        # Mirrors tfvars() in scripts/cluster-config.py: the cluster's own base only, else the tofu default.
+        expected_tier = (cluster_config["cluster"].get("base") or {}).get("control_plane_tier") or "standard"
+        actual_tier = (eks_cluster_info["cluster"].get("controlPlaneScalingConfig") or {}).get("tier")
+        assert actual_tier == expected_tier, (
+            f"EKS control plane tier {actual_tier} does not match expected {expected_tier}"
+        )
+
 
 # ============================================================================
 # EKS Addons
