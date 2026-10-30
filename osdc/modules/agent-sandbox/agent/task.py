@@ -30,6 +30,7 @@ SPEC_ENV = {
     "SANDBOX_MODEL": "model",
     "SANDBOX_PR": "pr",
     "SANDBOX_BASE": "base",
+    "SANDBOX_DEADLINE": "deadline",
 }
 
 

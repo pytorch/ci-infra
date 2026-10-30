@@ -178,6 +178,12 @@ class TestJobManifest:
         assert env["SANDBOX_MODEL"] == "us.x"
         assert env["SANDBOX_TASK"] == "", "an omitted task must arrive empty so run_task applies its default"
 
+    def test_the_task_is_told_when_its_deadline_fires(self, monkeypatch):
+        monkeypatch.setattr(kube.time, "time", lambda: 1_000_000.4)
+        spec = kube.job_manifest("abc123abc123", a_grant())
+        env = {e["name"]: e["value"] for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
+        assert env["SANDBOX_DEADLINE"] == str(1_000_000 + kube.TASK_DEADLINE_S)
+
     def test_carries_the_task_image_the_dispatcher_was_given(self, monkeypatch):
         monkeypatch.setattr(kube, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:cafe1234")
         assert self._pod_spec()["containers"][0]["image"] == "harbor:30002/osdc/ci-agent-sandbox:cafe1234"
@@ -240,6 +246,7 @@ class TestGitProxy:
             "SANDBOX_MODEL",
             "SANDBOX_PR",
             "SANDBOX_BASE",
+            "SANDBOX_DEADLINE",
         }
         # Nothing mounts a credential either — a Secret volume or envFrom would carry one
         # in without ever naming it above.
