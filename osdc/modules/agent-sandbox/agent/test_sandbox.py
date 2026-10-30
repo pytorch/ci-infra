@@ -9,6 +9,7 @@ proxy on a real socket, and the HTTP surface against a real socket.
 import http.client
 import io
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -49,6 +50,19 @@ def _insteadof(tmp_path, monkeypatch, rules):
     gitconfig = tmp_path / "gitconfig"
     gitconfig.write_text("".join(f'[url "{target}"]\n\tinsteadOf = {prefix}\n' for prefix, target in rules.items()))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+
+
+def _commit(repo, name, content="z\n"):
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+        "PATH": "/usr/bin:/bin",
+    }
+    (repo / name).write_text(content)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", name], check=True, env=env)
 
 
 class TestCloneRepo:
@@ -202,6 +216,199 @@ class TestCloneRepo:
         this passing means the unproxied URL is the one that was fetched."""
         monkeypatch.setattr(sandbox, "GIT_PROXY", "")
         assert sandbox.clone_repo("org/repo", "main", str(tmp_path / "dest")) == 3
+
+    def test_checks_out_a_tag(self, local_github, tmp_path):
+        subprocess.run(["git", "-C", str(local_github), "tag", "v1"], check=True)
+        assert sandbox.clone_repo("org/repo", "v1", str(tmp_path / "dest")) == 3
+
+    def test_an_annotated_tag_resolves_to_its_commit(self, local_github, tmp_path):
+        env = {"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin"}
+        subprocess.run(["git", "-C", str(local_github), "tag", "-a", "v2", "-m", "v2"], check=True, env=env)
+        assert sandbox.clone_repo("org/repo", "v2", str(tmp_path / "dest")) == 3
+
+    def test_a_non_utf8_change_stays_visible_in_the_diff(self, local_github, tmp_path):
+        (local_github / "latin1.txt").write_bytes(b"caf\xe9\n")
+        _commit(local_github, "setup.py")
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        (local_github / "latin1.txt").write_bytes(b"caf\xe8\n")
+        _commit(local_github, "README.md", "changed\n")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        _, _, patch, _ = sandbox.diff_against("org/repo", str(dest), base)
+        assert "-caf\\xe9" in patch
+        assert "+caf\\xe8" in patch
+
+    def test_escaped_non_utf8_bytes_stay_within_the_prompt_budget(self, local_github, tmp_path, monkeypatch):
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        (local_github / "bin.txt").write_bytes(b"\xff" * 3000 + b"\n")
+        _commit(local_github, "README.md", "changed\n")
+        monkeypatch.setattr(sandbox, "MAX_DIFF_BYTES", 2000)
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        _, _, patch, truncated = sandbox.diff_against("org/repo", str(dest), base)
+        assert len(patch.encode()) <= 2000
+        assert truncated is True
+
+    def test_a_non_utf8_file_name_does_not_fail_the_checkout(self, local_github, tmp_path):
+        import os
+
+        os.close(os.open(os.fsencode(str(local_github)) + b"/caf\xe9.txt", os.O_CREAT | os.O_WRONLY))
+        _commit(local_github, "README.md", "changed\n")
+        dest = tmp_path / "dest"
+        assert sandbox.clone_repo("org/repo", "main", str(dest)) == 4
+        assert "caf\\xe9.txt" in sandbox.top_level_entries(str(dest))
+
+    def test_odd_directory_names_keep_their_bytes_and_their_slash(self, local_github, tmp_path):
+        import os
+
+        for raw in (b"dir\rname", b"caf\xe9dir"):
+            path = os.fsencode(str(local_github)) + b"/" + raw
+            os.mkdir(path)
+            os.close(os.open(path + b"/f.txt", os.O_CREAT | os.O_WRONLY))
+        _commit(local_github, "README.md", "changed\n")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        entries = sandbox.top_level_entries(str(dest))
+        assert "dir\rname/" in entries
+        assert "caf\\xe9dir/" in entries
+
+    def test_diff_against_a_base_lists_the_change(self, local_github, tmp_path):
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        _commit(local_github, "new_file.py", "print('hi')\n")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        files, total, patch, truncated = sandbox.diff_against("org/repo", str(dest), base)
+        assert files == ["new_file.py"]
+        assert total == 1
+        assert "+print('hi')" in patch
+        assert truncated is False
+
+    def test_a_large_diff_is_truncated(self, local_github, tmp_path, monkeypatch):
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        _commit(local_github, "big.txt", "y\n" * 5000)
+        monkeypatch.setattr(sandbox, "MAX_DIFF_BYTES", 1000)
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        _, _, patch, truncated = sandbox.diff_against("org/repo", str(dest), base)
+        assert truncated is True
+        assert len(patch.encode()) <= 1000
+
+    def test_a_gitattributes_in_the_change_cannot_hide_the_diff(self, local_github, tmp_path):
+        """The tree is the author's: `* -diff` in its .gitattributes would turn the whole
+        patch, that file included, into "Binary files ... differ"."""
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        (local_github / ".gitattributes").write_text("* -diff\n")
+        _commit(local_github, "setup.py", "import evil\n")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        files, _, patch, _ = sandbox.diff_against("org/repo", str(dest), base)
+        assert sorted(files) == [".gitattributes", "setup.py"]
+        assert "+import evil" in patch
+        assert "+* -diff" in patch
+        assert "Binary files" not in patch
+
+    def test_a_gitmodules_ignore_cannot_hide_a_submodule_bump(self, local_github, tmp_path):
+        """`ignore = all` in the tree's .gitmodules would drop a submodule pointer change
+        from both the file list and the patch."""
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+
+        def run(*args):
+            subprocess.run(["git", "-C", str(local_github), *args], check=True, env={**os.environ, **env})
+
+        (local_github / ".gitmodules").write_text('[submodule "sub"]\n\tpath = sub\n\turl = ../x\n\tignore = all\n')
+        run("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},sub")
+        run("add", ".gitmodules")
+        run("commit", "-qm", "add sub")
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        run("update-index", "--cacheinfo", f"160000,{'2' * 40},sub")
+        run("commit", "-qm", "bump sub")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        files, _, patch, _ = sandbox.diff_against("org/repo", str(dest), base)
+        assert files == ["sub"]
+        assert "+Subproject commit " + "2" * 40 in patch
+
+    def test_a_file_named_head_does_not_make_the_diff_ambiguous(self, local_github, tmp_path):
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        _commit(local_github, "HEAD", "not a revision\n")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        files, total, _, _ = sandbox.diff_against("org/repo", str(dest), base)
+        assert files == ["HEAD"]
+        assert total == 1
+
+    def test_a_git_failure_raises_instead_of_an_empty_diff(self, local_github, tmp_path, monkeypatch):
+        base = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        real_run = subprocess.run
+
+        def failing_diff(cmd, **kwargs):
+            if cmd[:2] == ["git", "diff"]:
+                return real_run(["git", "diff", "no-such-rev", "HEAD", "--"], **kwargs)
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(sandbox.subprocess, "run", failing_diff)
+        with pytest.raises(subprocess.CalledProcessError):
+            sandbox.diff_against("org/repo", str(dest), base)
+
+    def test_a_slow_diff_is_bounded_by_its_timeout(self, tmp_path, monkeypatch):
+        with pytest.raises(subprocess.TimeoutExpired):
+            sandbox._git_to_file(
+                ["-c", "alias.slow=!sleep 5", "slow"], str(tmp_path), str(tmp_path / "out"), timeout=0.2
+            )
+
+    @pytest.mark.parametrize("base", ["main", "abc", "-x" + "0" * 38, "a" * 40 + "\n"])
+    def test_a_base_that_is_not_a_sha_is_refused(self, local_github, tmp_path, base):
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        with pytest.raises(ValueError, match="full 40-character"):
+            sandbox.diff_against("org/repo", str(dest), base)
+
+    def test_the_base_is_fetched_through_the_proxy_too(self, local_git_proxy, tmp_path):
+        """A private repository's base commit needs the credential as much as its head
+        does. Under this fixture only the proxy prefix resolves, so a base fetched from
+        github.com would fail the diff."""
+        base = subprocess.run(
+            ["git", "-C", str(local_git_proxy), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        _commit(local_git_proxy, "new_file.py", "print('hi')\n")
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "main", str(dest))
+        files, _, _, _ = sandbox.diff_against("org/repo", str(dest), base)
+        assert files == ["new_file.py"]
+
+    def test_head_sha_names_the_checked_out_commit(self, local_github, tmp_path):
+        """What a caller pins to: a pull request head or a branch can move after the
+        review, the reported commit cannot."""
+        subprocess.run(["git", "-C", str(local_github), "update-ref", "refs/pull/7/head", "HEAD"], check=True)
+        want = subprocess.run(
+            ["git", "-C", str(local_github), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        dest = tmp_path / "dest"
+        sandbox.clone_repo("org/repo", "refs/pull/7/head", str(dest))
+        assert sandbox.head_sha(str(dest)) == want
 
     def test_terminal_prompts_stay_disabled(self, local_github, tmp_path, monkeypatch):
         """A credential prompt would hang the worker forever instead of failing."""
@@ -398,6 +605,95 @@ class TestRunTask:
     """Each stage's failure must be captured, never raised — callers need to see
     exactly which part of the credential path worked."""
 
+    @pytest.fixture(autouse=True)
+    def no_real_git(self, monkeypatch):
+        """clone_repo is faked in these tests, so there is no checkout to read a sha from."""
+        monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
+
+    def test_a_base_puts_the_diff_in_the_prompt(self, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: ["README.md"])
+        monkeypatch.setattr(sandbox, "diff_against", lambda repo, dest, base: (["a.py"], 1, "+x = 1", True))
+        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: prompts.append(prompt) or "ok")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "base": "a" * 40})
+        assert result["changed_files"] == ["a.py"]
+        assert result["changed_files_total"] == 1
+        assert result["diff_truncated"] is True
+        assert result["head_sha"] == "f" * 40
+        for expected in ("+x = 1", "TRUNCATED", "a.py"):
+            assert expected in prompts[0]
+
+    def test_a_diff_that_cannot_be_computed_stops_the_task(self, monkeypatch):
+        def boom(repo, dest, base):
+            raise subprocess.CalledProcessError(128, "git fetch", stderr="not our ref")
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "diff_against", boom)
+        monkeypatch.setattr(
+            sandbox, "invoke_bedrock", lambda *a: pytest.fail("a review without the diff is not a review")
+        )
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "base": "a" * 40})
+        assert "not our ref" in result["errors"]["diff"]
+
+    def test_the_whole_result_fits_the_log_transport(self, monkeypatch):
+        """The dispatcher reads at most 1 MiB of the pod log; a longer result is lost.
+        Both name lists are populated, and a huge git error rides along."""
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: ["t" * 250 + str(i) for i in range(3400)])
+        names = ["é" * 200 + str(i) for i in range(5000)]
+        monkeypatch.setattr(sandbox, "diff_against", lambda repo, dest, base: (names, 5000, "", True))
+        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "ok")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "base": "a" * 40})
+        result["errors"]["x"] = sandbox._error_text(subprocess.CalledProcessError(1, "git", stderr="e" * 10**6))
+        assert len(json.dumps(result)) < 1024 * 1024, "the result must fit what the dispatcher reads"
+        assert result["top_level_total"] == 3400
+        assert 0 < len(result["changed_files"]) < 5000
+        assert result["changed_files_total"] == 5000
+
+    def test_the_top_level_listing_is_bounded_in_the_prompt(self):
+        prompt = sandbox.build_prompt("org/repo", "main", "t", 1, ["t" * 250 + str(i) for i in range(3400)])
+        assert len(prompt.encode()) < 64 * 1024
+        assert "of 3400" in prompt
+
+    def test_the_changed_file_list_is_bounded_in_the_prompt(self, monkeypatch):
+        """By bytes, not count: 500 long paths would otherwise fill the context window."""
+        files = ["d/" * 1900 + str(i) for i in range(500)]
+        change = {"base": "b", "files": files, "patch": "", "truncated": False}
+        prompt = sandbox.build_prompt("org/repo", "main", "t", 1, [], change)
+        assert len(prompt.encode()) < 64 * 1024
+        assert "more" in prompt
+
+    def test_a_bytes_stderr_is_decoded_so_the_result_serializes(self, monkeypatch):
+        def boom(repo, dest, base):
+            raise subprocess.CalledProcessError(128, "git diff", stderr=b"fatal: bad revision")
+
+        monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
+        monkeypatch.setattr(sandbox, "diff_against", boom)
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "base": "a" * 40})
+        assert json.loads(json.dumps(result))["errors"]["diff"] == "fatal: bad revision"
+
+    def test_a_pull_request_and_a_base_diff_the_pull_request_head(self, monkeypatch):
+        """`pr` picks the head, `base` the other end of the diff: a PR review in one call."""
+        seen = {}
+
+        def fake_clone(repo, ref, dest):
+            seen["ref"] = ref
+            return 1
+
+        def fake_diff(repo, dest, base):
+            seen["base"] = base
+            return ["a.py"], 1, "+x", False
+
+        monkeypatch.setattr(sandbox, "clone_repo", fake_clone)
+        monkeypatch.setattr(sandbox, "diff_against", fake_diff)
+        monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: [])
+        monkeypatch.setattr(sandbox, "invoke_bedrock", lambda model, prompt: "ok")
+        result = sandbox.run_task({"repo": "org/repo", "model": "m", "pr": 7, "base": "a" * 40})
+        assert seen == {"ref": "refs/pull/7/head", "base": "a" * 40}
+        assert result["pr"] == 7
+        assert result["changed_files"] == ["a.py"]
+
     def test_clone_failure_stops_before_bedrock(self, monkeypatch):
         def boom(*a, **kw):
             raise subprocess.CalledProcessError(128, "git", stderr="could not read Username")
@@ -520,6 +816,11 @@ class TestRunTask:
 
 class TestPullRequestCheckout:
     """`{"pr": N}` is a selector that resolves to a ref — no separate code path."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_git(self, monkeypatch):
+        """clone_repo is faked in these tests, so there is no checkout to read a sha from."""
+        monkeypatch.setattr(sandbox, "head_sha", lambda dest: "f" * 40)
 
     def _ref_used(self, monkeypatch, spec):
         seen = {}
