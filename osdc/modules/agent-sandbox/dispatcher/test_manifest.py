@@ -61,6 +61,12 @@ def test_model_is_optional_and_empty_means_the_default():
     assert manifest.parse(mutated("model", {"id": ""}), "example").model == ""
 
 
+def test_runner_environments_default_to_self_hosted():
+    assert manifest.parse(GOOD, "example").runner_environments == {"self-hosted"}
+    m = manifest.parse(mutated("clients.runner_environments", ["self-hosted", "github-hosted"]), "example")
+    assert m.runner_environments == {"self-hosted", "github-hosted"}
+
+
 def test_workflows_are_parsed_when_present():
     m = manifest.parse(mutated("clients.workflows", [".github/workflows/review.yml"]), "example")
     assert m.workflows == {".github/workflows/review.yml"}
@@ -91,6 +97,9 @@ def test_workflows_are_parsed_when_present():
         ("clients.triggers", ["push", "push"], "duplicate trigger"),
         ("clients.triggers", [1], "non-string trigger"),
         ("clients.workflows", ["review.yml"], "workflow outside .github/workflows"),
+        ("clients.runner_environments", [], "no runner environments"),
+        ("clients.runner_environments", ["laptop"], "unknown runner environment"),
+        ("clients.runner_environments", "self-hosted", "runner environments not a list"),
         ("model", {"id": 5}, "non-string model"),
         ("model", {}, "model without id"),
         ("sandbox", DELETE, "missing sandbox"),
