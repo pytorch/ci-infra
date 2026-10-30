@@ -14,6 +14,6 @@ variable "state_bucket" {
 }
 
 variable "cluster_id" {
-  description = "Cluster identifier in clusters.yaml (e.g. meta-staging-aws-uw1)"
+  description = "Cluster identifier in clusters.yaml (e.g. meta-staging-aws-ue1)"
   type        = string
 }

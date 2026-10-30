@@ -1,18 +1,17 @@
 name: "~ OSDC: Slow tests (reusable)"
 
-# NOTE: AWS region is hardcoded to us-west-1 in all jobs below, matching
-# _osdc-deploy.yml. This reusable is currently called only for the
-# meta-staging-aws-uw1 cluster (which lives in us-west-1). Re-using it for a
-# cluster in a different region requires either parameterizing the
-# region from `just region "${{ inputs.cluster }}"` or adding an
-# aws_region input. Do not call this reusable for non-us-west-1
+# NOTE: AWS region is hardcoded to us-east-1 in all jobs below. This reusable
+# is currently called only for the meta-staging-aws-ue1 cluster (which lives
+# in us-east-1). Re-using it for a cluster in a different region requires
+# either parameterizing the region from `just region "${{ inputs.cluster }}"`
+# or adding an aws_region input. Do not call this reusable for non-us-east-1
 # clusters without first making that change.
 
 on:
   workflow_call:
     inputs:
       cluster:
-        description: "Cluster id from clusters.yaml (e.g. meta-staging-aws-uw1, meta-prod-aws-ue2)"
+        description: "Cluster id from clusters.yaml (e.g. meta-staging-aws-ue1, meta-prod-aws-ue2)"
         required: true
         type: string
       environment:
@@ -54,7 +53,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
+          aws-region: us-east-1
           role-duration-seconds: 7200
 
       - name: Run load tests
@@ -92,7 +91,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
+          aws-region: us-east-1
           role-duration-seconds: 7200
 
       - name: Run compactor e2e tests
@@ -128,7 +127,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
+          aws-region: us-east-1
           role-duration-seconds: 7200
 
       - name: Run janitor e2e tests

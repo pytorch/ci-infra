@@ -3,7 +3,7 @@
 
 Runs a full integration test against an OSDC cluster by:
 1. Cleaning up stale PRs on pytorch/pytorch-canary
-2. Optionally clearing staging pools (meta-staging-aws-uw1 only)
+2. Optionally clearing staging pools (meta-staging-aws-ue1 only)
 3. Opening a PR with test workflows that exercise every cluster capability
 4. Optionally running smoke tests and node-compactor tests in parallel
 5. Collecting workflow results and reporting
@@ -158,7 +158,7 @@ def has_module(cfg: dict, module_name: str) -> bool:
 
 def is_prod_cluster(cluster_id: str) -> bool:
     """True for prod clusters, keyed off the env segment of the
-    `<org>-<env>-<cloud>-<region>` id (meta-prod-aws-uw1, lf-prod-aws-ue1)."""
+    `<org>-<env>-<cloud>-<region>` id (meta-prod-aws-ue2, lf-prod-aws-ue1)."""
     parts = cluster_id.split("-")
     return len(parts) >= 2 and parts[1] == "prod"
 

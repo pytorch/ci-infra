@@ -56,14 +56,14 @@ The single source of truth for what gets deployed where:
 
 ```yaml
 clusters:
-  meta-staging-aws-uw1:
-    region: us-west-1
-    cluster_name: meta-staging-aws-uw1
-    state_bucket: ciforge-tfstate-meta-staging-aws-uw1
+  meta-staging-aws-ue1:
+    region: us-east-1
+    cluster_name: meta-staging-aws-ue1
+    state_bucket: ciforge-tfstate-meta-staging-aws-ue1
     base:
-      vpc_cidr: "10.0.0.0/16"
+      vpc_cidr: "10.20.0.0/16"
       single_nat_gateway: true
-      base_node_count: 2
+      base_node_count: 3
     modules:
       - karpenter
       - arc

@@ -167,7 +167,7 @@ nodepool:
   topology_manager_policy: single-numa-node   # default best-effort
   topology_manager_scope: pod                 # default container
   baremetal: true                             # uses NODEPOOLS_BAREMETAL_CONSOLIDATE_AFTER (1h)
-  exclude_regions: [us-west-1]
+  exclude_regions: [eu-west-1]                # optional; no current def sets it
   capacity_type: on-demand                    # or "reserved" for Capacity Blocks
   capacity_reservation_ids: [cr-xxxx]         # only with capacity_type: reserved
   user_data_script: scripts/h100-node-setup.sh # optional shell MIME part
@@ -180,7 +180,6 @@ fleet:
   name: g5
   arch: amd64
   gpu: true
-  exclude_regions: [us-west-1]
   instances:
     - type: g5.48xlarge
       weight: 100              # Karpenter prefers higher weights
@@ -224,10 +223,10 @@ Use `node_fleet` when a runner needs its own dedicated fleet name distinct from 
 Validation: `max_runners` must be a positive int OR a dict containing a `default` key with positive-int values per cluster id (`generate_runners.py:resolve_max_runners`); `max_burst_capacity` must be non-negative; `max_burst_capacity < proactive_capacity` (or `< hud_failure_base_capacity`) is an error, not a warning, and aborts the generate step. `node_fleet`, if present, must be a non-empty string with no leading/trailing whitespace.
 
 **Cluster-wide overrides** (`generate_runners.py`):
-- `proactive_capacity_max: <int>` at the cluster level clamps every def's `proactive_capacity` down to that value. Currently only the two staging clusters (`meta-staging-aws-uw1`, `meta-staging-aws-ue1`) set it (to `0`); all prod clusters dropped the override in PR #771 and rely on per-def values reduced in PR #772.
+- `proactive_capacity_max: <int>` at the cluster level clamps every def's `proactive_capacity` down to that value. Currently only the two staging clusters (`meta-staging-aws-ue1`, `meta-staging-aws-ue2`) set it (to `0`); all prod clusters dropped the override in PR #771 and rely on per-def values reduced in PR #772.
 - `pause_runners: true` at the cluster level forces `max_runners=0` and `hud_failure_base_capacity=0` on every scale set — cluster-wide drain switch.
-- Region-exclusion auto-zeroing: if a runner's `instance_type` is in the cluster's `excluded_instance_types` (derived from the backing nodepool/fleet's `exclude_regions`, e.g. `us-west-1` for A100/g5), `max_runners`, `proactive_capacity`, and `hud_failure_base_capacity` are forced to 0 so GitHub does not route jobs that would pend forever.
-- `arc-runners.runner_group: <name>` at the cluster level pins every scale set's GitHub runner group, unless the cluster's `github_config_url` is repo-scoped — repo-scoped URLs force `default` regardless. Per-cluster groups: `meta-prod-aws-ue1` -> `meta-prod-aws-ue1`, `lf-prod-aws-ue1`/`ue2` -> `lf-prod-aws-ue1`/`ue2`, staging -> `meta-staging-aws-uw1`/`ue1`. `arc-cbr-production` (us-east-2) does NOT set `runner_group` and runners land in `default`.
+- Region-exclusion auto-zeroing: if a runner's `instance_type` is in the cluster's `excluded_instance_types` (derived from the backing nodepool/fleet's `exclude_regions`; no current def sets one), `max_runners`, `proactive_capacity`, and `hud_failure_base_capacity` are forced to 0 so GitHub does not route jobs that would pend forever.
+- `arc-runners.runner_group: <name>` at the cluster level pins every scale set's GitHub runner group, unless the cluster's `github_config_url` is repo-scoped — repo-scoped URLs force `default` regardless. Per-cluster groups: `meta-prod-aws-ue1` -> `meta-prod-aws-ue1`, `lf-prod-aws-ue1`/`ue2` -> `lf-prod-aws-ue1`/`ue2`, staging -> `meta-staging-aws-ue1`/`ue1`. `arc-cbr-production` (us-east-2) does NOT set `runner_group` and runners land in `default`.
 
 ### Cache-Enforcer (DaemonSet)
 
@@ -278,7 +277,7 @@ The pairing ensures workflow pods can claim the capacity reserved by the placeho
 
 - `modules/arc/` = controller + namespaces (`arc-systems`, `arc-runners`) + runner ServiceAccount + LimitRange + hooks ConfigMap + **`runner-hooks-warmer` DaemonSet** (moved here from `arc-runners` in PR #746 — still runs in the `arc-runners` namespace but lifecycle is now owned by the `arc` module) + four-tier PriorityClass ladder + capacity-monitor RBAC. **No terraform** — pure k8s/helm. Uses fork chart `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`, version pinned in `clusters.yaml` `arc.chart_version` (currently `0.14.1-jeanschmidt.20`). Controller and runner chart versions MUST match (minor mismatch deletes ARS). The cluster-wide containerd registry mirror lives at `base/kubernetes/registry-mirror-config.yaml` — NOT inside the arc module.
 - `modules/arc-runners/` = runner scale sets (the actual runners). Separate deploy cycle. Reads `arc-runners.{github_config_url,github_secret_name,runner_name_prefix,runner_group}` from `clusters.yaml`.
-- `modules/keda/` = KEDA operator chart (`kedacore/keda`, version pinned via `keda.chart_version`, currently `2.16.1`). Required for BuildKit autoscaling. Deployed on every cluster that enables `buildkit.autoscaling.enabled: true` — currently `meta-staging-aws-uw1`, `meta-staging-aws-ue1`, `arc-cbr-production`, `lf-prod-aws-ue1`, `lf-prod-aws-ue2` (added in PR #775). Does not directly affect runners/nodepools, but the KEDA ScaledObjects in `modules/buildkit/generated/autoscaling.yaml` require this module to be deployed first.
+- `modules/keda/` = KEDA operator chart (`kedacore/keda`, version pinned via `keda.chart_version`, currently `2.16.1`). Required for BuildKit autoscaling. Deployed on every cluster that enables `buildkit.autoscaling.enabled: true` — currently `meta-staging-aws-ue1`, `meta-staging-aws-ue1`, `arc-cbr-production`, `lf-prod-aws-ue1`, `lf-prod-aws-ue2` (added in PR #775). Does not directly affect runners/nodepools, but the KEDA ScaledObjects in `modules/buildkit/generated/autoscaling.yaml` require this module to be deployed first.
 
 ## GPU Nodepools
 
@@ -286,9 +285,9 @@ Three NVIDIA GPU node families are supported, each with a unified single-fleet r
 
 | GPU | Instance | Module | Capacity model | Notes |
 |-----|----------|--------|----------------|-------|
-| **A10G** | g5.* (multi-instance fleet: 48xl/12xl/24xl/8xl/16xl, weight-ordered) | `nodepools` | on-demand spot/OD | excludes us-west-1 |
+| **A10G** | g5.* (multi-instance fleet: 48xl/12xl/24xl/8xl/16xl, weight-ordered) | `nodepools` | on-demand spot/OD | |
 | **L4** / T4 / older | g6, g4dn fleets | `nodepools` | on-demand | shared `nodepools` defs |
-| **A100 40GB SXM4** | p4d.24xlarge | `nodepools` (`p4d.yaml` `fleet:` + companion `p4d-large.yaml`) | **on-demand** (no Capacity Block) | excludes us-west-1; packed runners `l-x86iavx512-{11-125-a100, 22-250-a100-2, 44-500-a100-4}` on the `p4d` fleet (single-numa-node), `l-bx86iavx512-88-1000-a100-8` pinned via `node_fleet: p4d-large` (best-effort) |
+| **A100 40GB SXM4** | p4d.24xlarge | `nodepools` (`p4d.yaml` `fleet:` + companion `p4d-large.yaml`) | **on-demand** (no Capacity Block) | packed runners `l-x86iavx512-{11-125-a100, 22-250-a100-2, 44-500-a100-4}` on the `p4d` fleet (single-numa-node), `l-bx86iavx512-88-1000-a100-8` pinned via `node_fleet: p4d-large` (best-effort) |
 | **H100 80GB SXM5** | p5.48xlarge | **`nodepools-h100`** (`p5.yaml` + `p5-large.yaml`) + **`arc-runners-h100`** | **AWS Capacity Blocks** (`reserved`; reservation IDs are per-cluster under `clusters.<id>.nodepools-h100.capacity_reservation_ids` — currently only `meta-prod-aws-ue2`: `cr-0c3f05dffb85ed832` + `cr-074232b88fcfc092d` for 32 H100s total) | All H100 defs use the per-cluster max_runners dict form. Default values (sized for one 8-GPU node): 1-GPU=8, 2-GPU=4, 4-GPU=2, 8-GPU=1. `meta-prod-aws-ue2` overrides: 1-GPU=32, 2-GPU=16, 4-GPU=8, 8-GPU=4 (sized for the 4 reserved nodes). 8-GPU def pins `node_fleet: p5-large`. Packed `p5.yaml` uses `user_data_script: scripts/h100-node-setup.sh` |
 | **B200** | p6-b200.48xlarge | **`nodepools-b200`** (`p6.yaml` + `p6-b200-large.yaml`) + **`arc-runners-b200`** | **AWS Capacity Blocks** (`reserved`, single ID `cr-0b15c0b3163f09d26` in us-east-2) | All B200 defs use plain-int max_runners (no per-cluster dict): 1-GPU=8, 2-GPU=4, 4-GPU=2, 8-GPU=1. 8-GPU def pins `node_fleet: p6-b200-large`. Packed `p6.yaml` uses `user_data_script: scripts/b200-node-setup.sh` |
 

@@ -235,21 +235,19 @@ CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.
 
 ## Load Testing the Capacity Monitor
 
-To verify the capacity monitor and HUD integration on meta-staging-aws-uw1:
+To verify the capacity monitor and HUD integration on meta-staging-aws-ue1:
 
 ```bash
-just load-test meta-staging-aws-uw1 --label l-x86iamx-8-16:400
+just load-test meta-staging-aws-ue1 --label l-x86iamx-8-16:400
 ```
-
-**Why `--label l-x86iamx-8-16:400`**: meta-staging-aws-uw1 runs in us-west-1 where `c7a` instances are not available. The default distribution assigns most jobs to `l-x86iavx512-8-16` (node-fleet `c7a`), which will never schedule. `l-x86iamx-8-16` uses node-fleet `c7i`, which is available in us-west-1.
 
 To exercise multiple runner types in parallel (e.g., CPU + GPU), repeat `--label`:
 
 ```bash
-just load-test meta-staging-aws-uw1 --label l-x86iamx-8-16:400 --label l-x86iavx512-29-115-t4:200
+just load-test meta-staging-aws-ue1 --label l-x86iamx-8-16:400 --label l-x86iavx512-29-115-t4:200
 ```
 
-**GPU labels in us-west-1**: g5 (A10G) and g6 (L4) fleets have `exclude_regions: [us-west-1]`. Only g4dn (T4) is available — pick from `l-x86iavx512-29-115-t4` (1×T4), `l-x86iavx512-45-172-t4-4` (4×T4), or `l-bx86iavx512-94-344-t4-8` (8×T4, bare-metal). Scale sets for excluded instance types still deploy but render with `maxRunners: 0`, so picking one of them in `--label` is a no-op.
+If a fleet sets `exclude_regions` for the cluster's region, its scale sets still deploy but render with `maxRunners: 0`, so picking one of them in `--label` is a no-op.
 
 `--label` and `--jobs` are mutually exclusive. Without `--label`, `--jobs N` distributes proportionally across all available runner types.
 

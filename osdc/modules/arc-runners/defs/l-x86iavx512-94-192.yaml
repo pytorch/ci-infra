@@ -1,6 +1,5 @@
 # ARC runner definition: l-x86iavx512-94-192
 # Instance type: c7a.48xlarge (pool: x86-cpu)
-# NOTE: c7a.48xlarge is NOT available in us-west-1 (meta-staging-aws-uw1). Will not schedule there.
 # Memory is trimmed below the name's 192 GiB so that two runners fit in the node's 345 GiB allocatable.
 runner:
   name: l-x86iavx512-94-192

@@ -28,7 +28,7 @@ from load_test_run import (
 
 class TestBranchName:
     def test_basic(self):
-        assert branch_name("meta-staging-aws-uw1") == "osdc-load-test-meta-staging-aws-uw1"
+        assert branch_name("meta-staging-aws-ue1") == "osdc-load-test-meta-staging-aws-ue1"
 
     def test_production(self):
         assert branch_name("arc-prod") == "osdc-load-test-arc-prod"
