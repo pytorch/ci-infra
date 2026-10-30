@@ -118,6 +118,8 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
   until the zone hit Route53's 10k record-set quota → new reservations got no FQDN → CLI fell
   back to the SG-blocked NodePort (ssh timeout). Fixed: delete looks up the existing records.
   Lambda fix needs `tofu apply` (prod).
+- One-off cleanup of the leaked records: `terraform-gpu-devservers/scripts/cleanup_leaked_dns.py`
+  (dry run by default, `--apply` to delete). Ran on prod 2026-10-30: 9999 → 33 record sets.
 
 ## Fast-repro redesign — by-SHA artifact cache + on-demand build (2026-06-01)
 
