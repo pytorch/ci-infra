@@ -59,7 +59,7 @@ PR #189219, which also removed the `arc` experiment and the old `use-arc` output
 
 | Prefix in `runs-on` | Style | Infrastructure | Operator / funding | Defined / managed in |
 |---|---|---|---|---|
-| `mt-` | dash | **OSDC — ARC on EKS** | Meta | osdc `clusters.yaml` `meta-prod-aws-uw1/ue1/ue2`; defs `modules/arc-runners*/defs/`. Determinator **default** (`META_LABEL_PREFIX`); also the error fallback. |
+| `mt-` | dash | **OSDC — ARC on EKS** | Meta | osdc `clusters.yaml` `meta-prod-aws-ue1/ue2/uw2`; defs `modules/arc-runners*/defs/`. Determinator **default** (`META_LABEL_PREFIX`); also the error fallback. |
 | `c-mt-` | dash | OSDC — ARC on EKS | Meta (staging/canary) | osdc `meta-staging-aws-*`; `META_CANARY_LABEL_PREFIX`, emitted only on the `pytorch/pytorch-canary` repo. |
 | `lf-` | dash | **OSDC — ARC on EKS** | Linux Foundation | osdc `clusters.yaml` `lf-prod-aws-ue1/ue2`; `LF_LABEL_PREFIX`, emitted when the `lf` experiment is on. Same `github.com/pytorch` org — distinguished only by the scale-set-name prefix. |
 | `amd-do-` | dash | Partner ROCm (AMD dedicated) | AMD | separate `amd-do-label-type` output; identity-mapped in `arc.yaml`. |

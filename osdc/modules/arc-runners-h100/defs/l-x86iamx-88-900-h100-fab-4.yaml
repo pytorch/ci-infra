@@ -11,5 +11,4 @@ runner:
   # Fixed-capacity cap: (reserved 8-GPU nodes in the cluster × 8) / 4 GPUs per runner.
   max_runners:
     default: 2
-    meta-prod-aws-uw1: 12
     meta-prod-aws-ue2: 8

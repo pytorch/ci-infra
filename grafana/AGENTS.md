@@ -34,7 +34,6 @@ mise run push --folder "..."
   | `runner_group_name` | `${cluster}` value |
   |---|---|
   | `meta-prod-aws-ue2` | `meta-prod-aws-ue2` |
-  | `meta-prod-aws-uw1` | `meta-prod-aws-uw1` |
   | `meta-prod-aws-ue1` | `meta-prod-aws-ue1` |
   | `meta-prod-aws-uw2` | `meta-prod-aws-uw2` |
   | `lf-prod-aws-ue1` | `lf-prod-aws-ue1` |
