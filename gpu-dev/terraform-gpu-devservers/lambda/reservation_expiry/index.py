@@ -1703,7 +1703,7 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
             if domain_name and node_ip and node_port:
                 logger.info(f"Cleaning up DNS record for domain: {domain_name}")
 
-                # Delete DNS A record
+                # Delete DNS records (CNAME + _port TXT)
                 dns_success = delete_dns_record(domain_name, node_ip, node_port)
                 if dns_success:
                     logger.info(f"Successfully deleted DNS record for {domain_name}")
