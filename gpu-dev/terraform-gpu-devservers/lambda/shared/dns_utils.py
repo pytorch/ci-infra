@@ -304,14 +304,25 @@ def create_dns_record(subdomain: str, target_ip: str, target_port: int) -> bool:
         return False
 
 
+def _find_record_sets(name: str) -> list:
+    """Return every record set in the zone whose name is exactly `name` (any type)."""
+    want = name.rstrip('.').lower() + '.'
+    response = route53_client.list_resource_record_sets(
+        HostedZoneId=HOSTED_ZONE_ID, StartRecordName=want, MaxItems='10')
+    return [r for r in response.get('ResourceRecordSets', []) if r['Name'].lower() == want]
+
+
 def delete_dns_record(subdomain: str, target_ip: str, target_port: int) -> bool:
     """
-    Delete DNS A record for a reservation.
+    Delete DNS records (CNAME + _port TXT) for a reservation.
+
+    Route53 DELETE must match exactly, so delete the record sets that exist
+    instead of rebuilding them (the old code rebuilt an A record and leaked CNAMEs).
 
     Args:
         subdomain: The subdomain name (e.g., 'grumpybear')
-        target_ip: The IP address that was pointed to
-        target_port: The port number
+        target_ip: Unused (kept for backwards compatibility)
+        target_port: Unused (kept for backwards compatibility)
 
     Returns:
         bool: True if successful, False otherwise
@@ -322,34 +333,19 @@ def delete_dns_record(subdomain: str, target_ip: str, target_port: int) -> bool:
 
     try:
         fqdn = f"{subdomain}.{DOMAIN_NAME}"
-
-        # Delete A record and TXT record
-        change_batch = {
-            'Changes': [
-                {
-                    'Action': 'DELETE',
-                    'ResourceRecordSet': {
-                        'Name': fqdn,
-                        'Type': 'A',
-                        'TTL': 60,
-                        'ResourceRecords': [{'Value': target_ip}]
-                    }
-                },
-                {
-                    'Action': 'DELETE',
-                    'ResourceRecordSet': {
-                        'Name': f"_port.{fqdn}",
-                        'Type': 'TXT',
-                        'TTL': 60,
-                        'ResourceRecords': [{'Value': f'"{target_port}"'}]
-                    }
-                }
-            ]
-        }
+        changes = [
+            {'Action': 'DELETE', 'ResourceRecordSet': rrs}
+            for name in (fqdn, f"_port.{fqdn}")
+            for rrs in _find_record_sets(name)
+            if rrs['Type'] in ('A', 'CNAME', 'TXT')
+        ]
+        if not changes:
+            logger.info(f"No DNS records found for {fqdn}, nothing to delete")
+            return True
 
         response = route53_client.change_resource_record_sets(
             HostedZoneId=HOSTED_ZONE_ID,
-            ChangeBatch=change_batch
+            ChangeBatch={'Changes': changes}
         )
 
         change_id = response['ChangeInfo']['Id']

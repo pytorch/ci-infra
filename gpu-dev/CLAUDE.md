@@ -111,6 +111,15 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 
 # AGENT SECTION
 
+## DNS record leak — devservers.io zone full (2026-10-30)
+
+- Reservation FQDNs are a CNAME → jupyter ALB + a `_port.<sub>` TXT (since Oct 2025), but
+  `delete_dns_record` rebuilt an A record to delete, which never matched. Every record leaked
+  until the zone hit Route53's 10k record-set quota → new reservations got no FQDN → CLI fell
+  back to the SG-blocked NodePort (ssh timeout). Fixed: delete looks up the existing records.
+- One-off cleanup of the leaked records: `terraform-gpu-devservers/scripts/cleanup_leaked_dns.py`
+  (dry run by default, `--apply` to delete). Lambda fix needs `tofu apply` (prod).
+
 ## Fast-repro redesign — by-SHA artifact cache + on-demand build (2026-06-01)
 
 Goal: `gpu-dev repro <ref>` for any pytorch commit from the last ~72h lands a built,
