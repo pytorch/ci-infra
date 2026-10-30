@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import subprocess
 import time
@@ -729,3 +730,251 @@ class TestLoop:
         out = agent_loop.run_agent(invoke, "m", "p", repo, clock=clock)
         assert out["tool_calls"] == 1
         assert "time limit" in out["error"]
+
+
+ALLOWED = [
+    {"effect": "pr_comment", "max_bytes": 50},
+    {"effect": "check_run", "max_bytes": 100, "conclusions": ["neutral"]},
+]
+
+
+class TestProposals:
+    def test_proposing_stays_open_after_the_read_budget_runs_out(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        tools = RepoTools(repo.dest, ALLOWED)
+        propose = tool_use("propose_effect", {"effect": "pr_comment", "body": "LGTM"}, id_="p")
+        invoke = scripted(tool_use("list_dir", {}), propose, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert "error" not in out
+        assert tools.proposals == [{"effect": "pr_comment", "body": "LGTM"}]
+
+    def test_reading_again_after_the_budget_ends_the_loop_even_with_a_proposal(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        tools = RepoTools(repo.dest, ALLOWED)
+        both = {
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "p",
+                    "name": "propose_effect",
+                    "input": {"effect": "pr_comment", "body": "x"},
+                },
+                {"type": "tool_use", "id": "r", "name": "list_dir", "input": {}},
+            ],
+        }
+        out = agent_loop.run_agent(scripted(tool_use("list_dir", {}), both), "m", "p", tools)
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+        assert tools.proposals == []
+
+    def test_the_first_prompt_budget_counts_the_propose_tool(self):
+        tools = [*agent_loop.TOOLS, agent_loop.PROPOSE_EFFECT]
+        fixed = len(json.dumps({"system": agent_loop.SYSTEM, "tools": tools}).encode()) + 1024
+        whole = (agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS) * agent_loop.MIN_BYTES_PER_TOKEN
+        assert agent_loop.prompt_budget_bytes() == whole - fixed
+
+    def test_a_full_window_is_announced_before_the_last_proposal_turn(self, repo):
+        """The window filled without a read being refused, so the model was never told.
+        The note on its proposal result tells it; its next turn may still propose, and
+        only a turn after that ends the loop."""
+        tools = RepoTools(repo.dest, ALLOWED)
+        full = agent_loop.CONTEXT_WINDOW_TOKENS - agent_loop.CONTEXT_RESERVE_TOKENS - 1000
+        usage = {"input_tokens": full, "output_tokens": 0}
+        first = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "a"}, id_="p1"), usage=usage)
+        second = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "b"}, id_="p2"), usage=usage)
+        third = dict(tool_use("propose_effect", {"effect": "pr_comment", "body": "c"}, id_="p3"), usage=usage)
+        invoke = scripted(first, second, third, answer("never"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][-1]["content"]
+        assert len(invoke.seen) == 3
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+        assert [p["body"] for p in tools.proposals] == ["a", "b"]
+        assert out["tools_refused"] == "context window"
+
+    def test_the_read_that_spends_the_budget_carries_the_note(self, repo, monkeypatch):
+        """Told at that read, the model proposes everything in its next turn and answers;
+        told a turn later, it could propose in two turns while the context reserve covers
+        one."""
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
+        tools = RepoTools(repo.dest, ALLOWED)
+        both = {
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "p1",
+                    "name": "propose_effect",
+                    "input": {"effect": "pr_comment", "body": "LGTM"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "p2",
+                    "name": "propose_effect",
+                    "input": {"effect": "check_run", "body": "ok", "conclusion": "neutral"},
+                },
+            ],
+        }
+        invoke = scripted(tool_use("list_dir", {}), both, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+        assert "error" not in out
+        assert [p["effect"] for p in tools.proposals] == ["pr_comment", "check_run"]
+        assert out["tools_refused"] == "1 tool calls"
+
+    def test_proposals_split_after_the_note_end_the_run(self, repo, monkeypatch):
+        """The note says one turn; a second proposal turn is refused like a read."""
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
+        tools = RepoTools(repo.dest, ALLOWED)
+        comment = tool_use("propose_effect", {"effect": "pr_comment", "body": "LGTM"}, id_="p1")
+        check = tool_use("propose_effect", {"effect": "check_run", "body": "ok", "conclusion": "neutral"}, id_="p2")
+        out = agent_loop.run_agent(scripted(tool_use("list_dir", {}), comment, check), "m", "p", tools)
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+
+    def test_a_read_that_runs_into_the_time_reserve_carries_the_note(self, repo):
+        """Admitted just outside the reserve, a read can finish inside it: the check after
+        the turn's calls measures time again, so that read carries the note."""
+        ticks = iter([0.0, 1.0, 600 - 121.0, 600 - 119.0])
+
+        def clock():
+            return next(ticks, 600 - 118.0)
+
+        tools = RepoTools(repo.dest, ALLOWED)
+        invoke = scripted(tool_use("list_dir", {}), answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools, clock=clock, time_limit_s=600)
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+        assert out["tools_refused"] == "time"
+
+    def test_time_running_short_is_announced_on_a_proposal_only_turn(self, repo):
+        """Time counts in the turn-level check too: a model that proposes without reading
+        once time is short is told, and gets its one proposal turn."""
+        ticks = iter([0.0, 1.0, 590.0, 591.0, 592.0, 593.0])
+
+        def clock():
+            return next(ticks, 593.0)
+
+        tools = RepoTools(repo.dest, ALLOWED)
+        first = tool_use("propose_effect", {"effect": "pr_comment", "body": "a"}, id_="p1")
+        second = tool_use("propose_effect", {"effect": "check_run", "body": "b", "conclusion": "neutral"}, id_="p2")
+        invoke = scripted(first, second, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools, clock=clock, time_limit_s=600)
+        assert agent_loop.BUDGET_SPENT_NOTE in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+        assert out["tools_refused"] == "time"
+        assert [p["body"] for p in tools.proposals] == ["a", "b"]
+
+    def test_only_one_turn_of_proposals_is_accepted_after_the_budget_runs_out(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        tools = RepoTools(repo.dest, ALLOWED)
+        first = tool_use("propose_effect", {"effect": "pr_comment", "body": "a"}, id_="p1")
+        again = tool_use("propose_effect", {"effect": "pr_comment", "body": "b"}, id_="p2")
+        invoke = scripted(tool_use("list_dir", {}), first, again, answer("never"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert len(invoke.seen) == 3
+        assert out["error"] == "the model kept calling tools after its budget ran out"
+
+    def test_the_promised_proposal_turn_and_the_answer_fit_before_the_turn_limit(self, repo):
+        """A model that reads on every turn is told two turns before the end, so the
+        proposal turn it is promised and the answer after it both still happen."""
+        tools = RepoTools(repo.dest, ALLOWED)
+        reads = [tool_use("list_dir", {}, id_=f"r{i}") for i in range(agent_loop.MAX_TURNS - 2)]
+        propose = tool_use("propose_effect", {"effect": "pr_comment", "body": "LGTM"}, id_="p")
+        invoke = scripted(*reads, propose, answer("done"))
+        out = agent_loop.run_agent(invoke, "m", "p", tools)
+        assert "error" not in out
+        assert out["turns"] == agent_loop.MAX_TURNS
+        assert tools.proposals == [{"effect": "pr_comment", "body": "LGTM"}]
+        assert (
+            agent_loop.BUDGET_SPENT_NOTE
+            in invoke.seen[agent_loop.MAX_TURNS - 2]["messages"][-1]["content"][0]["content"]
+        )
+
+    def test_a_refused_read_says_one_proposal_turn_is_left(self, repo, monkeypatch):
+        """The refusal is the only thing the model sees; with effects allowed it must also
+        say proposing is open for one more turn, or a review split over two is lost."""
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 1)
+        tools = RepoTools(repo.dest, ALLOWED)
+        two = {
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": str(i), "name": "list_dir", "input": {}} for i in range(2)],
+        }
+        invoke = scripted(two, answer("done"))
+        agent_loop.run_agent(invoke, "m", "p", tools)
+        refusal = invoke.seen[1]["messages"][-1]["content"][1]["content"]
+        assert refusal.startswith("error: tool budget exhausted")
+        assert agent_loop.BUDGET_SPENT_NOTE in refusal
+
+    def test_without_effects_the_refusal_says_nothing_about_proposing(self, repo, monkeypatch):
+        monkeypatch.setattr(agent_loop, "MAX_TOOL_CALLS", 0)
+        invoke = scripted(tool_use("list_dir", {}), answer("done"))
+        agent_loop.run_agent(invoke, "m", "p", repo)
+        assert agent_loop.BUDGET_SPENT_NOTE not in invoke.seen[1]["messages"][-1]["content"][0]["content"]
+
+    def test_the_propose_tool_lists_its_limits(self, repo):
+        """In the last proposal turn a rejected call cannot be retried, so the first
+        attempt must be able to be valid: conclusions and sizes are in the schema."""
+        propose = RepoTools(repo.dest, ALLOWED).specs()[-1]
+        assert propose["input_schema"]["properties"]["conclusion"]["enum"] == ["neutral"]
+        assert "pr_comment body at most 50 bytes" in propose["description"]
+        assert "check_run body at most 100 bytes" in propose["description"]
+        assert "enum" not in agent_loop.PROPOSE_EFFECT["input_schema"]["properties"]["conclusion"], (
+            "the shared template is not edited"
+        )
+
+    def test_the_propose_tool_is_offered_only_when_effects_are_allowed(self, repo):
+        assert [t["name"] for t in repo.specs()] == ["list_dir", "read_file", "search"]
+        allowed = RepoTools(repo.dest, ALLOWED)
+        propose = allowed.specs()[-1]
+        assert propose["name"] == "propose_effect"
+        assert propose["input_schema"]["properties"]["effect"]["enum"] == ["check_run", "pr_comment"]
+        assert agent_loop.PROPOSE_EFFECT["input_schema"]["properties"]["effect"]["enum"] == [], (
+            "the template is not mutated"
+        )
+
+    def test_a_valid_proposal_is_recorded_not_performed(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        assert "proposed pr_comment" in tools.run("propose_effect", {"effect": "pr_comment", "body": "LGTM"})
+        assert tools.run(
+            "propose_effect", {"effect": "check_run", "body": "s", "conclusion": "neutral", "title": "T"}
+        ).startswith("proposed")
+        assert tools.proposals == [
+            {"effect": "pr_comment", "body": "LGTM"},
+            {"effect": "check_run", "body": "s", "title": "T", "conclusion": "neutral"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            ({"effect": "merge", "body": "x"}, "effect must be one of"),
+            ({"effect": "pr_comment", "body": ""}, "non-empty"),
+            ({"effect": "pr_comment", "body": "x" * 51}, "longer than 50"),
+            ({"effect": "check_run", "body": "s", "conclusion": "success"}, "conclusion must be"),
+        ],
+    )
+    def test_a_bad_proposal_is_an_error_the_model_can_fix(self, repo, args, message):
+        tools = RepoTools(repo.dest, ALLOWED)
+        assert message in tools.run("propose_effect", args)
+        assert tools.proposals == []
+
+    def test_a_title_screening_would_drop_is_refused_by_the_tool(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        args = {"effect": "check_run", "body": "ok", "conclusion": "neutral", "title": "t" * 201}
+        assert tools.run("propose_effect", args).startswith("error: title must be")
+        assert tools.proposals == []
+
+    def test_bot_commands_are_neutralised_before_the_size_check(self, repo):
+        """So a body the tool accepts is exactly what screening posts, with no growth."""
+        tools = RepoTools(repo.dest, ALLOWED)
+        body = "@pytorchbot merge"
+        assert not tools.run("propose_effect", {"effect": "pr_comment", "body": body}).startswith("error")
+        assert tools.proposals[0]["body"] == "`@pytorchbot` merge"
+
+    def test_proposals_are_capped(self, repo):
+        tools = RepoTools(repo.dest, ALLOWED)
+        for _ in range(agent_loop.MAX_PROPOSALS):
+            tools.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+        assert "no more effects" in tools.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+
+    def test_without_allowed_effects_the_tool_does_not_exist(self, repo):
+        assert "unknown tool" in repo.run("propose_effect", {"effect": "pr_comment", "body": "x"})
+
+    def test_malformed_allowed_effects_are_ignored(self, repo):
+        assert RepoTools(repo.dest, ["junk", {"no": "effect"}]).specs() == agent_loop.TOOLS
