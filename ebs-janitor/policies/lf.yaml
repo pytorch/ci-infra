@@ -1,0 +1,26 @@
+# Policy for the LF fleet account (391835788720): OSDC lf-* clusters and the
+# legacy EC2 runners from ali/. See ../README.md for what each setting does.
+min_age_days: 2
+grace_days: 14
+old_volume_days: 365
+snapshot_retention_days: 90
+keep_tag: ebs-janitor/keep
+
+# Instance Name is "<ali environment>-action-runner", see
+# ali/aws/391835788720/us-east-1/variables.tf.
+runner_root:
+  names:
+    - ghci-lf-action-runner
+    - ghci-lf-c-action-runner
+  ami_name_patterns:
+    - "al2023-ami-2023.*"
+    - "Windows 20?? GHA CI*"
+  ami_owners:
+    - self
+    - amazon
+
+gpu_dev:
+  enabled: false
+
+regions: []  # empty: every enabled region
+exclude_regions: []
