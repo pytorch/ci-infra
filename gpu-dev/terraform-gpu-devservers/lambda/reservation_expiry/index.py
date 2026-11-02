@@ -1923,11 +1923,15 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
         except Exception as e:
             logger.error(f"Unexpected error deleting service {service_name}: {e}")
 
-        # Delete the pod with grace period
+        # Delete the pod with grace period. A pod already terminating from an earlier
+        # run is stuck (e.g. its node is NotReady), and another graceful delete is a
+        # no-op that leaves it listed forever, so force-delete it instead.
         try:
-            logger.info(f"Attempting to delete pod {pod_name} with 30s grace period")
+            pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+            grace = 0 if pod.metadata.deletion_timestamp else 30
+            logger.info(f"Attempting to delete pod {pod_name} with {grace}s grace period")
             v1.delete_namespaced_pod(
-                name=pod_name, namespace=namespace, grace_period_seconds=30
+                name=pod_name, namespace=namespace, grace_period_seconds=grace
             )
             logger.info(f"Successfully initiated deletion of pod {pod_name}")
         except client.exceptions.ApiException as e:
