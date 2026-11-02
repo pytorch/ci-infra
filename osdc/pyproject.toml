@@ -41,6 +41,7 @@ testpaths = [
   "integration-tests/scripts/python",
   "integration-tests/load-test/scripts/python",
   "integration-tests/workload-test/scripts/python",
+  "integration-tests/drain-test/scripts/python",
   "actions/setup-pypi-cache",
 ]
 addopts = "--tb=short -q"

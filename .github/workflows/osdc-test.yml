@@ -6,16 +6,22 @@ on:
     paths:
       - "osdc/**"
       - ".github/workflows/osdc-test.yml"
-      # osdc/scripts/python/test_plan_prod_paths.py reads these.
+      # osdc/scripts/python/test_plan_prod_paths.py reads osdc-plan-prod.yml and _osdc-plan.yml.
       - ".github/workflows/osdc-plan-prod.yml"
       - ".github/workflows/_osdc-plan.yml"
+      # osdc/integration-tests/drain-test/scripts/python/test_drain_test_run.py reads _osdc-slow-tests.yml and osdc-pre-merge.yml.
+      - ".github/workflows/_osdc-slow-tests.yml"
+      - ".github/workflows/osdc-pre-merge.yml"
   pull_request:
     paths:
       - "osdc/**"
       - ".github/workflows/osdc-test.yml"
-      # osdc/scripts/python/test_plan_prod_paths.py reads these.
+      # osdc/scripts/python/test_plan_prod_paths.py reads osdc-plan-prod.yml and _osdc-plan.yml.
       - ".github/workflows/osdc-plan-prod.yml"
       - ".github/workflows/_osdc-plan.yml"
+      # osdc/integration-tests/drain-test/scripts/python/test_drain_test_run.py reads _osdc-slow-tests.yml and osdc-pre-merge.yml.
+      - ".github/workflows/_osdc-slow-tests.yml"
+      - ".github/workflows/osdc-pre-merge.yml"
 
 permissions:
   contents: read
