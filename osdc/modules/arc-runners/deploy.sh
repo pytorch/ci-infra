@@ -162,6 +162,16 @@ fi
 echo ""
 echo "ARC runners deployed."
 
+# --- Step 3b: Per-scale-set GitHub clients ---
+# Re-applied on every deploy: an EphemeralRunnerSet recreated from its
+# AutoscalingRunnerSet starts on the shared org secret again. Non-fatal: on
+# failure the affected scale sets keep working on the shared (slower) client,
+# and the cleanup steps below must still run.
+echo ""
+if ! uv run "$MODULE_DIR/scripts/python/split_scaleset_clients.py" "$OUTPUT_DIR"; then
+  echo "WARNING: per-scale-set GitHub client split incomplete; affected scale sets stay on the shared client until the next deploy."
+fi
+
 # --- Step 4: Clean up stale ARC runners ---
 echo ""
 echo "Checking for stale ARC runners (module: ${MODULE_NAME})..."
