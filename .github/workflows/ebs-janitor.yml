@@ -5,6 +5,19 @@ name: "EBS janitor"
 
 # yamllint disable-line rule:truthy
 on:
+  schedule:
+    - cron: "17 6 * * *"
+  # checkov:skip=CKV_GHA_7: inputs only pick dry run vs execute and a delete cap
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "Delete (main only); otherwise dry run"
+        type: boolean
+        default: false
+      max_deletes:
+        description: "Volume deletes per run"
+        type: number
+        default: 500
   pull_request:
     paths:
       - "ebs-janitor/**"
@@ -29,3 +42,45 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv run --no-project --with pytest==8.4.2 pytest -q
+
+  janitor:
+    if: github.event_name != 'pull_request' && (!inputs.execute || github.ref == 'refs/heads/main')
+    needs: test
+    # One janitor run at a time, never cancelled mid-way.
+    concurrency:
+      group: ebs-janitor
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Scheduled runs are dry runs (read-only plan role) until their output has been
+    # reviewed. Same environments and roles as the OSDC plan/deploy workflows.
+    environment: ${{ inputs.execute && 'osdc-production' || 'osdc-staging' }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ebs-janitor
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.12"
+      # Installed before assuming the AWS role, with every dependency pinned by hash.
+      - run: uv venv && uv pip install --python .venv/bin/python --require-hashes -r requirements.txt
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          aws-region: us-east-1
+          # The plan role allows 1 hour, the deploy role 2 (the job's timeout).
+          role-duration-seconds: ${{ inputs.execute && 7200 || 3600 }}
+          role-to-assume: >-
+            ${{ format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID,
+            inputs.execute && secrets.META_AWS_DEPLOY_ROLE || secrets.META_AWS_DEPLOY_PLAN_ROLE) }}
+      - name: Run janitor
+        env:
+          EXECUTE: ${{ inputs.execute }}
+          MAX_DELETES: ${{ inputs.max_deletes || 500 }}
+        run: |
+          args=(--max-deletes "$MAX_DELETES")
+          if [[ "$EXECUTE" == "true" ]]; then args+=(--execute); fi
+          .venv/bin/python ebs_janitor.py "${args[@]}"
