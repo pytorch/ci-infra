@@ -27,6 +27,13 @@ flags:
   updateStrategy: "immediate"
   # Watch namespaces (empty = all namespaces)
   watchNamespace: ""
+  # The chart default of 2 concurrent EphemeralRunner reconciles, each making a
+  # ~1 s GitHub call (JIT config or runner removal), caps runner pod creation at
+  # roughly 60/min per cluster, below peak demand. The manager-wide K8s client
+  # limiter (default 20 QPS / burst 30) must rise with it or it becomes the cap.
+  runnerMaxConcurrentReconciles: 10
+  k8sClientRateLimiterQPS: 100
+  k8sClientRateLimiterBurst: 200
 
 # Service account
 serviceAccount:
