@@ -1,0 +1,201 @@
+"""deploy.sh's signing-key fetch: fatal only when the cluster has no keys to fall back on.
+
+Runs the real block from deploy.sh under bash, with a fake `kubectl` on PATH.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+DEPLOY_SH = Path(__file__).resolve().parent.parent / "deploy.sh"
+
+FAKE_KUBECTL = """#!/usr/bin/env bash
+case "$1 $2" in
+  "create job") exit "${FAKE_CREATE:-0}" ;;
+  "wait --for=condition=complete") echo "$*" >> "${FAKE_WAIT_LOG:-/dev/null}"; exit "${FAKE_WAIT:-0}" ;;
+  "delete job") exit 0 ;;
+  "get configmap")
+    [[ "${FAKE_GET:-0}" == 0 ]] || exit "$FAKE_GET"
+    printf '%s' "${FAKE_KEYS:-}" ;;
+  "get deployment")
+    [[ "${FAKE_GET_DEPLOYMENT:-0}" == 0 ]] || exit "$FAKE_GET_DEPLOYMENT"
+    printf '%s' "${FAKE_REQUIRE_AUTH:-true}" ;;
+esac
+"""
+
+
+def keys(age_s: float = 3600, key_list=({"kty": "RSA", "kid": "k"},)) -> str:
+    """A refresher-shaped document. Key material is not what deploy.sh checks (see the
+    comment on JWKS_USABLE_PY), so the key here is a placeholder."""
+    return json.dumps({"fetched_at": time.time() - age_s, "jwks": {"keys": list(key_list)}})
+
+
+def _jwks_block() -> str:
+    text = DEPLOY_SH.read_text()
+    start = text.index("JWKS_USABLE_PY=")
+    end = text.index("# --- Prune objects")
+    return text[start:end]
+
+
+def run_block(tmp_path, **fake) -> subprocess.CompletedProcess:
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(FAKE_KUBECTL)
+    kubectl.chmod(0o755)
+    # The block records a fatal key problem in JWKS_FATAL; the end of deploy.sh (tested
+    # separately) turns it into the failing exit.
+    script = (
+        "set -euo pipefail\nNAMESPACE=ai-sandbox\n"
+        + _jwks_block()
+        + '[[ -z "$JWKS_FATAL" ]] || exit 1\necho REACHED_END\n'
+    )
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", **{k.upper(): v for k, v in fake.items()}}
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False)
+
+
+def test_a_successful_fetch_continues(tmp_path):
+    done = run_block(tmp_path)
+    assert done.returncode == 0
+    assert "REACHED_END" in done.stdout
+
+
+@pytest.mark.parametrize("failure", [{"fake_create": "1"}, {"fake_wait": "1"}], ids=["create", "wait"])
+def test_a_failed_fetch_with_keys_in_place_warns_and_continues(tmp_path, failure):
+    done = run_block(tmp_path, fake_keys=keys(age_s=3600), **failure)
+    assert done.returncode == 0
+    assert "Warning" in done.stdout
+    assert "stay in use for about 1380 min" in done.stdout or "stay in use for about 1379 min" in done.stdout
+    assert "REACHED_END" in done.stdout
+
+
+@pytest.mark.parametrize(
+    ("existing", "why"),
+    [
+        (keys(age_s=25 * 3600), "past the 24h limit"),
+        (keys(age_s=23.5 * 3600), "expiring within the hour"),
+        (keys(age_s=-3600), "in the future"),
+        (keys(key_list=()), "no keys"),
+        (json.dumps({"jwks": {"keys": [{"kid": "k"}]}}), "no fetched_at"),
+        (json.dumps({"fetched_at": True, "jwks": {"keys": [{"kid": "k"}]}}), "no fetched_at"),
+        ("[1]", "not a JSON object"),
+        ("{not json", "not valid JSON"),
+    ],
+    ids=["stale", "nearly-stale", "future", "empty-set", "no-timestamp", "bool-timestamp", "list", "garbage"],
+)
+def test_a_failed_fetch_with_unusable_keys_stops_the_deploy(tmp_path, existing, why):
+    done = run_block(tmp_path, fake_wait="1", fake_keys=existing)
+    assert done.returncode == 1
+    assert "cannot carry this deploy" in done.stderr
+    assert why in done.stderr
+    assert "REACHED_END" not in done.stdout
+
+
+@pytest.mark.parametrize("failure", [{"fake_create": "1"}, {"fake_wait": "1"}], ids=["create", "wait"])
+def test_a_failed_fetch_on_a_first_deploy_stops_the_deploy(tmp_path, failure):
+    done = run_block(tmp_path, **failure)
+    assert done.returncode == 1
+    assert "holds no signing keys" in done.stderr
+    assert "REACHED_END" not in done.stdout
+
+
+def test_an_unreadable_configmap_is_not_mistaken_for_either_case(tmp_path):
+    done = run_block(tmp_path, fake_wait="1", fake_get="1")
+    assert done.returncode == 1
+    assert "could not be read" in done.stderr
+
+
+def test_a_recorded_key_problem_fails_the_deploy_after_every_cluster_change():
+    """The exit comes after the prune, the IRSA revocation, the git-proxy restart and the
+    rollout checks: an earlier exit skipped the restart, and a re-run then read the new
+    config as unchanged and never restarted git-proxy."""
+    text = DEPLOY_SH.read_text()
+    exit_at = text.index('if [[ -n "$GIT_PROXY_RESTART_FAILED$JWKS_FATAL" ]]; then\n  exit 1')
+    assert text.index("# --- Prune objects") < exit_at
+    assert text.index("# --- Revoke the sandbox's own AWS identity") < exit_at
+    assert text.index("kubectl rollout restart deployment/git-proxy") < exit_at
+    assert text.rindex("kubectl rollout status") < exit_at < text.index('"[agent-sandbox] Deployed.')
+
+
+def test_the_git_proxy_restart_runs_before_anything_that_can_fail_the_deploy():
+    """A restart skipped by a later failure (the key fetch, a rollout) is never retried:
+    the re-run reads the already-applied config as unchanged. So it follows the apply."""
+    text = DEPLOY_SH.read_text()
+    restart = text.index("kubectl rollout restart deployment/git-proxy")
+    assert text.index("| kubectl_apply_if_changed -f -") < restart
+    assert restart < text.index("# --- Populate the OIDC signing keys")
+    assert restart < text.index("kubectl rollout status")
+
+
+def test_the_block_itself_never_exits(tmp_path):
+    """Cleanup below must run even when the keys are unusable."""
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(FAKE_KUBECTL)
+    kubectl.chmod(0o755)
+    script = "set -euo pipefail\nNAMESPACE=ai-sandbox\n" + _jwks_block() + 'echo "FATAL=[$JWKS_FATAL]"\n'
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_WAIT": "1"}
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0
+    assert "holds no signing keys" in done.stdout
+
+
+def test_the_wait_outlasts_the_fetch_jobs_own_deadline(tmp_path):
+    """The refresher Job may run 300 s (activeDeadlineSeconds, retries included)."""
+    log = tmp_path / "wait.log"
+    run_block(tmp_path, fake_wait_log=str(log))
+    timeout = int(log.read_text().split("--timeout=")[1].split("s")[0])
+    oidc = (DEPLOY_SH.parent / "kubernetes/base/oidc.yaml").read_text()
+    deadline = int(oidc.split("activeDeadlineSeconds:")[1].split()[0])
+    assert timeout > deadline
+
+
+def test_a_rollback_deploy_without_keys_warns_instead_of_failing(tmp_path):
+    """REQUIRE_AUTH "false" still serves tokenless callers, so no keys is not an outage."""
+    done = run_block(tmp_path, fake_wait="1", fake_keys="", fake_require_auth="false")
+    assert done.returncode == 0, done.stderr
+    assert "REACHED_END" in done.stdout
+    assert "REQUIRE_AUTH is false" in done.stdout
+    assert "refuses every" not in done.stdout, "the warning does not also say every call is refused"
+
+
+def test_an_unreadable_deployment_keeps_the_failure(tmp_path):
+    """Not knowing whether auth is off is not a reason to pass: fail closed."""
+    done = run_block(tmp_path, fake_wait="1", fake_keys="", fake_get_deployment="1", fake_require_auth="false")
+    assert done.returncode == 1
+    assert "holds no signing keys" in done.stderr
+
+
+def test_a_rollback_warning_says_when_the_key_state_is_unknown(tmp_path):
+    """An unreadable ConfigMap is not "no keys": the warning must not claim calls with a
+    token are already refused."""
+    done = run_block(tmp_path, fake_wait="1", fake_get="1", fake_require_auth="false")
+    assert done.returncode == 0, done.stderr
+    assert "could not be read" in done.stdout
+    assert "holds no signing keys" not in done.stdout
+
+
+def _restart_block() -> str:
+    text = DEPLOY_SH.read_text()
+    start = text.index('GIT_PROXY_RESTART_FAILED=""')
+    end = text.index("git-proxy config unchanged — no restart")
+    return text[start : text.index("fi\n", end) + 3]
+
+
+def test_a_failed_git_proxy_restart_is_recorded_not_fatal_on_the_spot(tmp_path):
+    """Under set -e an unguarded restart failure would skip the key fetch, the prune and
+    the IRSA revocation that follow it; it is recorded and fails the deploy at the end."""
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text('#!/usr/bin/env bash\n[[ "$1 $2" == "rollout restart" ]] && exit 1\nexit 0\n')
+    kubectl.chmod(0o755)
+    script = (
+        "set -euo pipefail\nNAMESPACE=ai-sandbox\nGIT_PROXY_CONFIG_HASH_BEFORE=old\n"
+        "git_proxy_config_hash() { echo new; }\n" + _restart_block() + 'echo "RECORDED=[$GIT_PROXY_RESTART_FAILED]"\n'
+    )
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    assert "RECORDED=[git-proxy config changed but the restart failed" in done.stdout

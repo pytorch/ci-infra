@@ -221,17 +221,45 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
     -e "s|__KUBE_DNS_IP__|${KUBE_DNS_RESOLVER}|g" \
   | kubectl_apply_if_changed -f -
 
+# Roll git-proxy ONLY when its config actually changed — and right here, before any step
+# that can fail the deploy: a restart skipped by a later failure is never retried, since
+# a re-run reads the already-applied config as unchanged. git-proxy-config is a plain
+# resource, not a configMapGenerator, so it carries no content hash and an allowlist or
+# TLS edit leaves the pod template identical — nginx renders the template once at start
+# and never re-reads it, so without a restart the ConfigMap applies cleanly, rollout
+# status returns immediately, and the running pods keep the old config.
+#
+# Conditional rather than unconditional: an unconditional restart costs ~90-120s of
+# rollout on every deploy of this module, almost always for a config nobody touched.
+# The hash is of the rendered template, so a substituted kube-dns address counts as a
+# change too.
+GIT_PROXY_RESTART_FAILED=""
+GIT_PROXY_CONFIG_HASH=$(git_proxy_config_hash || true)
+if [[ "$GIT_PROXY_CONFIG_HASH" != "${GIT_PROXY_CONFIG_HASH_BEFORE:-}" ]]; then
+  echo "[agent-sandbox] git-proxy config changed — restarting it to pick up the new template"
+  # Guarded like the key fetch: a failed restart is recorded and fails the deploy at the
+  # end, so it cannot cut short the key fetch, the prune and the IRSA revocation below.
+  if ! kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"; then
+    GIT_PROXY_RESTART_FAILED="git-proxy config changed but the restart failed, so the running pods keep the old config; run \`kubectl rollout restart deployment/git-proxy -n ${NAMESPACE}\` — a re-run of this deploy will not, because it sees the config as unchanged."
+    echo "[agent-sandbox] ERROR: ${GIT_PROXY_RESTART_FAILED} (the deploy continues its other steps, then fails)" >&2
+  fi
+else
+  echo "[agent-sandbox] git-proxy config unchanged — no restart"
+fi
+
 # --- Populate the OIDC signing keys now, not at the CronJob's next tick ---
 # The ConfigMap carries no keys until a refresh runs, so until this succeeds the
 # dispatcher refuses every authenticated request. The CronJob is every 6 hours, which is
 # the wrong amount of time to wait after a first deploy. Named per run so repeated
 # deploys do not collide.
 #
-# BOTH steps are guarded, and that is the point: under `set -euo pipefail` an unguarded
-# `kubectl create job` aborts the whole deploy, which is not what a failed key fetch
-# deserves — everything else has already applied and the CronJob retries on its own. An
-# earlier revision guarded only the wait and claimed in this comment that a failure
-# warns; it did not.
+# A failed fetch is fatal only when the ConfigMap holds no keys yet (a first deploy):
+# with REQUIRE_AUTH on, the dispatcher then answers 401 to every call until some later
+# refresh lands, up to 6 hours, and a deploy that reports success in that state is lying.
+# On a cluster that already has keys, the old set stays mounted (the dispatcher accepts it
+# for 24h from its fetch) and the CronJob retries, so a failure only warns — after checking
+# that set is one the dispatcher would still accept. Both kubectl
+# steps are guarded so that decision is made here rather than by `set -e`.
 #
 # This Job is owned by NOBODY: the CronJob's successfulJobsHistoryLimit only reaps Jobs
 # the CronJob itself created, so without the delete below every deploy would leave a Job
@@ -240,16 +268,95 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
 # history limits for the scheduled Jobs — kube-linter rejects exactly that. Deleting only
 # on SUCCESS is the better trade anyway: a Job that did not complete is the one whose logs
 # you want. Residual: a deploy interrupted between create and delete leaks one Job.
+# Prints how long an existing key set stays acceptable, or why it is not (exit 1).
+# Checks what can go wrong with a set after it was written: its age (the dispatcher
+# refuses one older than 24h or more than 300s in the future; this also wants an hour left
+# so the set outlives the rest of the deploy) and its shape. Key material
+# is not re-validated here: the refresher is the only writer (its Role can patch only this
+# ConfigMap) and it parses every set with the dispatcher's own PyJWT before writing it,
+# which a deploy host without PyJWT cannot repeat.
+JWKS_USABLE_PY='
+import json, sys, time
+MAX_AGE_S, FUTURE_SKEW_S = 24 * 3600, 300
+# The rollout waits below can take 15 min; a set that expires before this script ends
+# would make "Deployed" a lie. A healthy set, refreshed every 6h, has about 18h left.
+MIN_LEFT_S = 3600
+def bad(why):
+    print(why)
+    sys.exit(1)
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    bad("not valid JSON")
+if not isinstance(doc, dict):
+    bad("not a JSON object")
+fetched = doc.get("fetched_at")
+if isinstance(fetched, bool) or not isinstance(fetched, (int, float)):
+    bad("no fetched_at")
+jwks = doc.get("jwks")
+keys = jwks.get("keys") if isinstance(jwks, dict) else None
+if not isinstance(keys, list) or not keys:
+    bad("no keys")
+age = time.time() - fetched
+if age > MAX_AGE_S:
+    bad(f"{int(age)}s old, past the 24h limit")
+if age < -FUTURE_SKEW_S:
+    bad(f"timestamped {int(-age)}s in the future")
+if MAX_AGE_S - age < MIN_LEFT_S:
+    bad(f"{int(age)}s old, expiring within the hour")
+print(f"{int((MAX_AGE_S - age) // 60)} min")
+'
 JWKS_JOB="jwks-refresher-deploy-$(date +%s)"
 echo "[agent-sandbox] Fetching OIDC signing keys (${JWKS_JOB})..."
+jwks_failure=""
+# The Job's own limit is activeDeadlineSeconds 300 (kubernetes/base/oidc.yaml), retries
+# included, so wait past it: a shorter wait could fail a first deploy whose fetch, slowed
+# by a cold image pull, completes a minute later.
+JWKS_WAIT_S=330
+# A key problem does not stop the script where it is found: the prune and IRSA-revocation
+# steps below must still run. It is recorded here and fails the deploy at the end.
+JWKS_FATAL=""
 if kubectl create job "$JWKS_JOB" --from=cronjob/jwks-refresher -n "$NAMESPACE"; then
-  if kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout=120s; then
+  if kubectl wait --for=condition=complete "job/$JWKS_JOB" -n "$NAMESPACE" --timeout="${JWKS_WAIT_S}s"; then
     kubectl delete job "$JWKS_JOB" -n "$NAMESPACE" --ignore-not-found
   else
-    echo "[agent-sandbox] Warning: ${JWKS_JOB} did not complete in 120s — kept for inspection; check its logs before enabling REQUIRE_AUTH."
+    jwks_failure="${JWKS_JOB} did not complete in ${JWKS_WAIT_S}s (kept for inspection; check its logs)"
   fi
 else
-  echo "[agent-sandbox] Warning: could not start ${JWKS_JOB}; the CronJob will attempt another refresh within 6h."
+  jwks_failure="could not start ${JWKS_JOB}"
+fi
+if [[ -n "$jwks_failure" ]]; then
+  # A failed read is not "no keys": it fails the deploy with its own message.
+  # key_state says what is known about the keys, for the rollback warning below.
+  key_state=""
+  if ! existing_keys=$(kubectl get configmap oidc-jwks -n "$NAMESPACE" -o jsonpath='{.data.jwks\.json}'); then
+    key_state="oidc-jwks could not be read, so whether calls with a token are accepted is unknown"
+    JWKS_FATAL="${jwks_failure}, and oidc-jwks could not be read to tell whether signing keys are present."
+  elif [[ -z "$existing_keys" ]]; then
+    key_state="oidc-jwks holds no signing keys, so calls with a token get 401 until a refresh lands"
+    JWKS_FATAL="${jwks_failure}, and oidc-jwks holds no signing keys yet, so the dispatcher refuses every /run and /status call. Fix the fetch and re-run the deploy."
+  # Present is not usable: the dispatcher also refuses a malformed document, an empty key
+  # set and keys older than 24h (dispatcher/oidc.py). Same checks here, so the warning
+  # below is only printed when the old set really is still accepted.
+  elif ! keys_left=$(printf '%s' "$existing_keys" | python3 -c "$JWKS_USABLE_PY"); then
+    key_state="the signing keys in oidc-jwks will not carry this deploy (${keys_left}), so calls with a token are refused once they go stale or if they are malformed"
+    JWKS_FATAL="${jwks_failure}, and the signing keys in oidc-jwks cannot carry this deploy (${keys_left}): the dispatcher refuses every call once they are stale or if they are malformed. Fix the fetch and re-run the deploy."
+  else
+    echo "[agent-sandbox] Warning: ${jwks_failure}. The previous signing keys stay in use for about ${keys_left} more; the CronJob retries every 6h."
+  fi
+  # A rollback deploy (REQUIRE_AUTH "false") still serves callers that send no token, so
+  # missing keys refuse only the ones that do: a warning, not a failed deploy. Read from
+  # the Deployment just applied; a failed read keeps the failure.
+  if [[ -n "$JWKS_FATAL" ]]; then
+    require_auth=$(kubectl get deployment sandbox-dispatcher -n "$NAMESPACE" \
+      -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REQUIRE_AUTH")].value}') || require_auth="unknown"
+    if [[ "$require_auth" == "false" ]]; then
+      echo "[agent-sandbox] Warning: ${jwks_failure}, and ${key_state}. REQUIRE_AUTH is false, so calls without a token still work."
+      JWKS_FATAL=""
+    else
+      echo "[agent-sandbox] ERROR: ${JWKS_FATAL} (the deploy continues its cleanup steps, then fails)" >&2
+    fi
+  fi
 fi
 
 # --- Prune objects earlier designs left behind (idempotent) ---
@@ -294,33 +401,26 @@ fi
 # wait for — task pods only exist while a request is in flight.
 echo "[agent-sandbox] Waiting for rollouts..."
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
-# Roll git-proxy ONLY when its config actually changed. git-proxy-config is a plain
-# resource, not a configMapGenerator, so it carries no content hash and an allowlist or
-# TLS edit leaves the pod template identical — nginx renders the template once at start
-# and never re-reads it, so without a restart the ConfigMap applies cleanly, rollout
-# status returns immediately, and the running pods keep the old config.
-#
-# Conditional rather than unconditional: an unconditional restart costs ~90-120s of
-# rollout on every deploy of this module, almost always for a config nobody touched.
-# The hash is of the rendered template, so a substituted kube-dns address counts as a
-# change too.
-GIT_PROXY_CONFIG_HASH=$(git_proxy_config_hash || true)
-if [[ "$GIT_PROXY_CONFIG_HASH" != "${GIT_PROXY_CONFIG_HASH_BEFORE:-}" ]]; then
-  echo "[agent-sandbox] git-proxy config changed — restarting it to pick up the new template"
-  kubectl rollout restart deployment/git-proxy -n "$NAMESPACE"
-else
-  echo "[agent-sandbox] git-proxy config unchanged — no restart"
-fi
 # git-proxy too, and this is also what catches an absent git-proxy-credentials Secret:
 # the pod would otherwise sit in CreateContainerConfigError behind a green deploy, and
 # the first symptom would be a private clone failing inside a task.
 kubectl rollout status deployment/git-proxy -n "$NAMESPACE" --timeout=5m
 kubectl rollout status deployment/sandbox-dispatcher -n "$NAMESPACE" --timeout=10m
 
-echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd;"
-echo "each call runs in its own gVisor pod, up to the namespace quota:"
-echo "    curl -sf -m 900 -X POST http://sandbox-agent.ai-sandbox.svc.cluster.local:8080/run \\"
-echo "      -d '{\"ref\":\"main\",\"task\":\"...\"}'   # the repo to clone is policy, not a field"
-echo "  or, without holding the connection open:"
-echo "    curl -sf -X POST .../run -d '{\"wait\":false}'   # -> {\"task_id\": ...}"
-echo "    curl -sf .../status/<task_id>"
+# A signing-key problem recorded above fails the deploy only here, after every step that
+# changes the cluster: exiting before the git-proxy restart left a config change in this
+# deploy unapplied, and the re-run then read that config as unchanged and never restarted.
+if [[ -n "$GIT_PROXY_RESTART_FAILED" ]]; then
+  echo "[agent-sandbox] ERROR: ${GIT_PROXY_RESTART_FAILED}" >&2
+fi
+if [[ -n "$JWKS_FATAL" ]]; then
+  echo "[agent-sandbox] ERROR: ${JWKS_FATAL}" >&2
+fi
+if [[ -n "$GIT_PROXY_RESTART_FAILED$JWKS_FATAL" ]]; then
+  exit 1
+fi
+
+echo "[agent-sandbox] Deployed. The sandbox is callable from arc-runners like buildkitd,"
+echo "by a job presenting its GitHub OIDC token under a capability manifest; each call runs"
+echo "in its own gVisor pod, up to the namespace quota. See the module README (Use it) or"
+echo "the composite action in action/."
