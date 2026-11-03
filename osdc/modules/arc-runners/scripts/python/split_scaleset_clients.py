@@ -192,7 +192,7 @@ def plan_scale_set(scale_set: str, ars_by_name: dict, ers_items: list[dict]) -> 
     split = split_secret_name(org_secret, scale_set)
     current = ers["spec"]["ephemeralRunnerSpec"]["githubConfigSecret"]
     if current not in (org_secret, split):
-        return None, f"skip {scale_set}: EphemeralRunnerSet uses unexpected secret {current}", False
+        return None, f"skip {scale_set}: EphemeralRunnerSet {ers['metadata']['name']} uses an unexpected secret", False
     return (
         {
             "scale_set": scale_set,
@@ -242,7 +242,7 @@ def converge_scale_set(plan: dict, org_secrets: dict, split_secrets: dict) -> tu
     name = plan["scale_set"]
     org = org_secrets.get(plan["org_secret"])
     if org is None:
-        print(f"  ⚠ skip {name}: org secret {plan['org_secret']} unreadable")
+        print(f"  ⚠ skip {name}: org secret referenced by AutoscalingRunnerSet {name} unreadable")
         return SKIP, False
     try:
         manifest = build_split_secret(org, name)
@@ -327,13 +327,13 @@ def delete_orphans(state: dict) -> int:
         state["split_secrets"], state["ars"], referenced_secrets(state["ers"], state["runners"])
     )
     failures = 0
-    for name in orphans:
+    for index, name in enumerate(orphans, 1):
         result = kubectl("delete", "secret", name, "--ignore-not-found")
         if result.returncode != 0:
-            print(f"  ✗ orphan split secret {name}: {redact(result.stderr)}")
+            print(f"  ✗ orphan split secret {index}/{len(orphans)} (exit {result.returncode}): {redact(result.stderr)}")
             failures += 1
-        else:
-            print(f"  🗑 deleted orphan split secret {name}")
+    if orphans:
+        print(f"  🗑 deleted {len(orphans) - failures}/{len(orphans)} orphan split secret(s)")
     return failures
 
 

@@ -220,10 +220,11 @@ class TestPlanScaleSet:
         assert "live EphemeralRunnerSets" in msg
 
     def test_unexpected_secret(self):
-        plan, msg, pending = ssc.plan_scale_set("a", {"a": ars("a")}, [ers("ers-a", "a", config_ref="other")])
+        plan, msg, pending = ssc.plan_scale_set("a", {"a": ars("a")}, [ers("ers-a", "a", config_ref="unexpected-ref")])
         assert plan is None
         assert pending is False
-        assert "unexpected secret other" in msg
+        assert "EphemeralRunnerSet ers-a uses an unexpected secret" in msg
+        assert "unexpected-ref" not in msg
 
 
 class TestOrphans:
@@ -310,8 +311,11 @@ class TestConverge:
         assert recorded == []
 
     def test_unreadable_org_secret_skips(self, calls, capsys):
-        assert ssc.converge_scale_set(PLAN, {}, {}) == (ssc.SKIP, False)
-        assert "unreadable" in capsys.readouterr().out
+        plan = {**PLAN, "org_secret": "org-app-secret"}
+        assert ssc.converge_scale_set(plan, {}, {}) == (ssc.SKIP, False)
+        out = capsys.readouterr().out
+        assert "org secret referenced by AutoscalingRunnerSet a unreadable" in out
+        assert "org-app-secret" not in out
 
     def test_non_app_secret_skips(self, calls, capsys):
         recorded, _ = calls
@@ -380,13 +384,18 @@ class TestDeleteOrphans:
         recorded, _ = calls
         assert ssc.delete_orphans(ORPHAN_STATE) == 0
         assert recorded[0][0][3:] == ["delete", "secret", "org-split-gone", "--ignore-not-found"]
-        assert "deleted orphan" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "deleted 1/1 orphan split secret(s)" in out
+        assert "org-split-gone" not in out
 
     def test_delete_failure(self, calls, capsys):
         _, responses = calls
         responses[("delete",)] = done(1, stderr="Forbidden")
         assert ssc.delete_orphans(ORPHAN_STATE) == 1
-        assert "orphan split secret org-split-gone" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "orphan split secret 1/1 (exit 1): Forbidden" in out
+        assert "deleted 0/1 orphan split secret(s)" in out
+        assert "org-split-gone" not in out
 
 
 class TestMain:
