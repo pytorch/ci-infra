@@ -346,6 +346,8 @@ just heal-arc <cluster>
 
 **Listener/ERS cascade:** `AutoscalingListener` and `EphemeralRunnerSet` are a coupled pair — any time an ERS is deleted (whether for `ers_drift` or as part of the `ers_cascade_from_ars` queue), the parent ARS's listener is ALSO queued for deletion so the controller can recreate them together with consistent name references. Listeners are deleted first (faster than ERS deletes, and avoids the existing listener pod crashlooping while the new ERS is being created). Deletes are paced with a short inter-delete sleep to keep the controller's reconcile burst from exhausting AWS CNI IP allocations on the listener node.
 
+EphemeralRunnerSets recreated by `heal-arc` start on the shared org secret, so their GitHub calls queue behind the other scale sets' until the next `arc-runners*` deploy re-runs `split_scaleset_clients.py`.
+
 After recovery, `heal-arc` sleeps briefly to let the controller settle, then re-runs the drift report once. If drift_count is zero the recovery is reported complete; otherwise the remaining drift is printed and the recipe exits non-zero.
 
 The `OSDC_CONFIRM=yes|no|ask` gate applies to `heal-arc` (default `ask`). `heal-arc-check` never prompts.
