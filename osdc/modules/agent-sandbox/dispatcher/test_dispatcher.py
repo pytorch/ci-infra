@@ -24,6 +24,7 @@ from pathlib import Path
 from threading import Thread
 
 import authorize
+import effects
 import http_api
 import jwt
 import kube
@@ -75,6 +76,17 @@ def a_grant(task="", ref="", model="", caller="unauthenticated", pr=0):
 def checked_in_manifests(monkeypatch):
     """The dispatcher loads manifests from its mount; tests use the checked-in ones."""
     monkeypatch.setattr(http_api, "_MANIFESTS", test_authorize.MANIFESTS)
+
+
+@pytest.fixture
+def signed(tmp_path, monkeypatch):
+    """Signing keys the verifier trusts, for tests that send real tokens."""
+    keys = {test_oidc.KID: test_oidc._keypair()}
+    path = tmp_path / "jwks.json"
+    path.write_text(json.dumps(test_oidc._jwks_document(keys)))
+    monkeypatch.setattr(oidc, "JWKS_PATH", path)
+    oidc._CACHE.update(keyset=None, loaded_at=0.0, fetched_at=None)
+    return keys
 
 
 @pytest.fixture
@@ -175,6 +187,7 @@ class TestJobManifest:
         assert env["SANDBOX_REPO"] == "org/repo"
         assert env["SANDBOX_REF"] == "v1"
         assert env["SANDBOX_BASE"] == ""
+        assert env["SANDBOX_EFFECTS"] == "[]"
         assert env["SANDBOX_MODEL"] == "us.x"
         assert env["SANDBOX_TASK"] == "", "an omitted task must arrive empty so run_task applies its default"
 
@@ -247,6 +260,7 @@ class TestGitProxy:
             "SANDBOX_PR",
             "SANDBOX_BASE",
             "SANDBOX_DEADLINE",
+            "SANDBOX_EFFECTS",
         }
         # Nothing mounts a credential either — a Secret volume or envFrom would carry one
         # in without ever naming it above.
@@ -343,6 +357,15 @@ class TestRunToCompletion:
         fake_k8s["log"] = "Killed\n"
         result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "DeadlineExceeded" in result["errors"]["task"]
+
+    def test_a_failed_pod_proposes_nothing_whatever_it_printed(self, fake_k8s):
+        fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]}
+        fake_k8s["log"] = (
+            json.dumps({"head_sha": "e" * 40, "errors": {}, "effects": [{"effect": "pr_comment", "body": "x"}]}) + "\n"
+        )
+        result = tasks._run_to_completion("abc123456789", a_grant())
+        assert "effects" not in result
+        assert result["errors"]["dispatch"] == "pod failed: DeadlineExceeded"
 
     def test_failed_pod_that_did_print_a_result_keeps_it(self, fake_k8s):
         """A task whose clone failed still printed the errors object — that is the
@@ -483,6 +506,36 @@ class TestHTTPSurface:
         with pytest.raises(urllib.error.HTTPError) as exc:
             _post(f"{server}/run", body)
         assert exc.value.code == 400
+
+    def test_allowed_effects_reach_the_task_and_proposals_are_screened(self, server, fake_k8s, signed):
+        fake_k8s["log"] = (
+            json.dumps(
+                {
+                    "head_sha": "d" * 40,
+                    "report": "r",
+                    "errors": {},
+                    "effects": [{"effect": "pr_comment", "body": "hi"}, {"effect": "merge", "body": "x"}],
+                }
+            )
+            + "\n"
+        )
+        token = test_oidc.a_token(signed, **{**test_authorize.GOOD_CLAIMS, "event_name": "pull_request"})
+        req = urllib.request.Request(  # noqa: S310
+            f"{server}/run",
+            data=json.dumps({"manifest": "ciforge-pr-review", "task": "review", "ref": "d" * 40}).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        )
+        body = json.loads(_opener.open(req, timeout=30).read())
+        env = {e["name"]: e["value"] for e in fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]}
+        offered = json.loads(env["SANDBOX_EFFECTS"])
+        assert {e["effect"] for e in offered} == {"pr_comment", "check_run"}
+        # The tool is offered the room screening leaves after the provenance line, so a
+        # proposal it accepts is not dropped for size afterwards.
+        room = {e["effect"]: e["max_bytes"] for e in offered}
+        head = len(effects.attribution("d" * 40, "ciforge-pr-review").encode())
+        assert room["pr_comment"] == http_api.manifest.MAX_EFFECT_BYTES - head
+        assert [e["effect"] for e in body["effects"]] == ["pr_comment"]
+        assert "merge" in body["errors"]["effects"]
 
     def test_real_refs_are_accepted(self, server, fake_k8s):
         """The shapes callers send, including the pull request head a review needs."""
@@ -877,15 +930,6 @@ class TestAuthenticatedSurface:
     test_oidc.py proves the verifier; this proves the endpoints are wired to it — which
     is a different claim, and the one that would silently regress.
     """
-
-    @pytest.fixture
-    def signed(self, tmp_path, monkeypatch):
-        keys = {test_oidc.KID: test_oidc._keypair()}
-        path = tmp_path / "jwks.json"
-        path.write_text(json.dumps(test_oidc._jwks_document(keys)))
-        monkeypatch.setattr(oidc, "JWKS_PATH", path)
-        oidc._CACHE.update(keyset=None, loaded_at=0.0, fetched_at=None)
-        return keys
 
     def _authed_post(self, server, token, payload):
         req = urllib.request.Request(  # noqa: S310  (loopback http:// built in-test)
