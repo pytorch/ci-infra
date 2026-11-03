@@ -101,6 +101,10 @@ resource "aws_eks_cluster" "this" {
     }
   }
 
+  control_plane_scaling_config {
+    tier = var.control_plane_tier
+  }
+
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
   tags = merge(

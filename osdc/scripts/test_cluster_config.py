@@ -262,6 +262,28 @@ class TestTfvars:
         out = capsys.readouterr().out.strip()
         assert '-var="vpc_cidr=10.50.0.0/16"' in out
 
+    def test_control_plane_tier_emitted_when_set(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "base": {"control_plane_tier": "tier-xl"},
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="control_plane_tier=tier-xl"' in out
+
+    @pytest.mark.parametrize("base", [{}, {"control_plane_tier": None}, {"control_plane_tier": ""}])
+    def test_control_plane_tier_omitted_when_unset(self, capsys, base):
+        """No tier in clusters.yaml leaves the tofu default (standard) in charge."""
+        cluster_cfg = {"cluster_name": "c", "region": "r", "base": base}
+        cluster_config.tfvars("c", cluster_cfg, {})
+        assert "control_plane_tier" not in capsys.readouterr().out
+
+    def test_control_plane_tier_not_read_from_defaults(self, capsys):
+        cluster_cfg = {"cluster_name": "c", "region": "r"}
+        cluster_config.tfvars("c", cluster_cfg, {"control_plane_tier": "tier-8xl"})
+        assert "control_plane_tier" not in capsys.readouterr().out
+
 
 # ============================================================================
 # main() tests
