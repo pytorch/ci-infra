@@ -76,6 +76,7 @@ REFRESH_TAINT_KEY = "deploy.osdc.io/refresh-pending"
 REFRESH_TAINT_VALUE = "true"
 REFRESH_TAINT_EFFECT = "NoSchedule"
 RUNNER_NODE_SELECTOR = "workload-type=github-runner"
+INFLIGHT_WAIT_STEP = "Wait for drain"
 HELD_RELEASE_STEP = "Wait for controller release"
 # Drain-test probes deliberately use a small, non-GPU x86 runner so the probe
 # jobs start quickly and cheaply. The name must match an ARC runner definition
@@ -778,7 +779,7 @@ class DrainTest:
         if job.get("runner_id") and group and group != self.group:
             raise RuntimeError("In-flight probe was assigned to a different runner group")
         return bool(job.get("runner_id")) and any(
-            step["name"] == "Wait for drain" and step["status"] == "in_progress" for step in (job.get("steps") or [])
+            step["name"] == INFLIGHT_WAIT_STEP and step["status"] == "in_progress" for step in (job.get("steps") or [])
         )
 
     def drained(self, *, strict: bool = False) -> bool:
@@ -815,8 +816,8 @@ class DrainTest:
             self.api(f"pulls/{self.pr}", {"body": self.pending_held_release}, "PATCH")
             self.pending_held_release = None
 
-    def held_completed(self) -> bool:
-        """Capture each original probe's placement before allowing its pods to disappear."""
+    def advance_held_probes(self) -> bool:
+        """Verify placements, release held probes, and return whether all have succeeded."""
         # A failed PATCH may have applied remotely. Preserve placement evidence,
         # but retry the pending write even when no further probe needs release.
         self.flush_held_release()
@@ -858,10 +859,10 @@ class DrainTest:
                 if snapshot is None:
                     self.verify_refresh_taints()
                     pods_data = safe_json_loads(
-                        self.kube("get", "pods", "-n", "arc-runners", "-o", "json"), context="held_completed/pods"
+                        self.kube("get", "pods", "-n", "arc-runners", "-o", "json"), context="advance_held_probes/pods"
                     )
                     nodes_data = safe_json_loads(
-                        self.kube("get", "nodes", "-o", "json"), context="held_completed/nodes"
+                        self.kube("get", "nodes", "-o", "json"), context="advance_held_probes/nodes"
                     )
                     if not isinstance(pods_data, dict) or not isinstance(nodes_data, dict):
                         log.warning("Skipping placement verification: failed to scrape cluster state")
@@ -1132,7 +1133,9 @@ class DrainTest:
         self.observe_held()
         self.taint_runner_nodes()
         self.resume()
-        self.wait_with_wakeup("held jobs succeed after undrain", "held", self.held_completed, self.args.finish_timeout)
+        self.wait_with_wakeup(
+            "held jobs succeed after undrain", "held", self.advance_held_probes, self.args.finish_timeout
+        )
         self.verify_refresh_taints()
 
     def stop_drain(self) -> None:
@@ -1168,13 +1171,9 @@ class DrainTest:
         # Deferring recovery is a contract between the test step and the
         # workflow's restore-only step: decide here, keep _cleanup() linear.
         skip_recovery = self.defer_recovery and (self.draining or self.skip_canary_cleanup)
-        skip_canary_cleanup = self.defer_recovery and self.skip_canary_cleanup
         try:
             with self.deadline_scope(self.cleanup_deadline):
-                return self._cleanup(
-                    skip_recovery=skip_recovery,
-                    skip_canary_cleanup=skip_canary_cleanup,
-                )
+                return self._cleanup(skip_recovery=skip_recovery)
         except TimeoutError:
             log.exception("Cleanup deadline exceeded")
             if self.draining and not self.resume_limits_restored:
@@ -1243,7 +1242,7 @@ class DrainTest:
             return False
         return True
 
-    def _cleanup(self, *, skip_recovery: bool, skip_canary_cleanup: bool) -> bool:
+    def _cleanup(self, *, skip_recovery: bool) -> bool:
         ok = True
 
         if not self._stop_owned_writers():
@@ -1263,7 +1262,7 @@ class DrainTest:
                 log.error("Runner limits restored; refresh-taint verification incomplete")
             ok = False
 
-        if not skip_canary_cleanup and self.canary_cleanup_needed:
+        if self.canary_cleanup_needed:
             ok = self._cleanup_canary() and ok
 
         if ok and self.defer_recovery and self.recovery_file is not None:

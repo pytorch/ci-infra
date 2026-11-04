@@ -45,6 +45,7 @@ def test_group_pinning_and_release_gate():
         assert int(job["timeout-minutes"]) > 0
         assert "head.repo.full_name == github.repository" in job["if"]
     inflight = workflow["jobs"]["drain-inflight"]
+    assert inflight["steps"][0]["name"] == module.INFLIGHT_WAIT_STEP
     assert inflight["steps"][0]["env"]["RELEASE_MARKER"] == "OSDC_DRAIN_RELEASE_abc123"
     held = workflow["jobs"]["drain-held"]
     assert held["needs"] == "drain-inflight"

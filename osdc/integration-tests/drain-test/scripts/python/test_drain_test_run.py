@@ -153,7 +153,7 @@ def test_held_probes_are_verified_and_released_individually(placement_controller
     jobs[1:] = [gated_job(number, status="queued") for number in (2, 3)]
     for number in (1, 2, 3):
         jobs[number - 1] = gated_job(number)
-        assert not test.held_completed()
+        assert not test.advance_held_probes()
         assert set(test.placements) == test.released_probes == set(range(1, number + 1))
         call = test.api.call_args
         assert call.args == (
@@ -172,7 +172,7 @@ def test_held_probes_are_verified_and_released_individually(placement_controller
         jobs[number - 1]["status"] = "completed"
         pods[:] = [pod for pod in pods if not pod["metadata"]["name"].startswith(f"probe-{number}")]
     # Completed probes can be checked after their pods disappear.
-    assert test.held_completed()
+    assert test.advance_held_probes()
     assert test.api.call_count == 3
     assert test.has_refresh_taint(nodes[0])
 
@@ -186,7 +186,7 @@ def test_placement_failure_never_releases_probe(placement_controller, failure):
         test.refresh_nodes[nodes[1 if failure == "runner-node" else 2]["metadata"]["uid"]] = failure
         nodes[1 if failure == "runner-node" else 2]["spec"] = nodes[0]["spec"]
     with pytest.raises(RuntimeError, match=r"reused stale node|Refresh taint removed"):
-        test.held_completed()
+        test.advance_held_probes()
     test.api.assert_not_called()
 
 
@@ -207,7 +207,7 @@ def test_missing_placement_evidence_times_out_without_release(placement_controll
 
         test.kube.side_effect = kube
     with pytest.raises(TimeoutError, match="deadline exceeded"):
-        test.wait_for("placement evidence", test.held_completed, 10, poll=5)
+        test.wait_for("placement evidence", test.advance_held_probes, 10, poll=5)
     test.api.assert_not_called()
     assert not test.released_probes
     if failure == "api":
@@ -221,16 +221,16 @@ def test_held_jobs_wait_for_gate_and_can_complete_with_empty_stale_baseline(plac
     test.refresh_nodes.clear()
     for item in jobs:
         item["steps"] = []
-    assert not test.held_completed()
+    assert not test.advance_held_probes()
     test.api.assert_not_called()
     test.kube.assert_not_called()
     for item in jobs:
         item["steps"] = [{"name": module.HELD_RELEASE_STEP, "status": "in_progress"}]
-    assert not test.held_completed()
+    assert not test.advance_held_probes()
     assert len(test.placements) == 3
     for item in jobs:
         item["status"] = "completed"
-    assert test.held_completed()
+    assert test.advance_held_probes()
 
 
 @pytest.mark.parametrize("failed_probe", [1, 3])
@@ -250,20 +250,20 @@ def test_held_release_retries_same_body_after_uncertain_write(placement_controll
 
     test.api.side_effect = release
     with pytest.raises(subprocess.SubprocessError, match="PATCH failed"):
-        test.held_completed()
+        test.advance_held_probes()
     pending = test.pending_held_release
     assert pending is not None
     assert set(test.placements) == test.released_probes == set(range(1, failed_probe + 1))
     completed_names = {item["runner_name"] for item in jobs if item["status"] == "completed"}
     pods[:] = [pod for pod in pods if pod["metadata"]["name"].removesuffix("-workflow") not in completed_names]
 
-    assert test.held_completed()
+    assert test.advance_held_probes()
     assert test.api.call_args_list[failed_probe] == test.api.call_args_list[failed_probe - 1]
     assert test.api.call_args_list[failed_probe].args == ("pulls/42", {"body": pending}, "PATCH")
     assert test.pending_held_release is None
     assert test.released_probes == {1, 2, 3}
     assert test.api.call_count == 4
-    assert test.held_completed()
+    assert test.advance_held_probes()
     assert test.api.call_count == 4  # Confirmed releases do not need another PATCH.
 
 
@@ -272,12 +272,12 @@ def test_held_release_retries_stop_at_completion_or_controller_deadline(placemen
     test, _jobs, _pods, _nodes = placement_controller
     test.api.side_effect = [{}, {}, subprocess.SubprocessError("PATCH failed")]
     with pytest.raises(subprocess.SubprocessError, match="PATCH failed"):
-        test.held_completed()
+        test.advance_held_probes()
     pending = test.pending_held_release
     test.api.reset_mock(side_effect=True)
     test.api.side_effect = subprocess.SubprocessError("PATCH unavailable")
     with pytest.raises(TimeoutError, match="held release"), test.deadline_scope(budget):
-        test.wait_for("held release", test.held_completed, 20, poll=5)
+        test.wait_for("held release", test.advance_held_probes, 20, poll=5)
     assert clock[0] == elapsed
     assert test.pending_held_release == pending
     patch = call("pulls/42", {"body": pending}, "PATCH")
@@ -285,12 +285,12 @@ def test_held_release_retries_stop_at_completion_or_controller_deadline(placemen
     assert test.api.call_count > 1
 
 
-def test_held_completed_tolerates_released_probe_job_disappearance(placement_controller):
+def test_advance_held_probes_tolerates_released_probe_job_disappearance(placement_controller):
     test, jobs, pods, _nodes = placement_controller
     # Release probe 1, then lose the PATCH response for probe 2 after the server applied it.
     test.api.side_effect = [{}, subprocess.SubprocessError("PATCH response lost"), {}, {}]
     with pytest.raises(subprocess.SubprocessError, match="response lost"):
-        test.held_completed()
+        test.advance_held_probes()
     assert set(test.placements) == {1, 2}
     assert test.released_probes == {1, 2}
     # Probe 1 completes and disappears from the GitHub jobs API.
@@ -299,9 +299,9 @@ def test_held_completed_tolerates_released_probe_job_disappearance(placement_con
     # Probe 2 was also released by the server despite the lost response.
     jobs[0]["status"] = "completed"
     pods[:] = [pod for pod in pods if not pod["metadata"]["name"].startswith("probe-1")]
-    assert not test.held_completed()  # verifies and releases probe 3, which is still running
+    assert not test.advance_held_probes()  # verifies and releases probe 3, which is still running
     jobs[1]["status"] = "completed"
-    assert test.held_completed()
+    assert test.advance_held_probes()
     assert test.released_probes == {1, 2, 3}
 
 
@@ -322,7 +322,7 @@ def test_placement_wait_allows_wakeup_and_single_slot_progress(placement_control
                     jobs[number] = gated_job(number + 1)
 
     test.api.side_effect = release
-    test.wait_with_wakeup("held placement and completion", "held", test.held_completed, 30)
+    test.wait_with_wakeup("held placement and completion", "held", test.advance_held_probes, 30)
     assert test.released_probes == {1, 2, 3}
     assert all(item["status"] == "completed" for item in jobs)
     wakeup.assert_called_once_with("held", 1, 30)
@@ -331,13 +331,13 @@ def test_placement_wait_allows_wakeup_and_single_slot_progress(placement_control
 @pytest.mark.parametrize("failure", ["job-id", "runner-id", "runner-name", "swapped-job-ids"])
 def test_original_probe_identity_cannot_change_after_verification(placement_controller, failure):
     test, jobs, _pods, _nodes = placement_controller
-    assert not test.held_completed()
+    assert not test.advance_held_probes()
     if failure == "swapped-job-ids":
         jobs[0]["id"], jobs[1]["id"] = jobs[1]["id"], jobs[0]["id"]
     else:
         jobs[0][{"job-id": "id", "runner-id": "runner_id", "runner-name": "runner_name"}[failure]] = "replacement"
     with pytest.raises(RuntimeError, match=r"job IDs|jobs changed|changed runner"):
-        test.held_completed()
+        test.advance_held_probes()
     assert test.api.call_count == 3
 
 
@@ -345,7 +345,7 @@ def test_original_probe_identity_cannot_change_after_verification(placement_cont
 def test_held_missing_runner_group_is_tolerated_while_awaiting_placement(placement_controller, group):
     test, jobs, _pods, _nodes = placement_controller
     jobs[0]["runner_group_name"] = group
-    assert not test.held_completed()
+    assert not test.advance_held_probes()
     assert 1 in test.placements
     test.api.assert_called()
 
@@ -366,7 +366,7 @@ def test_invalid_held_results_fail_before_release(placement_controller, failure)
     else:
         jobs[0]["name"] = jobs[1]["name"]
     with pytest.raises(RuntimeError):
-        test.held_completed()
+        test.advance_held_probes()
     test.api.assert_not_called()
 
 
@@ -386,7 +386,7 @@ def test_cleanup_and_recovery_preserve_all_taints_without_waiting_for_probes(
     monkeypatch.setattr(test, "recipe", recipe)
     monkeypatch.setattr(test, "prepare", Mock())
     probes = Mock(side_effect=AssertionError("Recovery must not wait for probe placement"))
-    monkeypatch.setattr(test, "held_completed", probes)
+    monkeypatch.setattr(test, "advance_held_probes", probes)
     if mode in ("failure", "ci-failure"):
         test.defer_recovery = mode == "ci-failure"
         monkeypatch.setattr(test, "run", Mock(side_effect=RuntimeError("probe verification failed")))
@@ -1548,7 +1548,7 @@ def test_wait_for_actual_inflight_step(controller, monkeypatch):
     jobs = Mock(return_value=[running])
     monkeypatch.setattr(controller, "jobs", jobs)
     assert not controller.inflight_ready()
-    running["steps"] = [{"name": "Wait for drain", "status": "in_progress"}]
+    running["steps"] = [{"name": module.INFLIGHT_WAIT_STEP, "status": "in_progress"}]
     assert not controller.inflight_ready()
     running["runner_id"] = 3
     assert controller.inflight_ready()
@@ -2224,7 +2224,7 @@ def test_controller_orders_drain_release_observe_and_resume(
     for name in ("find_run", "inflight_ready", "held_ready", "drained"):
         monkeypatch.setattr(controller, name, lambda name=name: events.append(name) or True)
     monkeypatch.setattr(controller, "completed", lambda phase, count: events.append(f"complete-{phase}") or True)
-    monkeypatch.setattr(controller, "held_completed", lambda: events.append("complete-held") or True)
+    monkeypatch.setattr(controller, "advance_held_probes", lambda: events.append("complete-held") or True)
 
     def resume():
         assert controller.draining
@@ -4285,11 +4285,11 @@ def test_initial_scale_set_read_retries_before_mutations(release_controller, mon
 @pytest.mark.parametrize("missing_group", [None, ""])
 def test_held_terminal_group_failure_escapes_retry_loop(placement_controller, clock, missing_group):
     test, jobs, _pods, _nodes = placement_controller
-    assert not test.held_completed()
+    assert not test.advance_held_probes()
     for item in jobs:
         item.update(status="completed", runner_group_name=missing_group)
     with pytest.raises(RuntimeError, match="Jobs did not succeed"):
-        test.wait_for("held completion", test.held_completed, 1800)
+        test.wait_for("held completion", test.advance_held_probes, 1800)
     assert clock[0] == 0
 
 
@@ -4302,7 +4302,7 @@ def test_held_job_ids_are_checked_before_any_placement_or_release(placement_cont
     else:
         test.probe_ids.clear()
     with pytest.raises(RuntimeError, match="Original held probe jobs changed"):
-        test.held_completed()
+        test.advance_held_probes()
     test.kube.assert_not_called()
     test.api.assert_not_called()
     assert not test.placements

@@ -40,11 +40,14 @@ just drain-test meta-staging-aws-ue1 --dry-run
 
 The controller sets `OSDC_TAINT_NODES=no` during drain so taints cannot hide the historical zero-limit capacity-monitor bug, and `OSDC_UNTAINT_NODES=no` during undrain and recovery to verify taint preservation. Recipe and manual undrain defaults are unchanged. Normal cleanup and failure/timeout/cancellation recovery leave every refresh taint in place, including test-added taints, so old nodes remain stale until naturally recycled. There is no taint-removal path or taint-ownership record. The saved recovery record identifies the cluster and drain process token only. Recovery does not wait for probe placement, job completion, or new nodes. Operational recipes and `osdc-drain.yml` / `osdc-undrain.yml` remain unchanged from main; the controller explicitly overrides their environment-variable defaults.
 
-## Live acceptance
+## Manual execution and recovery
 
-Live acceptance requires authorized staging access and the existing `CANARY_GITHUB_TOKEN` (canary contents/workflows and PR writes, Actions read/cancel):
+To run the live test, dispatch `osdc-pre-merge.yml` from the desired branch. This requires authorized staging access and the existing `CANARY_GITHUB_TOKEN` with canary contents/workflows and PR write access plus Actions read/cancel access. Coordinate with maintainers because dispatch deploys the chosen branch to shared staging, holds the staging lock for the full battery, and can replace a pending merge-queue invocation.
 
-1. Dispatch `osdc-pre-merge.yml` from the test branch; the drain/undrain slow test must pass. Record all three original held job IDs, their runner/workflow pod UIDs and node UIDs, and the stale-node baseline. At least one acceptance run must observe surviving stale nodes retaining their taints while the probes run elsewhere. An empty or fully recycled baseline is reported as missing live taint coverage, not proof of the stale-node scenario.
-2. Cancel a normal run after zero limits are observed, record the cancellation-to-recovery-start and recovery durations, then verify that all configured runner limits are restored and all refresh taints, including test-added taints, are preserved on surviving nodes. If the process/step is forcibly killed before cleanup completes, recover manually with `OSDC_UNTAINT_NODES=no just resume-runners meta-staging-aws-ue1`, and record that the cancellation acceptance remains unmet. Clearing taints is a separate, explicit operator choice.
+After cancellation or runner loss, verify live runner limits and refresh taints. If recovery is incomplete, run the following from `osdc/` with authorized staging access, then verify again.
 
-A manual dispatch deploys the chosen branch to shared staging, holds the staging lock for the full battery, and can replace a pending merge-queue invocation. Coordinate live acceptance with maintainers; offline unit tests cannot establish it.
+```bash
+OSDC_UNTAINT_NODES=no just resume-runners meta-staging-aws-ue1
+```
+
+Recovery preserves refresh taints, including those added by the test. Clearing them requires an explicit operator decision.
