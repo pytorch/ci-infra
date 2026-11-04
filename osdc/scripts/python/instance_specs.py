@@ -41,6 +41,9 @@ INSTANCE_SPECS: dict[str, dict] = {
     "c7i.24xlarge": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
     "c7i.metal-24xl": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
     "c7i.48xlarge": {"vcpu": 192, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    # Turin (c8a). memory_mi is the 0.925 estimate, same as the matching c7i size.
+    "c8a.24xlarge": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    "c8a.48xlarge": {"vcpu": 192, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
     # x86 CPU — balanced (~4 GiB/core)
     "m6i.32xlarge": {"vcpu": 128, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
     # Fleet fallback sizes
@@ -49,6 +52,11 @@ INSTANCE_SPECS: dict[str, dict] = {
     "m7i.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
     "m7i.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
     "m7i.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
+    # Turin (m8a). memory_mi is the 0.925 estimate, same as the matching m7i size.
+    "m8a.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    "m8a.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
+    "m8a.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "m8a.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
     # x86 CPU — memory-optimized (~8 GiB/core)
     # Fleet fallback sizes
     "r5.8xlarge": {"vcpu": 32, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
@@ -60,6 +68,12 @@ INSTANCE_SPECS: dict[str, dict] = {
     "r7a.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
     "r7a.24xlarge": {"vcpu": 96, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
     "r7a.48xlarge": {"vcpu": 192, "memory_gib": 1536, "memory_mi": 1454899, "gpu": 0, "arch": "amd64"},
+    # Turin (r8a). memory_mi is the 0.925 estimate, same as the matching r7a size.
+    "r8a.8xlarge": {"vcpu": 32, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
+    "r8a.12xlarge": {"vcpu": 48, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "r8a.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
+    "r8a.24xlarge": {"vcpu": 96, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
+    "r8a.48xlarge": {"vcpu": 192, "memory_gib": 1536, "memory_mi": 1454899, "gpu": 0, "arch": "amd64"},
     "r7i.8xlarge": {"vcpu": 32, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
     "r7i.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
     "r7i.24xlarge": {"vcpu": 96, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
@@ -156,6 +170,9 @@ ENI_MAX_PODS: dict[str, int] = {
     "c7i.24xlarge": 737,
     "c7i.metal-24xl": 737,
     "c7i.48xlarge": 737,
+    # Turin c8a, from amazon-vpc-cni-k8s eni-max-pods.txt
+    "c8a.24xlarge": 1010,
+    "c8a.48xlarge": 1514,
     "m6i.32xlarge": 737,
     # Fleet fallback sizes — m7i
     "m7i.8xlarge": 234,
@@ -163,6 +180,11 @@ ENI_MAX_PODS: dict[str, int] = {
     "m7i.16xlarge": 737,
     "m7i.24xlarge": 737,
     "m7i.48xlarge": 737,
+    # Turin m8a, from amazon-vpc-cni-k8s eni-max-pods.txt
+    "m8a.12xlarge": 758,
+    "m8a.16xlarge": 1010,
+    "m8a.24xlarge": 1010,
+    "m8a.48xlarge": 1514,
     # Fleet fallback sizes — r5
     "r5.8xlarge": 234,
     "r5.12xlarge": 234,
@@ -174,6 +196,12 @@ ENI_MAX_PODS: dict[str, int] = {
     "r7a.16xlarge": 737,
     "r7a.24xlarge": 737,
     "r7a.48xlarge": 737,
+    # Turin r8a, from amazon-vpc-cni-k8s eni-max-pods.txt
+    "r8a.8xlarge": 392,
+    "r8a.12xlarge": 758,
+    "r8a.16xlarge": 1010,
+    "r8a.24xlarge": 1010,
+    "r8a.48xlarge": 1514,
     # Fleet fallback sizes — r7i
     "r7i.8xlarge": 234,
     "r7i.16xlarge": 737,
