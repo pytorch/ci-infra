@@ -6,7 +6,7 @@ name: "OSDC: Deploy production"
 #
 # Default behavior (target = all): sequential rollout of all clusters.
 #   Meta: meta-prod-aws-ue2 → meta-prod-aws-ue1 → meta-prod-aws-uw2
-#   LF:   lf-prod-aws-ue1 → lf-prod-aws-ue2 (runs in parallel with Meta)
+#   LF:   lf-prod-aws-ue1 (runs in parallel with Meta)
 #
 # Use `all-meta` or `all-lf` to deploy only one account's clusters.
 #
@@ -33,7 +33,6 @@ on:
           - meta-prod-aws-ue1
           - meta-prod-aws-uw2
           - lf-prod-aws-ue1
-          - lf-prod-aws-ue2
       taint_nodes:
         description: "Taint ARC runner nodes before deploy (graceful refresh)"
         required: false
@@ -122,20 +121,3 @@ jobs:
       run_smoke: true
     secrets: inherit
 
-  deploy_lf_ue2:
-    needs: deploy_lf_ue1
-    if: |
-      !cancelled() && (
-        inputs.target == 'lf-prod-aws-ue2' ||
-        ((inputs.target == 'all' || inputs.target == 'all-lf') && needs.deploy_lf_ue1.result == 'success')
-      )
-    uses: ./.github/workflows/_osdc-deploy.yml
-    with:
-      cluster: lf-prod-aws-ue2
-      environment: osdc-production
-      use_lf_credentials: true
-      taint_nodes: ${{ inputs.taint_nodes }}
-      restart_listeners: ${{ inputs.restart_listeners }}
-      skip_lint_test: ${{ inputs.skip_lint_test }}
-      run_smoke: true
-    secrets: inherit

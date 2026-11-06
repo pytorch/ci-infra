@@ -5,7 +5,7 @@ fleet:
   name: g5
   arch: amd64
   gpu: true
-  # LF clusters (lf-prod-aws-ue1/ue2) get the same reordering g6 already has
+  # LF clusters (lf-prod-aws-ue1) get the same reordering g6 already has
   # (see #1048): a 1-GPU pod fits the 104Gi request on an 8xlarge, but the
   # Meta-authored default order ranks 12xlarge/24xlarge above it, so those
   # multi-GPU nodes were absorbing 1-GPU pods with 3 of 4 A10Gs left idle
@@ -43,41 +43,35 @@ fleet:
       weight:
         default: 75
         lf-prod-aws-ue1: 100
-        lf-prod-aws-ue2: 100
       node_disk_size: 600
       has_nvme: true
     - type: g5.48xlarge
       weight:
         default: 100
         lf-prod-aws-ue1: 0    # disabled — poor cost fit for LF's workload mix
-        lf-prod-aws-ue2: 0
       node_disk_size: 600
       has_nvme: true
     - type: g5.12xlarge
       weight:
         default: 90
         lf-prod-aws-ue1: 70   # 4-GPU cost optimum — LF's stranding case
-        lf-prod-aws-ue2: 70
       node_disk_size: 600
       has_nvme: true
     - type: g5.24xlarge
       weight:
         default: 80
         lf-prod-aws-ue1: 90   # 1-GPU fallthrough — packs 3 runners/node
-        lf-prod-aws-ue2: 90
       node_disk_size: 600
       has_nvme: true
     - type: g5.8xlarge
       weight:
         default: 70
         lf-prod-aws-ue1: 95   # 1-GPU fallthrough for pods too big for the 4xlarge
-        lf-prod-aws-ue2: 95
       node_disk_size: 600
       has_nvme: true
     - type: g5.16xlarge
       weight:
         default: 60
         lf-prod-aws-ue1: 80   # 1-GPU last resort; cannot host a 4-GPU pod
-        lf-prod-aws-ue2: 80
       node_disk_size: 600
       has_nvme: true

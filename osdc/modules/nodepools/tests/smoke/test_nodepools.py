@@ -57,7 +57,7 @@ def _load_all_defs(upstream_dir: Path, region: str | None = None, cluster: str |
 
     ``cluster`` resolves per-cluster weight maps the same way the generator
     does, so an instance weighted to 0 for this cluster (e.g. g6.48xlarge on
-    lf-prod-aws-ue1/ue2) is dropped from the expected set instead of being
+    lf-prod-aws-ue1) is dropped from the expected set instead of being
     asserted as a missing NodePool CR.
     """
     defs_dir = _get_defs_dir(upstream_dir)

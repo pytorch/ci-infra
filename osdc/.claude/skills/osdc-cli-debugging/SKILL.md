@@ -28,7 +28,7 @@ The `<cluster>` argument to every `just` recipe is the **YAML key** (e.g. `meta-
 
 ## lf-* Clusters Are NOT Accessible From This Laptop
 
-The `lf-prod-aws-ue1` / `lf-prod-aws-ue2` clusters (state buckets `lf-osdc-tfstate-prod-*`, admin role `lf_osdc_admin`) are operated by another org. **From this laptop the operator has no AWS credentials, no kubeconfig access, and no tofu state read access for them.** Any `just kubeconfig lf-prod-*`, `kubectl` against an `lf-*` context, `aws eks describe-cluster --name lf-prod-*`, or `tofu init` against an `lf-osdc-*` state bucket will fail on authentication.
+The `lf-prod-aws-ue1` cluster (state bucket `lf-osdc-tfstate-prod-ue1`, admin role `lf_osdc_admin`) is operated by another org. **From this laptop the operator has no AWS credentials, no kubeconfig access, and no tofu state read access for it.** Any `just kubeconfig lf-prod-*`, `kubectl` against an `lf-*` context, `aws eks describe-cluster --name lf-prod-*`, or `tofu init` against an `lf-osdc-*` state bucket will fail on authentication.
 
 Accessible from this laptop (admin role `osdc_gha_prod` / `osdc_gha_staging`):
 - `meta-staging-aws-ue1` (us-east-1)
