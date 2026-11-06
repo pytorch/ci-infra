@@ -1,0 +1,16 @@
+# ARC runner definition: l-bx86aavx512-92-150
+# Instance type: c8a.24xlarge (pool: c8a-24xl) — 96 vCPU / 192 GiB node
+# Replaces l-bx86iamx-92-167. 167 GiB does not fit: ENI max-pods is 1010, so
+# kube-reserved memory leaves about 165 GiB allocatable. 92 vCPU / 150 GiB
+# is one dedicated pod on this node.
+runner:
+  name: l-bx86aavx512-92-150
+  instance_type: c8a.24xlarge
+  node_fleet: c8a-24xl
+  disk_size: 200
+  vcpu: 92
+  memory: 150Gi
+  gpu: 0
+  proactive_capacity: 0
+  hud_failure_base_capacity: 15
+  max_burst_capacity: 30
