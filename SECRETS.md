@@ -70,7 +70,7 @@ Related docs:
 | **Added by** | @zxiiro |
 | **Requested by** | @zxiiro |
 | **PoC** | @zxiiro, @mtarsel · Linux Foundation |
-| **Used by** | `osdc-deploy-prod.yml` via `_osdc-deploy.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu apply` / smoke / integration-test jobs for `lf-prod-aws-ue1` and `lf-prod-aws-ue2` |
+| **Used by** | `osdc-deploy-prod.yml` via `_osdc-deploy.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu apply` / smoke / integration-test jobs for `lf-prod-aws-ue1` |
 
 ### `LF_AWS_PLAN_ROLE_ARN`
 
@@ -80,7 +80,7 @@ Related docs:
 | **Added by** | @zxiiro |
 | **Requested by** | @zxiiro |
 | **PoC** | @zxiiro, @mtarsel · Linux Foundation |
-| **Used by** | `osdc-plan-prod.yml` via `_osdc-plan.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu plan` on pull requests for `lf-prod-aws-ue1` and `lf-prod-aws-ue2` |
+| **Used by** | `osdc-plan-prod.yml` via `_osdc-plan.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu plan` on pull requests for `lf-prod-aws-ue1` |
 
 ### `CRCR_GITHUB_APP_ID`
 

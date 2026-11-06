@@ -5,7 +5,7 @@ fleet:
   name: g6
   arch: amd64
   gpu: true
-  # LF clusters (lf-prod-aws-ue1/ue2) get a different weight ladder than the
+  # LF clusters (lf-prod-aws-ue1) get a different weight ladder than the
   # authored (Meta) default: g6.48xlarge never launches there (0 successes in
   # 211 CreateFleet attempts across both clusters — COPS-461), and the
   # survivors are reordered by cost per delivered runner-hour rather than
@@ -41,41 +41,35 @@ fleet:
       weight:
         default: 75
         lf-prod-aws-ue1: 100
-        lf-prod-aws-ue2: 100
       node_disk_size: 600
       has_nvme: true
     - type: g6.48xlarge
       weight:
         default: 100
         lf-prod-aws-ue1: 0    # disabled — cannot be provisioned on LF
-        lf-prod-aws-ue2: 0
       node_disk_size: 600
       has_nvme: true
     - type: g6.12xlarge
       weight:
         default: 90
         lf-prod-aws-ue1: 70   # 4-GPU cost optimum ($4.60/runner-hr) — 6% of volume
-        lf-prod-aws-ue2: 70
       node_disk_size: 600
       has_nvme: true
     - type: g6.24xlarge
       weight:
         default: 80
         lf-prod-aws-ue1: 90   # 1-GPU fallthrough — 3 runners/node, $2.23/runner-hr
-        lf-prod-aws-ue2: 90
       node_disk_size: 600
       has_nvme: true
     - type: g6.8xlarge
       weight:
         default: 70
         lf-prod-aws-ue1: 95   # 1-GPU fallthrough for pods too big for the 4xlarge ($2.01/runner-hr)
-        lf-prod-aws-ue2: 95
       node_disk_size: 600
       has_nvme: true
     - type: g6.16xlarge
       weight:
         default: 60
         lf-prod-aws-ue1: 80   # 1-GPU last resort ($3.40); cannot host a 4-GPU pod
-        lf-prod-aws-ue2: 80
       node_disk_size: 600
       has_nvme: true

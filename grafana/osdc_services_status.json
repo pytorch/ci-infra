@@ -3930,7 +3930,7 @@
             "transformations": []
           }
         },
-        "description": "hf-cache rclone mounts whose OOMKilled flag first appeared within the last hour - OOM events in the window, not mounts still carrying a stale flag. Blank where the hf-cache namespace does not exist (lf-prod-aws-ue1, lf-prod-aws-ue2), so a cluster without the module is not reported as healthy. `kube_pod_container_status_last_terminated_reason` is a sticky gauge that only ever takes the value 1, so a new OOM is observable only as a new series appearing; a pod that OOMs twice inside the hour is therefore counted once. Closing that gap needs the restart counter, which the metrics cost filter does not retain for the hf-cache namespace.",
+        "description": "hf-cache rclone mounts whose OOMKilled flag first appeared within the last hour - OOM events in the window, not mounts still carrying a stale flag. Blank where the hf-cache namespace does not exist (lf-prod-aws-ue1), so a cluster without the module is not reported as healthy. `kube_pod_container_status_last_terminated_reason` is a sticky gauge that only ever takes the value 1, so a new OOM is observable only as a new series appearing; a pod that OOMs twice inside the hour is therefore counted once. Closing that gap needs the restart counter, which the metrics cost filter does not retain for the hf-cache namespace.",
         "id": 144,
         "links": [],
         "title": "hf-cache Mounts OOM-killed (1h) [cluster]",
@@ -5269,15 +5269,13 @@
             "meta-prod-aws-ue1",
             "meta-prod-aws-ue2",
             "meta-prod-aws-uw2",
-            "lf-prod-aws-ue1",
-            "lf-prod-aws-ue2"
+            "lf-prod-aws-ue1"
           ],
           "value": [
             "meta-prod-aws-ue1",
             "meta-prod-aws-ue2",
             "meta-prod-aws-uw2",
-            "lf-prod-aws-ue1",
-            "lf-prod-aws-ue2"
+            "lf-prod-aws-ue1"
           ]
         },
         "definition": "label_values(up,cluster)",

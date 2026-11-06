@@ -1006,31 +1006,31 @@ def _g6_instances() -> list[dict]:
     return [
         {
             "type": "g6.48xlarge",
-            "weight": {"default": 100, "lf-prod-aws-ue1": 0, "lf-prod-aws-ue2": 0},
+            "weight": {"default": 100, "lf-prod-aws-ue1": 0},
             "node_disk_size": 600,
             "has_nvme": True,
         },
         {
             "type": "g6.12xlarge",
-            "weight": {"default": 90, "lf-prod-aws-ue1": 70, "lf-prod-aws-ue2": 70},
+            "weight": {"default": 90, "lf-prod-aws-ue1": 70},
             "node_disk_size": 600,
             "has_nvme": True,
         },
         {
             "type": "g6.24xlarge",
-            "weight": {"default": 80, "lf-prod-aws-ue1": 90, "lf-prod-aws-ue2": 90},
+            "weight": {"default": 80, "lf-prod-aws-ue1": 90},
             "node_disk_size": 600,
             "has_nvme": True,
         },
         {
             "type": "g6.8xlarge",
-            "weight": {"default": 70, "lf-prod-aws-ue1": 100, "lf-prod-aws-ue2": 100},
+            "weight": {"default": 70, "lf-prod-aws-ue1": 100},
             "node_disk_size": 600,
             "has_nvme": True,
         },
         {
             "type": "g6.16xlarge",
-            "weight": {"default": 60, "lf-prod-aws-ue1": 80, "lf-prod-aws-ue2": 80},
+            "weight": {"default": 60, "lf-prod-aws-ue1": 80},
             "node_disk_size": 600,
             "has_nvme": True,
         },
@@ -1087,11 +1087,6 @@ class TestResolveInstanceWeights:
             ("g6.16xlarge", 80),
         ]
         assert "g6.48xlarge" not in {i["type"] for i in result}
-
-    def test_lf_ue2_gets_the_same_ladder_as_ue1(self):
-        ue1 = _resolve_instance_weights(self.G6_INSTANCES, "lf-prod-aws-ue1")
-        ue2 = _resolve_instance_weights(self.G6_INSTANCES, "lf-prod-aws-ue2")
-        assert [(i["type"], i["weight"]) for i in ue1] == [(i["type"], i["weight"]) for i in ue2]
 
     def test_scalar_weights_are_unaffected(self):
         """Non-GPU fleets keep plain int weights — the map is g6-specific."""

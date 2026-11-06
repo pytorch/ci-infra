@@ -23,7 +23,6 @@ on:
           - meta-prod-aws-ue1
           - meta-prod-aws-uw2
           - lf-prod-aws-ue1
-          - lf-prod-aws-ue2
       run_drain_runners:
         description: "Patch AutoscalingRunnerSets to maxRunners=0 and wait for in-flight pods to drain"
         required: false

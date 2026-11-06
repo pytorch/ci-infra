@@ -24,7 +24,6 @@ on:
           - meta-prod-aws-ue1
           - meta-prod-aws-uw2
           - lf-prod-aws-ue1
-          - lf-prod-aws-ue2
       run_untaint_nodes:
         description: "Remove deploy.osdc.io/refresh-pending:NoSchedule taint from runner nodes"
         required: false
