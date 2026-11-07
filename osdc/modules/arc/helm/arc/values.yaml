@@ -27,6 +27,15 @@ flags:
   updateStrategy: "immediate"
   # Watch namespaces (empty = all namespaces)
   watchNamespace: ""
+  # The chart default of 2 concurrent EphemeralRunner reconciles caps runner pod
+  # creation far below peak demand. Each reconcile can wait seconds on a GitHub
+  # call (JIT config or runner removal), and with per-scale-set GitHub clients
+  # (arc-runners split_scaleset_clients.py) those calls run in parallel, so
+  # workers are the limit. The manager-wide K8s client limiter (default 20 QPS /
+  # burst 30) must rise with them or it becomes the cap.
+  runnerMaxConcurrentReconciles: 40
+  k8sClientRateLimiterQPS: 150
+  k8sClientRateLimiterBurst: 300
 
 # Service account
 serviceAccount:

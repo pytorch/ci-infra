@@ -215,7 +215,8 @@ ARC runner scale sets for GitHub Actions self-hosted runners. Requires `arc` (co
 - **generated/**: Auto-generated ARC runner configs (from defs + template)
 - **scripts/python/generate_runners.py**: Reads `defs/` + template + `clusters.yaml` → writes `generated/`
 - **scripts/python/validate_runner_qos.py**: Pre-deploy validation (Guaranteed QoS, requests == limits) — invoked via `uv run`
-- **deploy.sh**: Generates configs, validates QoS, applies the per-runner hook ConfigMaps and Helm releases (enforces `arc` module presence)
+- **scripts/python/split_scaleset_clients.py**: Post-Helm step giving each scale set its own GitHub Actions client (per-scale-set copy of the org GitHub App secret on the EphemeralRunnerSet and its runners), because the ARC controller serializes GitHub calls per client. Non-fatal; skips org secrets that are not GitHub App secrets. The copies carry the org key: after rotating an org secret, redeploy every `arc-runners*` module before revoking the old key
+- **deploy.sh**: Generates configs, validates QoS, applies the per-runner hook ConfigMaps and Helm releases, then splits GitHub clients per scale set (enforces `arc` module presence)
 
 ### logging
 
