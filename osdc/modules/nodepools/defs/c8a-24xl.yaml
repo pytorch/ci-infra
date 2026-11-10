@@ -1,0 +1,14 @@
+# Karpenter NodePool fleet: c8a-24xl
+# AMD EPYC (Turin) — compute-optimized, AVX-512, ~2 GiB/core ratio
+# Dedicated pool for the 92-vCPU runner. Fallback UP to c8a.48xlarge.
+fleet:
+  name: c8a-24xl
+  arch: amd64
+  gpu: false
+  instances:
+    - type: c8a.24xlarge
+      weight: 100  # ideal
+      node_disk_size: 1900
+    - type: c8a.48xlarge
+      weight: 85  # fallback
+      node_disk_size: 3750
