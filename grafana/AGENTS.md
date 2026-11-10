@@ -37,7 +37,6 @@ mise run push --folder "..."
   | `meta-prod-aws-ue1` | `meta-prod-aws-ue1` |
   | `meta-prod-aws-uw2` | `meta-prod-aws-uw2` |
   | `lf-prod-aws-ue1` | `lf-prod-aws-ue1` |
-  | `lf-prod-aws-ue2` | `lf-prod-aws-ue2` |
 
   `workflow_job` data doesn't carry the Prometheus cluster name — only `runner_group_name` — so each panel hardcodes the mapping above.
 

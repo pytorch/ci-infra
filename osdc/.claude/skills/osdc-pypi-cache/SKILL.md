@@ -26,8 +26,7 @@ The module deploys per-cluster:
    `readOnlyRootFilesystem: true`. Behind Service `pypi-cache-{slug}` on ports `8080` (http) and
    `9113` (metrics). Replicas: default 2; per-cluster overrides
    (`arc-staging: 1`, `meta-staging-aws-ue1: 1`, `arc-cbr-production: 10`,
-   `meta-prod-aws-ue1: 10`, `lf-prod-aws-ue1: 6`,
-   `lf-prod-aws-ue2: 6`). pypiserver runs with `--disable-fallback` — nginx, not pypiserver, owns
+   `meta-prod-aws-ue1: 10`, `lf-prod-aws-ue1: 6`). pypiserver runs with `--disable-fallback` — nginx, not pypiserver, owns
    the upstream-fallback path.
 
 2. **`pypi-wants-collector` Deployment** (1 replica) — runs `wants_collector.py`. Tails
