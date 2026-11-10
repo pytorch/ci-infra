@@ -76,6 +76,10 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     cluster_admin_roles = access_config.get("cluster_admin_role_names", [])
     if cluster_admin_roles:
         pairs["cluster_admin_role_names"] = ",".join(cluster_admin_roles)
+    # Only the cluster's own base: a tier under defaults would put every cluster on a paid tier.
+    control_plane_tier = (cluster_cfg.get("base") or {}).get("control_plane_tier")
+    if control_plane_tier:
+        pairs["control_plane_tier"] = control_plane_tier
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 

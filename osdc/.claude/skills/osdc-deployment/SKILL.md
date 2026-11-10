@@ -256,6 +256,8 @@ cache-enforcer depends on Harbor (base) and pypi-cache module. Without pypi-cach
   ```
   Consumed by `scripts/cluster-config.py` into tofu vars. Without this, no IAM role gets cluster-admin via access entries.
 
+**EKS control plane tier** (`base.control_plane_tier`, default `standard`): applied to `aws_eks_cluster` as `control_plane_scaling_config`; values are the EKS tier names (`standard`, `tier-xl`, `tier-2xl`, `tier-4xl`, `tier-8xl`; `tier-8xl` needs hashicorp/aws >= 6.39). Read only from the cluster's own `base:`, never from `defaults:`, so one edit cannot put every cluster on a paid tier. Provisioned tiers are billed hourly on top of the cluster fee; a tier change is in place and takes several minutes. `clusters.yaml` owns every cluster's tier: a tier changed from the console or CLI is reverted by the next deploy, so an emergency bump must land in `clusters.yaml` first. Deleting the key returns the cluster to `standard` on its next deploy, but reverting the code that manages the block does not (the provider treats it as computed), and EKS refuses to switch back to `standard` while etcd is above 8 GB.
+
 **Karpenter:**
 ```yaml
 karpenter:
