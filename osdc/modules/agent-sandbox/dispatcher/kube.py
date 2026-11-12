@@ -157,6 +157,38 @@ def effects_env(grant) -> str:
     )
 
 
+def task_env(grant, deadline: int) -> dict[str, str]:
+    """Every per-task input task.py reads, from the Grant alone — never the request body.
+
+    One place, so a way of starting the task other than this Job cannot forget an input.
+
+    It reads one thing besides the Grant — `PRIVATE_REPOS`, to decide whether to hand the
+    task the proxy's address. That is deployment topology ("which repos need a credential
+    on the way out"), not authorization: the answer is a function of `grant.clone_repo`,
+    which the caller may choose only among the repositories its manifest allows, so
+    nothing a caller sends can route a fetch the manifest did not grant.
+
+    `deadline` is epoch seconds when the task will be stopped; the agent loop ends early
+    enough to report before it.
+    """
+    return {
+        # Only for a repo that needs a credential — see PRIVATE_REPOS. A public clone goes
+        # straight to github.com, so the proxy being down or unconfigured cannot break it.
+        "GIT_PROXY": GIT_PROXY if grant.clone_repo in PRIVATE_REPOS else "",
+        "SANDBOX_REPO": grant.clone_repo,
+        "SANDBOX_REF": grant.ref,
+        "SANDBOX_BASE": grant.base,
+        "SANDBOX_EFFECTS": effects_env(grant),
+        "SANDBOX_TASK": grant.task,
+        "SANDBOX_MODEL": grant.model,
+        # Empty rather than "0" when there is no review, so task.py's "skip the empty ones"
+        # rule drops it and the agent sees no `pr` key at all — the same shape a
+        # pre-review dispatcher produced.
+        "SANDBOX_PR": str(grant.pr) if grant.pr else "",
+        "SANDBOX_DEADLINE": str(deadline),
+    }
+
+
 def job_manifest(task_id: str, grant) -> dict:
     """The Job for one task: the task image under gVisor, with no identity.
 
@@ -165,11 +197,7 @@ def job_manifest(task_id: str, grant) -> dict:
     made, and there is nothing here to make one from. The capability manifest decides the
     Grant's values in authorize.py; this function never sees it.
 
-    It does read one thing besides the Grant — `PRIVATE_REPOS`, to decide whether to hand
-    the pod the proxy's address. That is deployment topology ("which repos need a
-    credential on the way out"), not authorization: the answer is a function of
-    `grant.clone_repo`, which the caller may choose only among the repositories its
-    manifest allows, so nothing a caller sends can route a fetch the manifest did not grant.
+    The task's own inputs come from task_env().
 
     Every isolation property of a task pod is decided here, which is why
     kubernetes/base/admissionpolicy.yaml restates the same contract in the API server:
@@ -208,28 +236,13 @@ def job_manifest(task_id: str, grant) -> dict:
                                 {"name": "PYTHONUNBUFFERED", "value": "1"},
                                 {"name": "AWS_REGION", "value": REGION},
                                 {"name": "SIGV4_PROXY", "value": SIGV4_PROXY},
-                                # Only for a repo that needs a credential — see PRIVATE_REPOS.
-                                # A public clone goes straight to github.com, so the proxy
-                                # being down or unconfigured cannot break it.
-                                {
-                                    "name": "GIT_PROXY",
-                                    "value": GIT_PROXY if grant.clone_repo in PRIVATE_REPOS else "",
-                                },
                                 {"name": "BEDROCK_DEFAULT_MODEL_ID", "value": DEFAULT_MODEL},
-                                {"name": "SANDBOX_REPO", "value": grant.clone_repo},
-                                {"name": "SANDBOX_REF", "value": grant.ref},
-                                {"name": "SANDBOX_BASE", "value": grant.base},
-                                {"name": "SANDBOX_EFFECTS", "value": effects_env(grant)},
-                                {"name": "SANDBOX_TASK", "value": grant.task},
-                                {"name": "SANDBOX_MODEL", "value": grant.model},
-                                # Empty rather than "0" when there is no review, so
-                                # task.py's "skip the empty ones" rule drops it and the
-                                # agent sees no `pr` key at all — the same shape a
-                                # pre-review dispatcher produced.
-                                {"name": "SANDBOX_PR", "value": str(grant.pr) if grant.pr else ""},
-                                # Epoch seconds when activeDeadlineSeconds fires (it counts
+                                # The deadline is when activeDeadlineSeconds fires (it counts
                                 # from Job start, which is about now).
-                                {"name": "SANDBOX_DEADLINE", "value": str(int(time.time()) + TASK_DEADLINE_S)},
+                                *(
+                                    {"name": k, "value": v}
+                                    for k, v in task_env(grant, int(time.time()) + TASK_DEADLINE_S).items()
+                                ),
                             ],
                             "securityContext": {
                                 "runAsNonRoot": True,
