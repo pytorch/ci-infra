@@ -27,8 +27,8 @@ spec:
 ---
 # Dispatcher ingress: callable from arc-runners over the network, like buildkitd
 # (mirrors buildkit's buildkitd-lb-ingress). The runner needs NO K8s RBAC — just this
-# network allow. Everything else is denied by default-deny above. Task pods take no
-# ingress at all: the dispatcher reads their results through the API server.
+# network allow. Everything else is denied by default-deny above. Task pods take ingress
+# from the dispatcher alone (sandbox-task-ingress).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -118,8 +118,8 @@ spec:
 #
 # Deliberately NOT the 443-to-anywhere rule the task pods get: the dispatcher is the
 # component with RBAC, so it is the one that must not be able to reach the internet.
-# It never clones and never calls Bedrock — creating Jobs and reading their logs is all
-# it does.
+# It never clones and never calls Bedrock — it creates claims, and calls the claimed
+# pod's sandboxd on :9090 to run the task there.
 #
 # __K8S_API_CIDR__ is the `kubernetes` Service ClusterIP as a /128, substituted by
 # deploy.sh: pods reach the API server through that ClusterIP, so this cannot be
@@ -153,6 +153,40 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              app: sandbox-task
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+# Task pod ingress: sandboxd's process API, from the dispatcher only. sandboxd runs
+# whatever it is asked to, so this — together with its bearer token — is what stops one
+# task pod (or anything else in the cluster) from running code in another. Its REST port
+# (:8080) takes no ingress; the kubelet's readiness probe is not subject to this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-task-ingress
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-task
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: sandbox-dispatcher
+      ports:
+        - protocol: TCP
+          port: 9090
 
 ---
 # Proxy ingress: only from task pods. The dispatcher never calls Bedrock.

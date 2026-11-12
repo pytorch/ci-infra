@@ -1,10 +1,10 @@
 # Sandbox dispatcher image — the trusted side of the sandbox.
 #
-# It receives /run, verifies the caller's GitHub OIDC token, creates one Kubernetes Job
-# per request (the task image, under gVisor), and reads the result back from the pod's
-# log. It holds K8s RBAC scoped to
-# jobs + pods + pods/log in ai-sandbox, and no AWS identity: it never clones and never
-# prompts a model, so the untrusted work stays in the task pods.
+# It receives /run, verifies the caller's GitHub OIDC token, claims one sandbox pod per
+# request (an agent-sandbox SandboxClaim; the task image under gVisor), and runs the task
+# in it through that pod's sandboxd. It holds K8s RBAC scoped to ai-sandbox and no AWS
+# identity: it never clones and never prompts a model, so the untrusted work stays in the
+# task pods.
 #
 # Separate image from agent/ on purpose — a shared image would ship the dispatcher's
 # dependencies inside the untrusted sandbox. That is what the split buys, and it is why
@@ -28,13 +28,14 @@ RUN apt-get update \
         ca-certificates \
         python3 \
         python3-cryptography \
+        python3-grpcio \
         python3-jwt \
         python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 # The modules are listed rather than globbed so the image cannot pick up a test file,
 # and so adding one is a visible line in review.
-COPY __main__.py http_api.py tasks.py kube.py oidc.py authorize.py manifest.py effects.py jwks_refresh.py \
+COPY __main__.py http_api.py tasks.py kube.py sandboxd.py oidc.py authorize.py manifest.py effects.py jwks_refresh.py \
      /usr/local/lib/sandbox-dispatcher/
 
 # UID 1000, non-root. The pod securityContext enforces this too.

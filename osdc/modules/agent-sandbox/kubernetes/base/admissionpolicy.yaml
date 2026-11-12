@@ -389,3 +389,83 @@ spec:
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["pods"]
+
+---
+# What the dispatcher may put in a SandboxClaim. The claim is the only object it writes on
+# the new path, so this is the whole of what a compromised dispatcher can ask the
+# agent-sandbox controller for: a pod from the sandbox-task template, nothing added to it,
+# gone by a set time. The pod itself is then checked by the Pod pass above.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: agent-sandbox-task-claims
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  failurePolicy: Fail
+  # The controller also writes claims (finalizers, annotations); only the dispatcher's
+  # writes are the threat this exists for.
+  matchConditions:
+    - name: claim-writes-come-from-the-dispatcher
+      expression: "request.userInfo.username == 'system:serviceaccount:ai-sandbox:sandbox-dispatcher'"
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["extensions.agents.x-k8s.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["sandboxclaims"]
+  validations:
+    - expression: "object.spec.warmPoolRef.name == 'sandbox-task'"
+      reason: Forbidden
+      message: "task claims must draw from the sandbox-task warm pool"
+    # The task's inputs go over the sandboxd call, never into the pod: env baked into a
+    # pod is replayed by every replacement pod the controller creates. The template's
+    # envVarsInjectionPolicy says the same; this does not rely on it.
+    - expression: "!has(object.spec.env) || size(object.spec.env) == 0"
+      reason: Forbidden
+      message: "task claims must inject no env — the task's inputs go over the sandboxd call"
+    - expression: "!has(object.spec.volumeClaimTemplates) || size(object.spec.volumeClaimTemplates) == 0"
+      reason: Forbidden
+      message: "task claims must request no volumes"
+    - expression: >-
+        !has(object.spec.additionalPodMetadata) ||
+        ((!has(object.spec.additionalPodMetadata.labels) || size(object.spec.additionalPodMetadata.labels) == 0) &&
+        (!has(object.spec.additionalPodMetadata.annotations) || size(object.spec.additionalPodMetadata.annotations) == 0))
+      reason: Forbidden
+      message: "task claims must add no pod labels or annotations"
+    # A claim the dispatcher forgets (it died mid-task) must still go away.
+    - expression: >-
+        has(object.spec.lifecycle) && has(object.spec.lifecycle.shutdownTime) &&
+        has(object.spec.lifecycle.shutdownPolicy) && object.spec.lifecycle.shutdownPolicy == 'Delete'
+      reason: Forbidden
+      message: "task claims must set a shutdownTime with shutdownPolicy: Delete"
+    # ...and soon: a claim holds a fleet node until it goes. CEL has no clock, but the API
+    # server sets creationTimestamp before validating a CREATE and keeps it on UPDATE, so
+    # this bounds the claim's whole life. string() then timestamp(), because the field may
+    # reach CEL as either.
+    - expression: >-
+        !has(object.spec.lifecycle) || !has(object.spec.lifecycle.shutdownTime) ||
+        timestamp(string(object.spec.lifecycle.shutdownTime)) -
+        timestamp(string(object.metadata.creationTimestamp)) <= duration('3600s')
+      reason: Forbidden
+      message: "task claims must shut down at most 3600s after they are created"
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: agent-sandbox-task-claims
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  policyName: agent-sandbox-task-claims
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ai-sandbox
+    resourceRules:
+      - apiGroups: ["extensions.agents.x-k8s.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["sandboxclaims"]
