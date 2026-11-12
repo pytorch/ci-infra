@@ -332,6 +332,26 @@ def test_real_job_manifest_satisfies_the_policy(message):
     assert predicate(a_job()), f"job_manifest() violates: {message}"
 
 
+TEMPLATE_PATH = MODULE / "kubernetes" / "base" / "sandbox-template.yaml"
+
+
+def _template_pod_as_job() -> dict:
+    """The SandboxTemplate's pod, image substituted as deploy.sh would, wrapped in the Job
+    shape the mirrors read. The Pod pass will see these pods once the dispatcher claims
+    from the template, so it must admit them already."""
+    template = next(d for d in yaml.safe_load_all(TEMPLATE_PATH.read_text()) if d["kind"] == "SandboxTemplate")
+    pod = template["spec"]["podTemplate"]
+    for c in pod["spec"]["containers"]:
+        c["image"] = c["image"].replace("__AGENT_IMAGE__", GOOD_IMAGE)
+    return {"spec": {"template": pod}}
+
+
+@pytest.mark.parametrize("message", sorted(m for m in MIRRORS if not m.startswith("task Jobs must")))
+def test_the_task_template_pod_satisfies_the_pod_rules(message):
+    predicate, _ = MIRRORS[message]
+    assert predicate(_template_pod_as_job()), f"the SandboxTemplate pod violates: {message}"
+
+
 @pytest.mark.parametrize("message", sorted(MIRRORS))
 def test_each_rule_rejects_its_own_violation(message):
     """A mirror that accepts everything passes the test above for the wrong reason."""

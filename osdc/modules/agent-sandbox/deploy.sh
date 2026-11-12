@@ -10,9 +10,10 @@ set -euo pipefail
 #   2. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
 #   3. Applies the upstream agent-sandbox controller and its CRDs (kubernetes/controller).
 #   4. Applies the namespace, quota, gvisor RuntimeClass, service accounts, dispatcher
-#      RBAC, sigv4-proxy, git-proxy, the dispatcher + Service, and the NetworkPolicies.
-#      Both image tags, the region, the Bedrock model, the proxy's IRSA role ARN, the
-#      cluster's API-server ClusterIP and its kube-dns ClusterIP are substituted in.
+#      RBAC, sigv4-proxy, git-proxy, the dispatcher + Service, the NetworkPolicies and
+#      the task SandboxTemplate + warm pool. Both image tags, the region, the Bedrock
+#      model, the proxy's IRSA role ARN, the cluster's API-server ClusterIP, its kube-dns
+#      ClusterIP and the sandboxd token digest are substituted in.
 #
 # The AWS credential lives on the sigv4-proxy pod; task pods hold none. Public repos are
 # cloned directly, so the only GitHub credential is the one git-proxy holds, for private
@@ -193,6 +194,31 @@ if ! kubectl get secret git-proxy-credentials -n "$NAMESPACE" >/dev/null 2>&1; t
   printf '%s\n' "[agent-sandbox]              --from-literal=basic-auth=\"\$(printf 'x-access-token:%s' \"\$TOKEN\" | base64 | tr -d '\\n')\""
 fi
 
+# --- The sandboxd token ---
+# Task pods run sandboxd, which accepts a call only with this bearer token. The pod gets
+# only its SHA-256 digest (substituted into sandbox-template.yaml), so code inside it
+# cannot learn the token; the dispatcher reads the token from the Secret. Minted here on
+# the first deploy — it is internal to this namespace, unlike the GitHub credential.
+# Rotate by deleting the Secret and redeploying (unclaimed warm pods keep the old digest
+# until they are replaced).
+#
+# Only a Secret that is really absent mints a token: --ignore-not-found makes absence an
+# empty read, so any other failed read aborts here (set -e) instead of minting a second
+# token whose digest would lock the dispatcher out of every new pod. A new token is stored
+# before its digest reaches the template, so a deploy that dies in between leaves the two
+# agreeing. Whitespace is dropped before hashing, as the dispatcher does before sending it.
+SANDBOXD_TOKEN=$(kubectl get secret sandboxd-token -n "$NAMESPACE" --ignore-not-found -o jsonpath='{.data.token}' \
+  | base64 -d | tr -d '[:space:]')
+if [[ -z "$SANDBOXD_TOKEN" ]]; then
+  SANDBOXD_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+  # A first deploy has no namespace yet. From stdin, so the token never appears in a
+  # process listing.
+  kubectl_apply_if_changed -f "$MODULE_DIR/kubernetes/base/namespace.yaml"
+  printf '%s' "$SANDBOXD_TOKEN" | kubectl create secret generic sandboxd-token -n "$NAMESPACE" --from-file=token=/dev/stdin
+fi
+SANDBOXD_TOKEN_SHA256=$(printf '%s' "$SANDBOXD_TOKEN" | shasum -a 256 | cut -d' ' -f1)
+SANDBOXD_TOKEN=""
+
 # Hash the rendered nginx template BEFORE applying, so the restart below can tell a real
 # config change from a no-op deploy.
 #
@@ -229,6 +255,7 @@ kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
     -e "s|__SIGV4_ROLE_ARN__|${SIGV4_ROLE_ARN}|g" \
     -e "s|__K8S_API_CIDR__|${K8S_API_CIDR}|g" \
     -e "s|__KUBE_DNS_IP__|${KUBE_DNS_RESOLVER}|g" \
+    -e "s|__SANDBOXD_TOKEN_SHA256__|${SANDBOXD_TOKEN_SHA256}|g" \
   | kubectl_apply_if_changed -f -
 
 # Roll git-proxy ONLY when its config actually changed — and right here, before any step

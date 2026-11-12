@@ -1,6 +1,7 @@
 # Agent-sandbox Kubernetes resources (namespace-scoped + the cluster-scoped gvisor
 # RuntimeClass). deploy.sh substitutes __DISPATCHER_IMAGE__ / __AGENT_IMAGE__ /
-# __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ / __SIGV4_ROLE_ARN__ / __K8S_API_CIDR__ / __KUBE_DNS_IP__
+# __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ / __SIGV4_ROLE_ARN__ / __K8S_API_CIDR__ / __KUBE_DNS_IP__ /
+# __SANDBOXD_TOKEN_SHA256__
 # across this output at apply time (kustomize can read neither clusters.yaml, terraform
 # outputs, nor the cluster's own Service CIDR).
 #
@@ -25,6 +26,8 @@ resources:
   - proxy-pdb.yaml
   - dispatcher.yaml
   - networkpolicy.yaml
+  # Needs the agent-sandbox CRDs, which deploy.sh applies first (../controller).
+  - sandbox-template.yaml
 
 # Capability manifests (see dispatcher/manifest.py). The name hash suffix rolls the
 # dispatcher whenever a manifest changes, since it loads them once at startup. Every file
