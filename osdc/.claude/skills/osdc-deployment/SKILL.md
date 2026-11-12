@@ -47,7 +47,7 @@ just simulate-cluster                            # Monte Carlo cluster simulatio
 just taint-nodes <cluster>                       # Taint ARC runner nodes with NoSchedule for graceful refresh
 just untaint-nodes <cluster>                     # Reverse taint-nodes
 just drain-runners <cluster>                     # Patch all ARC AutoscalingRunnerSets to maxRunners=0, taint runner nodes, wait for in-flight pods to finish (default 1h; tune with OSDC_DRAIN_TIMEOUT_SECS)
-just resume-runners <cluster>                    # Restore maxRunners from defs/ files and untaint nodes (out-of-band recovery; normal cutover path is `just deploy`)
+just resume-runners <cluster>                    # Restore maxRunners from defs/ files (incl. additional_orgs scale sets) and untaint nodes (out-of-band recovery; normal cutover path is `just deploy`)
 just remove-module <cluster> <module>            # Uninstall all osdc.io/module=<module> resources + matching arc-runners helm releases. Run `just drain-runners` first for runner modules.
 just heal-arc-check <cluster> [name]             # Read-only: detect ARC scale-set-id drift (controller, ARS, listener, ERS). Exit 1 if drift found.
 just heal-arc <cluster> [name]                   # Detect + recover ARC scale-set-id drift (controller restart, ARS re-registration, listener/ERS cascade).

@@ -676,6 +676,54 @@ class TestBuildMaxRunnersMap:
         result = build_max_runners_map(repo, clusters_yaml, "arc-x")
         assert result == {"capped": 0}
 
+    def test_additional_orgs_get_their_own_targets(self, tmp_path):
+        """drain-runners pauses the {resource_slug}-{def} sets that additional_orgs
+        adds, so resume-runners needs a target for each of them too. An org's own
+        max_runners wins over the def's, as in generate_runners.py."""
+        clusters_yaml = {
+            "defaults": {},
+            "clusters": {
+                "arc-x": {
+                    "arc-runners": {
+                        "runner_name_prefix": "mt-",
+                        "additional_orgs": [
+                            {"resource_slug": "mp"},
+                            {"resource_slug": "et", "max_runners": 12},
+                        ],
+                    },
+                    "modules": ["arc-runners"],
+                }
+            },
+        }
+        modules = {"arc-runners": {"cpu": {"name": "cpu"}, "capped": {"name": "capped", "max_runners": 4}}}
+        repo = make_repo(tmp_path, clusters_yaml, modules)
+        assert build_max_runners_map(repo, clusters_yaml, "arc-x") == {
+            "mt-cpu": MAX_INT32,
+            "mt-capped": 4,
+            "mp-cpu": MAX_INT32,
+            "mp-capped": 4,
+            "et-cpu": 12,
+            "et-capped": 12,
+        }
+
+    def test_pause_runners_forces_zero_for_additional_orgs(self, tmp_path):
+        clusters_yaml = {
+            "defaults": {},
+            "clusters": {
+                "arc-x": {
+                    "arc-runners": {
+                        "runner_name_prefix": "mt-",
+                        "additional_orgs": [{"resource_slug": "mp", "max_runners": 12}],
+                    },
+                    "modules": ["arc-runners"],
+                    "pause_runners": True,
+                }
+            },
+        }
+        modules = {"arc-runners": {"cpu": {"name": "cpu", "max_runners": 4}}}
+        repo = make_repo(tmp_path, clusters_yaml, modules)
+        assert build_max_runners_map(repo, clusters_yaml, "arc-x") == {"mt-cpu": 0, "mp-cpu": 0}
+
 
 # ============================================================================
 # main() — CLI surface
