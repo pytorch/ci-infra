@@ -90,6 +90,7 @@ def a_job(**pod_overrides) -> dict:
     """A real job_manifest() with the pod spec optionally mutated."""
     grant = authorize.Grant(
         caller="pytorch/ciforge",
+        manifest="ciforge-experiments",
         workflow_ref="pytorch/ciforge/.github/workflows/x.yml@refs/heads/main",
         clone_repo="pytorch/pytorch",
         model="",
