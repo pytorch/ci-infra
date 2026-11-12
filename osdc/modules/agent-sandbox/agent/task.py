@@ -20,7 +20,7 @@ import sys
 
 from sandbox import run_task
 
-# Env var -> spec key. The dispatcher validates types before it ever creates the Job,
+# Env var -> spec key. The dispatcher validates types before it ever starts the task,
 # so anything arriving here is a string; run_task falls back to its own defaults for
 # the empty ones.
 SPEC_ENV = {
@@ -47,7 +47,7 @@ def main() -> int:
     try:
         spec = spec_from_env(dict(os.environ))
     except KeyError as exc:
-        # No spec means the Job was built wrong — a dispatcher bug, not a task result.
+        # No spec means the task was started wrong — a dispatcher bug, not a task result.
         print(f"[sandbox-task] {exc}", file=sys.stderr)
         return 2
     print(json.dumps(run_task(spec)))

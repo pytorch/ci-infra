@@ -1,7 +1,7 @@
 # The concurrency ceiling, and the thing that stops a caller loop spending money.
 #
 # /run is unauthenticated — any pod in arc-runners can call it — and each call creates a
-# Job. Without a cap, a loop turns into pending pods, Karpenter turns pending pods into
+# task pod. Without a cap, a loop turns into pending pods, Karpenter turns pending pods into
 # ai-sandbox nodes, and nothing stops until an AWS quota does. The dispatcher's own
 # MAX_CONCURRENT_TASKS gives a caller a clean 429; this is the bound that holds even if
 # a dispatcher is buggy or someone runs a second one.
@@ -22,7 +22,7 @@
 #   limits.ephemeral-storage   240 + 2 + 0 + 2 = 244Gi, + 3Gi of surge          -> 248Gi
 #
 # Getting this wrong is nasty rather than loud: at 12 running tasks a deploy cannot
-# create its surge pod and the rollout stalls, and a task Job over quota is CREATED with
+# create its surge pod and the rollout stalls, and a task claim over quota is CREATED with
 # only its POD refused — so the caller hangs to its 900s deadline instead of getting a
 # clean 429.
 #

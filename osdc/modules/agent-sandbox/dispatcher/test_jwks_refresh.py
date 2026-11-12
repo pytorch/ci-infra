@@ -60,7 +60,7 @@ def patched(monkeypatch):
     monkeypatch.setattr(
         kube,
         "api_request",
-        lambda method, path, body=None, raw=False, content_type="": calls.append(
+        lambda method, path, body=None, content_type="": calls.append(
             {"method": method, "path": path, "body": body, "content_type": content_type}
         ),
     )

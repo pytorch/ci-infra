@@ -15,7 +15,7 @@ OpenSSL through `ssl` for its Kubernetes client, so admitting `cryptography` doe
 open a category that was previously closed.
 
 The keys come from a mounted file, not from the network. The dispatcher is the component
-holding create-Job RBAC, so it is the one that must not be able to reach the internet —
+holding create-claim RBAC, so it is the one that must not be able to reach the internet —
 its NetworkPolicy allows DNS and the API server and nothing else. Something out of band
 refreshes the ConfigMap this reads; see kubernetes/base/oidc.yaml.
 

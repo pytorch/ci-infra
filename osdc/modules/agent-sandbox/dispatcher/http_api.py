@@ -21,8 +21,7 @@ Endpoints:
 
 Everything below the parse is somebody else's file, so the rule for this one is that it
 owns request shape, status codes and response bodies — no task state, and no Kubernetes
-call of its own. The one value it reads out of another module is kube.AGENT_IMAGE, so that
-a deploy which left the task image empty answers 500 rather than creating a Job.
+call of its own.
 """
 
 from __future__ import annotations
@@ -35,7 +34,6 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import authorize
-import kube
 import manifest
 import oidc
 import tasks
@@ -286,17 +284,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"error": "the model is set by policy, not by the request"})
             return
 
-        if not kube.AGENT_IMAGE:
-            self._send(500, {"error": "AGENT_IMAGE not set — deploy.sh did not substitute the task image"})
-            return
-
         task_id = tasks.start_task(grant.owner)
         if task_id is None:
             self._send(429, {"error": f"at capacity: {tasks.MAX_CONCURRENT_TASKS} tasks in flight"})
             return
 
         # One line per admitted task, so who dispatched what is answerable from the pod
-        # log rather than only from the Job that has since been deleted.
+        # log rather than only from the claim that has since been deleted.
         print(
             f"[sandbox-dispatcher] task {task_id} granted to {grant.caller} under "
             f"{grant.manifest or 'no manifest'} ({grant.workflow_ref or 'no workflow'})"
