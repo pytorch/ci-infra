@@ -29,6 +29,13 @@ metadata:
 # pods — it lists by job-name label, then reads the log subresource, which is authorized
 # as get on pods/log. No `watch` anywhere — it polls.
 rules:
+  # POST .../sandboxclaims, GET and DELETE .../sandboxclaims/sandbox-task-<id>. A claim
+  # can only name the pool and an expiry (admissionpolicy.yaml), so this does not let
+  # the dispatcher choose a pod spec.
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["create", "get", "delete"]
+  # The Job path, until it is removed.
   # POST .../jobs, GET .../jobs/sandbox-task-<id>, DELETE .../jobs/sandbox-task-<id>
   - apiGroups: ["batch"]
     resources: ["jobs"]

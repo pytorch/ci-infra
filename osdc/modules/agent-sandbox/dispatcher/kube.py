@@ -1,16 +1,22 @@
-"""Everything that talks to the Kubernetes API, and the Job template it sends.
+"""Everything that talks to the Kubernetes API: the SandboxClaim each task runs in.
 
 This is the bottom of the dispatcher: it imports no other module here, so the task
 lifecycle above it can be read without knowing how a Job is spelled, and this file can
 be reviewed as one thing — the security boundary for every task pod.
 
 Access is stdlib urllib against the in-cluster API with the projected SA token, the same
-shape as base/kubernetes/node-taint-remover. RBAC is namespaced to jobs + pods + pods/log
-in ai-sandbox.
+shape as base/kubernetes/node-taint-remover. RBAC is namespaced to sandboxclaims (and,
+until the Job path is removed, jobs + pods + pods/log) in ai-sandbox.
+
+A task's pod is the `sandbox-task` SandboxTemplate (kubernetes/base/sandbox-template.yaml);
+a claim only names its warm pool and an expiry, and the task itself is started in the pod
+through sandboxd (sandboxd.py). The Job functions below are the previous path, kept until
+it is removed.
 """
 
 from __future__ import annotations
 
+import datetime
 import functools
 import json
 import os
@@ -26,6 +32,9 @@ TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
 CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 
 NAMESPACE = os.environ.get("NAMESPACE", "ai-sandbox")
+CLAIMS_PATH = f"/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/{NAMESPACE}/sandboxclaims"
+# The SandboxWarmPool (and SandboxTemplate) every claim draws from.
+WARM_POOL = "sandbox-task"
 # Substituted by deploy.sh: the content-hash tag of the task image it just built.
 AGENT_IMAGE = os.environ.get("AGENT_IMAGE", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -52,6 +61,12 @@ DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 # (at most 600s). The loop does not assume the rest was quick: the Job carries this
 # deadline as SANDBOX_DEADLINE, and the task ends the loop early enough to report.
 TASK_DEADLINE_S = int(os.environ.get("TASK_DEADLINE_S", "900"))
+# A claim is deleted as soon as its task returns; its shutdownTime, this long past the
+# deadline, is the backstop for a dispatcher that died mid-task. Short on purpose: a
+# pending pod has no deadline of its own, so this is what bounds an orphan's quota.
+CLAIM_GRACE_S = 60
+# Claim Ready=False reasons that waiting cannot fix: fail the task instead of the deadline.
+PERMANENT_CLAIM_FAILURES = frozenset({"TemplateNotFound", "WarmPoolNotFound"})
 # Finished Jobs are deleted as soon as their log is read; this is the backstop for a
 # dispatcher that died mid-wait, and has to outlast a plausible restart.
 JOB_TTL_S = 3600
@@ -189,6 +204,76 @@ def task_env(grant, deadline: int) -> dict[str, str]:
     }
 
 
+def last_json_object(text: str, task_id: str) -> dict:
+    """The result a task printed: the last line of stdout that parses as a JSON object,
+    so a stray log line before it is harmless."""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                continue
+    raise ApiError(f"sandbox-task-{task_id} printed no result JSON")
+
+
+def claim_manifest(task_id: str, now: datetime.datetime | None = None) -> dict:
+    """The SandboxClaim for one task: the pool and an expiry, nothing about the task.
+
+    The task's inputs go to the pod over the sandboxd call, never into the pod spec, so a
+    pod the controller replaces has nothing in it to run again. admissionpolicy.yaml
+    holds the dispatcher to exactly this shape.
+    """
+    now = now or datetime.datetime.now(datetime.UTC)
+    shutdown = now + datetime.timedelta(seconds=TASK_DEADLINE_S + CLAIM_GRACE_S)
+    return {
+        "apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+        "kind": "SandboxClaim",
+        "metadata": {
+            "name": f"sandbox-task-{task_id}",
+            "namespace": NAMESPACE,
+            "labels": {"osdc.io/module": "agent-sandbox"},
+        },
+        "spec": {
+            "warmPoolRef": {"name": WARM_POOL},
+            "lifecycle": {"shutdownTime": shutdown.strftime("%Y-%m-%dT%H:%M:%SZ"), "shutdownPolicy": "Delete"},
+        },
+    }
+
+
+def create_claim(task_id: str) -> None:
+    api_request("POST", CLAIMS_PATH, body=claim_manifest(task_id))
+
+
+def claim_state(task_id: str) -> tuple[str, str]:
+    """('ready', pod IP), ('pending', ''), or ('failed', why).
+
+    Ready=True with a pod IP means the pod is up and passed its sandboxd readiness probe.
+    Finished means the pod exited, which before the task starts is a dead sandboxd.
+    """
+    claim = api_request("GET", f"{CLAIMS_PATH}/sandbox-task-{task_id}")
+    status = claim.get("status") or {}
+    conditions = {c.get("type"): c for c in status.get("conditions") or []}
+    finished = conditions.get("Finished") or {}
+    if finished.get("status") == "True":
+        return "failed", f"the sandbox pod exited ({finished.get('reason') or 'no reason given'})"
+    ready = conditions.get("Ready") or {}
+    pod_ips = (status.get("sandbox") or {}).get("podIPs") or []
+    if ready.get("status") == "True" and pod_ips:
+        return "ready", pod_ips[0]
+    if ready.get("status") == "False" and ready.get("reason") in PERMANENT_CLAIM_FAILURES:
+        return "failed", f"{ready['reason']}: {ready.get('message', '')}"
+    return "pending", ""
+
+
+def delete_claim(task_id: str) -> None:
+    """Delete the claim, and with it the Sandbox and its pod. Not fatal — shutdownTime is the backstop."""
+    try:
+        api_request("DELETE", f"{CLAIMS_PATH}/sandbox-task-{task_id}", body={"propagationPolicy": "Background"})
+    except (ApiError, OSError) as exc:
+        print(f"[sandbox-dispatcher] delete sandbox-task-{task_id} failed (shutdownTime will collect it): {exc}")
+
+
 def job_manifest(task_id: str, grant) -> dict:
     """The Job for one task: the task image under gVisor, with no identity.
 
@@ -304,14 +389,7 @@ def task_result(task_id: str) -> dict:
         raise ApiError(f"no pod found for sandbox-task-{task_id}")
     name = items[-1]["metadata"]["name"]
     log = api_request("GET", f"/api/v1/namespaces/{NAMESPACE}/pods/{name}/log", raw=True)
-    for line in reversed(log.splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                return json.loads(line)
-            except ValueError:
-                continue
-    raise ApiError(f"sandbox-task-{task_id} printed no result JSON")
+    return last_json_object(log, task_id)
 
 
 def delete_job(task_id: str) -> None:

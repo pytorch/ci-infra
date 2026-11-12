@@ -6,9 +6,6 @@
 # warm pod can be created before its task exists. Claims may add no env
 # (envVarsInjectionPolicy Disallowed): the task's inputs travel only over that call.
 #
-# Nothing claims from it yet: the dispatcher still creates Jobs from
-# dispatcher/kube.py::job_manifest(), which this mirrors, until it switches to claims.
-#
 # __AGENT_IMAGE__ / __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ /
 # __SANDBOXD_TOKEN_SHA256__ are substituted by deploy.sh.
 apiVersion: extensions.agents.x-k8s.io/v1beta1

@@ -22,6 +22,7 @@ that is the API server's job on first apply. What it does claim is that the two
 descriptions of a task pod have not diverged.
 """
 
+import datetime
 import hashlib
 import re
 from pathlib import Path
@@ -62,14 +63,32 @@ def documents():
     return list(yaml.safe_load_all(POLICY_PATH.read_text()))
 
 
+JOB_POLICY = "agent-sandbox-task-jobs"
+CLAIM_POLICY = "agent-sandbox-task-claims"
+
+
+def _policy(documents, name):
+    return next(d for d in documents if d["kind"] == "ValidatingAdmissionPolicy" and d["metadata"]["name"] == name)
+
+
+def _bindings(documents, name):
+    return [d for d in documents if d["kind"] == "ValidatingAdmissionPolicyBinding" and d["spec"]["policyName"] == name]
+
+
 @pytest.fixture(scope="module")
 def policy(documents):
-    return next(d for d in documents if d["kind"] == "ValidatingAdmissionPolicy")
+    """The task-Job / task-Pod policy."""
+    return _policy(documents, JOB_POLICY)
 
 
 @pytest.fixture(scope="module")
 def bindings(documents):
-    return [d for d in documents if d["kind"] == "ValidatingAdmissionPolicyBinding"]
+    return _bindings(documents, JOB_POLICY)
+
+
+@pytest.fixture(scope="module")
+def claim_policy(documents):
+    return _policy(documents, CLAIM_POLICY)
 
 
 @pytest.fixture(autouse=True)
@@ -830,3 +849,102 @@ def test_the_jwks_configmap_ships_with_no_data(documents):
     assert "data" not in configmap, (
         "oidc-jwks must declare no data — see the comment above it in oidc.yaml before changing this"
     )
+
+
+# --- The claims policy: what the dispatcher may put in a SandboxClaim ----------------------
+#
+# Same scheme as the pod rules above: each validation mirrored by message, checked against
+# what kube.claim_manifest() really builds, made to reject its own counterexample, and its
+# expression pinned by digest.
+
+
+def a_claim(**spec_overrides) -> dict:
+    """claim_manifest() as the policy sees it: the API server has set creationTimestamp."""
+    now = datetime.datetime.now(datetime.UTC)
+    claim = kube.claim_manifest("abc123456789", now)
+    claim["metadata"]["creationTimestamp"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    claim["spec"].update(spec_overrides)
+    return claim
+
+
+def _claim_lifetime_s(claim: dict) -> float:
+    shutdown = datetime.datetime.fromisoformat(claim["spec"]["lifecycle"]["shutdownTime"])
+    created = datetime.datetime.fromisoformat(claim["metadata"]["creationTimestamp"])
+    return (shutdown - created).total_seconds()
+
+
+CLAIM_MIRRORS = {
+    "task claims must draw from the sandbox-task warm pool": (
+        lambda c: c["spec"]["warmPoolRef"]["name"] == "sandbox-task",
+        lambda: a_claim(warmPoolRef={"name": "some-other-pool"}),
+    ),
+    "task claims must inject no env — the task's inputs go over the sandboxd call": (
+        lambda c: not c["spec"].get("env"),
+        lambda: a_claim(env=[{"name": "SANDBOX_REPO", "value": "pytorch/pytorch"}]),
+    ),
+    "task claims must request no volumes": (
+        lambda c: not c["spec"].get("volumeClaimTemplates"),
+        lambda: a_claim(volumeClaimTemplates=[{"metadata": {"name": "data"}, "spec": {}}]),
+    ),
+    "task claims must add no pod labels or annotations": (
+        lambda c: not any(c["spec"].get("additionalPodMetadata", {}).get(k) for k in ("labels", "annotations")),
+        lambda: a_claim(additionalPodMetadata={"labels": {"sandbox.users.io/app": "x"}}),
+    ),
+    "task claims must set a shutdownTime with shutdownPolicy: Delete": (
+        lambda c: (
+            bool(c["spec"].get("lifecycle", {}).get("shutdownTime"))
+            and c["spec"]["lifecycle"].get("shutdownPolicy") == "Delete"
+        ),
+        lambda: a_claim(lifecycle={"shutdownPolicy": "Retain"}),
+    ),
+    "task claims must shut down at most 3600s after they are created": (
+        lambda c: "shutdownTime" not in c["spec"].get("lifecycle", {}) or _claim_lifetime_s(c) <= 3600,
+        lambda: a_claim(lifecycle={"shutdownTime": "2099-01-01T00:00:00Z", "shutdownPolicy": "Delete"}),
+    ),
+}
+
+CLAIM_EXPRESSION_DIGESTS = {
+    "task claims must draw from the sandbox-task warm pool": "d42db9fc7d38",
+    "task claims must inject no env — the task's inputs go over the sandboxd call": "52fb84bdc236",
+    "task claims must request no volumes": "8c86a51e84f6",
+    "task claims must add no pod labels or annotations": "4355e9e17f8a",
+    "task claims must set a shutdownTime with shutdownPolicy: Delete": "dc1389d78fe6",
+    "task claims must shut down at most 3600s after they are created": "5eab990674d3",
+}
+CLAIM_MATCH_CONDITION_DIGESTS = {"claim-writes-come-from-the-dispatcher": "d4aa846ba0d8"}
+
+
+def test_every_claim_validation_has_a_mirror_and_a_pin(claim_policy):
+    messages = [v["message"] for v in claim_policy["spec"]["validations"]]
+    assert len(messages) == len(set(messages)), "two claim validations share a message"
+    assert set(messages) == set(CLAIM_MIRRORS) == set(CLAIM_EXPRESSION_DIGESTS)
+    live = {v["message"]: _digest(v["expression"]) for v in claim_policy["spec"]["validations"]}
+    assert live == CLAIM_EXPRESSION_DIGESTS, (
+        "a claim rule's CEL changed: re-read its mirror in CLAIM_MIRRORS, then re-pin"
+    )
+
+
+@pytest.mark.parametrize("message", sorted(CLAIM_MIRRORS))
+def test_the_claim_the_dispatcher_builds_satisfies_the_policy(message):
+    predicate, _ = CLAIM_MIRRORS[message]
+    assert predicate(a_claim()), f"claim_manifest() violates: {message}"
+
+
+@pytest.mark.parametrize("message", sorted(CLAIM_MIRRORS))
+def test_each_claim_rule_rejects_its_own_violation(message):
+    predicate, violating = CLAIM_MIRRORS[message]
+    assert not predicate(violating()), f"mirror does not actually enforce: {message}"
+
+
+def test_the_claim_pass_is_scoped_to_the_dispatcher_and_enforced(documents, claim_policy):
+    """The controller writes claims too; the dispatcher's writes are the threat. The
+    subject is derived from the Deployment for the reason the Job pass's is: drift here
+    fails open, admitting every claim unchecked."""
+    assert claim_policy["spec"]["failurePolicy"] == "Fail"
+    conditions = claim_policy["spec"]["matchConditions"]
+    assert {c["name"]: _digest(c["expression"]) for c in conditions} == CLAIM_MATCH_CONDITION_DIGESTS
+    assert f"'{_deployed_dispatcher_identity()}'" in conditions[0]["expression"]
+    (binding,) = _bindings(documents, CLAIM_POLICY)
+    assert binding["spec"]["validationActions"] == ["Deny"]
+    assert "objectSelector" not in binding["spec"]["matchResources"], "a claim with no label would skip it"
+    assert binding["spec"]["matchResources"]["resourceRules"][0]["resources"] == ["sandboxclaims"]
