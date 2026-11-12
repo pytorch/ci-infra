@@ -62,18 +62,24 @@ def _run_to_completion(task_id: str, grant) -> dict:
                     result = kube.task_result(task_id)
                 except kube.ApiError:
                     return {"errors": {"task": f"pod failed: {detail}"}}
-                # The failure is the dispatcher's fact, not the task's: it is recorded
-                # over whatever the pod printed, and a failed pod proposes nothing.
-                errors = result.get("errors")
-                result["errors"] = errors if isinstance(errors, dict) else {"result": errors}
-                result["errors"]["dispatch"] = f"pod failed: {detail}"
-                result.pop("effects", None)
-                return result
+                return _fail(result, f"pod failed: {detail}")
             time.sleep(POLL_INTERVAL_S)
     except (kube.ApiError, OSError) as exc:
         return {"errors": {"dispatch": str(exc)}}
     finally:
         kube.delete_job(task_id)
+
+
+def _fail(result: dict, why: str) -> dict:
+    """A result printed by a run that then failed. The failure is the dispatcher's fact,
+    not the task's: it is recorded over whatever the task printed, and a failed run
+    proposes nothing, because screening checks effects against the Grant, not against
+    whether the run that proposed them finished."""
+    errors = result.get("errors")
+    result["errors"] = errors if isinstance(errors, dict) else {"result": errors}
+    result["errors"]["dispatch"] = why
+    result.pop("effects", None)
+    return result
 
 
 def _running_locked() -> int:
