@@ -39,7 +39,7 @@ Related docs:
 | **Added by** | @jeanschmidt, @huydhn |
 | **Requested by** | @jeanschmidt, @huydhn |
 | **PoC** | @jeanschmidt, @huydhn · Meta |
-| **Used by** | `_osdc-deploy.yml`, `_osdc-slow-tests.yml`, `_osdc-plan.yml` — AWS account ID for the Meta-donated AWS account that hosts the OSDC ARC clusters (us-east-1 / us-east-2 / us-west-2) |
+| **Used by** | `_osdc-deploy.yml`, `_osdc-slow-tests.yml`, `_osdc-plan.yml`, `ebs-janitor.yml` — AWS account ID for the Meta-donated AWS account that hosts the OSDC ARC clusters (us-east-1 / us-east-2 / us-west-2) |
 
 ### `META_AWS_DEPLOY_PLAN_ROLE`
 
@@ -49,7 +49,7 @@ Related docs:
 | **Added by** | @jeanschmidt, @huydhn |
 | **Requested by** | @jeanschmidt, @huydhn |
 | **PoC** | @jeanschmidt, @huydhn · Meta |
-| **Used by** | `_osdc-plan.yml` — read-only OIDC IAM role in the Meta AWS account, used for `tofu plan` on pull requests so PRs cannot mutate state |
+| **Used by** | `_osdc-plan.yml`, `ebs-janitor.yml` — read-only OIDC IAM role in the Meta AWS account, used for `tofu plan` on pull requests so PRs cannot mutate state, and for the EBS janitor's scheduled and manual dry runs |
 
 ### `META_AWS_DEPLOY_ROLE`
 
@@ -59,7 +59,7 @@ Related docs:
 | **Added by** | @jeanschmidt, @huydhn |
 | **Requested by** | @jeanschmidt, @huydhn |
 | **PoC** | @jeanschmidt, @huydhn · Meta |
-| **Used by** | `_osdc-deploy.yml`, `_osdc-slow-tests.yml` — apply-capable OIDC IAM role in the Meta AWS account, used for `tofu apply` / smoke / integration-test jobs |
+| **Used by** | `_osdc-deploy.yml`, `_osdc-slow-tests.yml`, `ebs-janitor.yml` — apply-capable OIDC IAM role in the Meta AWS account, used for `tofu apply` / smoke / integration-test jobs, and for EBS janitor runs that delete volumes |
 
 
 ### `LF_AWS_DEPLOY_ROLE_ARN`
