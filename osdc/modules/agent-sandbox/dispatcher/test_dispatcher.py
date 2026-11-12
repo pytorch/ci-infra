@@ -197,6 +197,14 @@ class TestJobManifest:
         env = {e["name"]: e["value"] for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
         assert env["SANDBOX_DEADLINE"] == str(1_000_000 + kube.TASK_DEADLINE_S)
 
+    def test_task_env_carries_every_input_task_py_reads(self):
+        """task_env() is the one list of task inputs, so it must name every variable
+        task.py's SPEC_ENV reads. Read out of task.py rather than restated."""
+        source = (Path(__file__).parent.parent / "agent" / "task.py").read_text()
+        reads = set(re.findall(r'^\s+"(SANDBOX_[A-Z_]+)":', source.split("SPEC_ENV = {", 1)[1].split("}", 1)[0], re.M))
+        assert reads, "parsed nothing out of task.py's SPEC_ENV — its shape changed"
+        assert set(kube.task_env(a_grant(), 0)) - {"GIT_PROXY"} == reads
+
     def test_carries_the_task_image_the_dispatcher_was_given(self, monkeypatch):
         monkeypatch.setattr(kube, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:cafe1234")
         assert self._pod_spec()["containers"][0]["image"] == "harbor:30002/osdc/ci-agent-sandbox:cafe1234"
