@@ -1,0 +1,105 @@
+# The task pod, as an agent-sandbox SandboxTemplate, served by the warm pool below.
+#
+# The pod runs sandboxd, not the task: it starts idle, and the dispatcher starts
+# task.py through sandboxd's process API (:9090) with that task's env, once per claim.
+# Nothing per-task is baked into the pod, so a replaced pod has nothing to re-run and a
+# warm pod can be created before its task exists. Claims may add no env
+# (envVarsInjectionPolicy Disallowed): the task's inputs travel only over that call.
+#
+# Nothing claims from it yet: the dispatcher still creates Jobs from
+# dispatcher/kube.py::job_manifest(), which this mirrors, until it switches to claims.
+#
+# __AGENT_IMAGE__ / __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__ /
+# __SANDBOXD_TOKEN_SHA256__ are substituted by deploy.sh.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: sandbox-task
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  # networkpolicy.yaml already selects app: sandbox-task; a controller-managed policy
+  # would be a second, competing one.
+  networkPolicyManagement: Unmanaged
+  envVarsInjectionPolicy: Disallowed
+  volumeClaimTemplatesPolicy: Disallowed
+  podTemplate:
+    metadata:
+      # The Pod pass of admissionpolicy.yaml and every task NetworkPolicy select on this.
+      labels:
+        app: sandbox-task
+        osdc.io/module: agent-sandbox
+    spec:
+      # A crashed sandboxd is not restarted: the claim's task fails rather than landing
+      # on a fresh daemon mid-run.
+      restartPolicy: Never
+      # gvisor pins the pod to the ai-sandbox fleet and runs it under runsc; the SA has no
+      # RBAC and no token mounted.
+      runtimeClassName: gvisor
+      serviceAccountName: sandbox-agent
+      automountServiceAccountToken: false
+      containers:
+        - name: task
+          image: __AGENT_IMAGE__
+          command: ["/usr/local/bin/sandboxd"]
+          args:
+            # Only the digest is here, so code in the pod cannot learn the token; the
+            # dispatcher holds the token itself (Secret sandboxd-token, see deploy.sh).
+            - --auth-token-sha256=__SANDBOXD_TOKEN_SHA256__
+            - --root-dir=/workspace
+            # Ceilings sandboxd enforces whatever the caller asks for. The time limit
+            # equals kube.TASK_DEADLINE_S; stdout matches the dispatcher's result cap.
+            - --execute-max-time-limit=900s
+            - --execute-max-stdout-limit-bytes=1048576
+            - --execute-max-stderr-limit-bytes=65536
+          ports:
+            - name: grpc
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+            periodSeconds: 2
+          # Inherited by every process sandboxd starts, so task.py sees them as before.
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: AWS_REGION
+              value: "__AWS_REGION__"
+            - name: SIGV4_PROXY
+              value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
+            - name: BEDROCK_DEFAULT_MODEL_ID
+              value: "__BEDROCK_DEFAULT_MODEL_ID__"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          # requests == limits (Guaranteed QoS): fleet capacity stays a division, and an
+          # uncapped clone evicts its own pod instead of pushing the node into DiskPressure.
+          # quota.yaml is sized for this slot.
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+              ephemeral-storage: "20Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+              ephemeral-storage: "20Gi"
+
+---
+# Claims must name a warm pool. At zero replicas every claim is a cold start — the same
+# one-pod-per-request behaviour as the Jobs — and warm pods are a replica change away.
+# Warm pods count against quota.yaml.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: sandbox-task
+  namespace: ai-sandbox
+  labels:
+    osdc.io/module: agent-sandbox
+spec:
+  replicas: 0
+  sandboxTemplateRef:
+    name: sandbox-task

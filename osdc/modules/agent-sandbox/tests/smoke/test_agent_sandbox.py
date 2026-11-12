@@ -1,7 +1,7 @@
 """Smoke tests for the agent-sandbox module.
 
 Validates the deployed standing infrastructure: namespace, quota, the gvisor
-RuntimeClass, the agent-sandbox controller, the sigv4-proxy that holds the only AWS credential, the dispatcher and
+RuntimeClass, the agent-sandbox controller and the task SandboxTemplate, the sigv4-proxy that holds the only AWS credential, the dispatcher and
 their Services, the dispatcher's namespaced RBAC, the credential-free sandbox-agent SA
 that task pods run as, and the NetworkPolicies. These check the security spine is wired
 — not that an agent run succeeds (that is the e2e test).
@@ -447,6 +447,36 @@ class TestAgentSandboxController:
     )
     def test_crds_are_installed(self, crd: str) -> None:
         run_kubectl(["get", "crd", crd])
+
+
+class TestTaskTemplate:
+    """The task pod as the controller will build it: sandboxd in the task image."""
+
+    def _container(self) -> dict:
+        template = run_kubectl(["get", "sandboxtemplate", "sandbox-task"], namespace=NAMESPACE)
+        return template["spec"]["podTemplate"]["spec"]["containers"][0]
+
+    def test_the_warm_pool_serves_the_template(self) -> None:
+        pool = run_kubectl(["get", "sandboxwarmpool", "sandbox-task"], namespace=NAMESPACE)
+        assert pool["spec"]["sandboxTemplateRef"]["name"] == "sandbox-task"
+
+    def test_template_is_substituted(self) -> None:
+        """Unsubstituted, the image rule rejects every task pod, and sandboxd accepts no
+        token at all."""
+        container = self._container()
+        assert "__" not in container["image"], f"task image not substituted: {container['image']!r}"
+        assert not any("__" in a for a in container["args"]), f"sandboxd args not substituted: {container['args']}"
+
+    def test_template_has_invokable_bedrock_model(self) -> None:
+        env = {e["name"]: e.get("value", "") for e in self._container().get("env", [])}
+        model = env.get("BEDROCK_DEFAULT_MODEL_ID", "")
+        assert model.startswith(("us.", "global.", "eu.", "apac.")), (
+            f"BEDROCK_DEFAULT_MODEL_ID must be a cross-region inference profile ID, got {model!r}."
+        )
+
+    def test_sandboxd_token_exists(self) -> None:
+        secret = run_kubectl(["get", "secret", "sandboxd-token"], namespace=NAMESPACE)
+        assert secret.get("data", {}).get("token"), "secret/sandboxd-token has no token"
 
 
 class TestAgentSandboxQuota:

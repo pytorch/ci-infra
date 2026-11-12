@@ -36,6 +36,15 @@ import test_oidc
 import yaml
 
 GIT_PROXY_MANIFEST = Path(__file__).resolve().parent.parent / "kubernetes" / "base" / "git-proxy.yaml"
+TEMPLATE_MANIFEST = Path(__file__).resolve().parent.parent / "kubernetes" / "base" / "sandbox-template.yaml"
+
+
+def _manifests():
+    return {d["kind"]: d for d in yaml.safe_load_all(TEMPLATE_MANIFEST.read_text())}
+
+
+def _template_pod():
+    return _manifests()["SandboxTemplate"]["spec"]["podTemplate"]
 
 
 def _load_entrypoint():
@@ -214,6 +223,63 @@ class TestJobManifest:
         leaves task pods with no egress allow-list at all."""
         labels = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["metadata"]["labels"]
         assert labels["app"] == "sandbox-task"
+
+
+class TestTaskTemplate:
+    """The SandboxTemplate the dispatcher will claim from. It runs sandboxd rather than
+    the task, but the pod around it must stay the one job_manifest() builds."""
+
+    def _container(self):
+        return _template_pod()["spec"]["containers"][0]
+
+    def test_isolates_the_pod_like_the_job_does(self):
+        job_pod = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]
+        tmpl = _template_pod()
+        assert tmpl["metadata"]["labels"] == job_pod["metadata"]["labels"]
+        for key in ("restartPolicy", "runtimeClassName", "serviceAccountName", "automountServiceAccountToken"):
+            assert tmpl["spec"][key] == job_pod["spec"][key], key
+        job_container = job_pod["spec"]["containers"][0]
+        assert self._container()["securityContext"] == job_container["securityContext"]
+        assert self._container()["resources"] == job_container["resources"]
+        assert self._container()["image"] == "__AGENT_IMAGE__"
+        assert "volumes" not in tmpl["spec"]
+
+    def test_runs_sandboxd_behind_the_token_digest(self):
+        """Only the digest belongs in the pod: anything in its spec is readable from
+        inside it, and the token would let task code drive other sandboxes."""
+        container = self._container()
+        assert container["command"] == ["/usr/local/bin/sandboxd"]
+        assert "--auth-token-sha256=__SANDBOXD_TOKEN_SHA256__" in container["args"]
+        assert not any("auth-token-file" in a for a in container["args"])
+
+    def test_sandboxd_ceilings_match_the_dispatcher(self):
+        args = dict(a.lstrip("-").split("=", 1) for a in self._container()["args"])
+        assert args["execute-max-time-limit"] == f"{kube.TASK_DEADLINE_S}s"
+        assert int(args["execute-max-stdout-limit-bytes"]) == kube.MAX_LOG_BYTES
+
+    def test_no_credential_reaches_the_task_pod(self):
+        """An EXACT set, for the reason TestGitProxy's is: a new variable must be added
+        here deliberately. Every process sandboxd starts inherits these."""
+        container = self._container()
+        assert {e["name"] for e in container["env"]} == {
+            "PYTHONUNBUFFERED",
+            "AWS_REGION",
+            "SIGV4_PROXY",
+            "BEDROCK_DEFAULT_MODEL_ID",
+        }
+        assert all("valueFrom" not in e for e in container["env"])
+        assert "envFrom" not in container
+
+    def test_claims_cannot_inject_env_or_volumes(self):
+        """The task's inputs reach the pod only through the sandboxd call, so nothing
+        per-task is baked into a pod that might be replaced and run again."""
+        tmpl = _manifests()["SandboxTemplate"]["spec"]
+        assert tmpl["envVarsInjectionPolicy"] == "Disallowed"
+        assert tmpl["volumeClaimTemplatesPolicy"] == "Disallowed"
+
+    def test_the_pool_serves_the_template(self):
+        pool = _manifests()["SandboxWarmPool"]
+        assert pool["spec"]["sandboxTemplateRef"]["name"] == _manifests()["SandboxTemplate"]["metadata"]["name"]
 
 
 class TestGitProxy:
