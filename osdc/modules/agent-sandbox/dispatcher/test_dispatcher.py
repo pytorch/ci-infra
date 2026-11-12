@@ -385,8 +385,12 @@ class TestRunToCompletion:
 
 
 @pytest.fixture
-def server(fake_k8s):
-    """The real dispatcher HTTP surface on an ephemeral port (IPv6, as in-cluster)."""
+def server(fake_k8s, monkeypatch):
+    """The real dispatcher HTTP surface on an ephemeral port (IPv6, as in-cluster).
+
+    With REQUIRE_AUTH rolled back to false, so most tests can call without minting a
+    token; the auth tests below turn it on or present one explicitly."""
+    monkeypatch.setattr(http_api, "REQUIRE_AUTH", False)
     httpd = http_api.HTTPServerV6(("::1", 0), http_api.Handler)
     Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://[::1]:{httpd.server_address[1]}"
@@ -969,7 +973,7 @@ class TestAuthenticatedSurface:
         """The migration flag governs the no-token case only. A token that IS presented
         is always verified, so turning enforcement on later cannot be the moment a
         forged token starts being rejected."""
-        assert http_api.REQUIRE_AUTH is False
+        assert http_api.REQUIRE_AUTH is False  # the server fixture rolled it back
         stranger = test_oidc._keypair()
         forged = jwt.encode(
             {**test_authorize.GOOD_CLAIMS, "iss": oidc.ISSUER, "aud": oidc.AUDIENCE, "exp": int(time.time()) + 300},
@@ -980,6 +984,20 @@ class TestAuthenticatedSurface:
         with pytest.raises(urllib.error.HTTPError) as exc:
             self._authed_post(server, forged, self._run(task="hello"))
         assert exc.value.code == 401
+
+    def test_auth_is_required_by_default(self, monkeypatch):
+        """A Deployment that loses the variable must fail closed."""
+        monkeypatch.delenv("REQUIRE_AUTH", raising=False)
+        assert http_api._flag("REQUIRE_AUTH", http_api.REQUIRE_AUTH_DEFAULT) is True
+
+    @pytest.mark.parametrize(("require", "code"), [(True, 401), (False, 404)])
+    def test_a_tokenless_status_tells_whether_auth_is_on(self, server, monkeypatch, require, code):
+        """The canary's discriminator: a tokenless /status naming no manifest is 401 with
+        auth required and an unknown-task 404 without it, and starts nothing."""
+        monkeypatch.setattr(http_api, "REQUIRE_AUTH", require)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener.open(f"{server}/status/000000000000", timeout=30)
+        assert exc.value.code == code
 
     def test_requiring_auth_refuses_a_request_with_no_token(self, server, monkeypatch):
         monkeypatch.setattr(http_api, "REQUIRE_AUTH", True)
