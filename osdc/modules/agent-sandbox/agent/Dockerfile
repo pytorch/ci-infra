@@ -1,19 +1,16 @@
 # Credential-free sandbox task image.
 #
-# One task per pod: task.py clones a public repo directly and calls Bedrock THROUGH
-# the sigv4 proxy, prints the result as JSON, and exits. No state survives the pod. The
-# image holds no secrets and no AWS SDK: Bedrock is reached as plain HTTP to the signing
-# proxy, which owns the credential.
-#
-# Two ways in: a dispatcher Job runs task.py directly (the ENTRYPOINT), while the
-# SandboxTemplate runs sandboxd instead, which listens on :9090 and starts task.py when
-# the dispatcher asks.
+# The pod runs sandboxd, which idles on :9090 until the dispatcher starts task.py through
+# it — once per pod. task.py clones a public repo directly and calls Bedrock THROUGH the
+# sigv4 proxy, prints the result as JSON, and exits. No state survives the pod. The image
+# holds no secrets and no AWS SDK: Bedrock is reached as plain HTTP to the signing proxy,
+# which owns the credential.
 #
 # Built and pushed to the in-cluster Harbor osdc project by the module's deploy.sh
 # under a content-hash tag — not built by hand. See the module README.
 
-# sandboxd (kubernetes-sigs/agent-sandbox): the daemon the SandboxTemplate runs, through
-# which the dispatcher starts each task. A static binary, pinned by digest.
+# sandboxd (kubernetes-sigs/agent-sandbox): the daemon through which the dispatcher starts
+# each task. A static binary, pinned by digest.
 FROM registry.k8s.io/agent-sandbox/sandboxd:v1.0.10@sha256:91c6c3fef9a3790d0e3c152efc647b36dcf6aaac3728a63770f91a1051553728 AS sandboxd
 
 FROM public.ecr.aws/docker/library/debian:12-slim
@@ -38,4 +35,4 @@ RUN mkdir -p /workspace && chown 1000:1000 /workspace
 # UID 1000, non-root. The pod securityContext enforces this too.
 USER 1000
 
-ENTRYPOINT ["python3", "/usr/local/bin/task.py"]
+ENTRYPOINT ["/usr/local/bin/sandboxd"]

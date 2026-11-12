@@ -1,15 +1,15 @@
-"""The task-Job admission policy, checked against the Job the dispatcher actually builds.
+"""The task admission policies, checked against the pod and claim this module really makes.
 
-admissionpolicy.yaml is a second copy of the isolation contract that job_manifest()
-already implements, written in CEL and enforced by the API server. Two copies of one
-contract drift, and the way they drift is silent: job_manifest() changes, the cluster
-starts rejecting every task, and the first symptom is a dispatch error in production.
+admissionpolicy.yaml is a second copy of the isolation contract that sandbox-template.yaml
+already spells out, written in CEL and enforced by the API server. Two copies of one
+contract drift, and the way they drift is silent: the template changes, the cluster starts
+rejecting every task pod, and the first symptom is a dispatch error in production.
 
 So each CEL validation is mirrored here as a Python predicate, keyed by the policy's own
 message string. The test then asserts three things: every validation in the YAML has a
-mirror (adding a CEL rule without one fails here), the real job_manifest() output
-satisfies all of them, and each rule actually rejects the thing it names — a mirror that
-accepts everything would otherwise pass quietly.
+mirror (adding a CEL rule without one fails here), the real template pod satisfies all of
+them, and each rule actually rejects the thing it names — a mirror that accepts everything
+would otherwise pass quietly.
 
 Keying on the message catches a rule ADDED without a mirror, and a message reworded away
 from its mirror. It does NOT catch the likeliest drift of all: an expression edited in
@@ -22,12 +22,12 @@ that is the API server's job on first apply. What it does claim is that the two
 descriptions of a task pod have not diverged.
 """
 
+import copy
 import datetime
 import hashlib
 import re
 from pathlib import Path
 
-import authorize
 import kube
 import pytest
 import yaml
@@ -37,6 +37,7 @@ POLICY_PATH = MODULE / "kubernetes" / "base" / "admissionpolicy.yaml"
 DEPLOY_SH = MODULE / "deploy.sh"
 DISPATCHER_MANIFEST = MODULE / "kubernetes" / "base" / "dispatcher.yaml"
 KUSTOMIZATION = MODULE / "kubernetes" / "base" / "kustomization.yaml"
+TEMPLATE_PATH = MODULE / "kubernetes" / "base" / "sandbox-template.yaml"
 
 
 def _deployed_image_repository() -> str:
@@ -45,7 +46,7 @@ def _deployed_image_repository() -> str:
     Read rather than restated. The repository reaches a task pod from `IMAGE=` in
     deploy.sh and the policy names it again in a CEL literal; a third hand-written copy
     here would make the image rule the one rule checked against the test's own opinion.
-    Change `IMAGE=` alone and the policy rejects every Job — in production, with this
+    Change `IMAGE=` alone and the policy rejects every task pod — in production, with this
     suite green.
     """
     match = re.search(r'^IMAGE="([^"]+)"', DEPLOY_SH.read_text(), re.M)
@@ -63,7 +64,7 @@ def documents():
     return list(yaml.safe_load_all(POLICY_PATH.read_text()))
 
 
-JOB_POLICY = "agent-sandbox-task-jobs"
+POD_POLICY = "agent-sandbox-task-pods"
 CLAIM_POLICY = "agent-sandbox-task-claims"
 
 
@@ -77,13 +78,13 @@ def _bindings(documents, name):
 
 @pytest.fixture(scope="module")
 def policy(documents):
-    """The task-Job / task-Pod policy."""
-    return _policy(documents, JOB_POLICY)
+    """The task-pod policy."""
+    return _policy(documents, POD_POLICY)
 
 
 @pytest.fixture(scope="module")
 def bindings(documents):
-    return _bindings(documents, JOB_POLICY)
+    return _bindings(documents, POD_POLICY)
 
 
 @pytest.fixture(scope="module")
@@ -91,134 +92,114 @@ def claim_policy(documents):
     return _policy(documents, CLAIM_POLICY)
 
 
-@pytest.fixture(autouse=True)
-def deployed_image(monkeypatch):
-    """The task image the dispatcher was deployed with.
-
-    Set here rather than written over the manifest afterwards. a_job() used to overwrite
-    containers[0]["image"] on the way out, which meant the image rule was the one rule
-    never checked against a value job_manifest() actually produced — it was checked
-    against the fixture. AGENT_IMAGE defaults to "" in a test process, and "" is exactly
-    what a deploy.sh that failed to substitute the tag would emit, so the old fixture hid
-    the one input the rule exists to reject.
-    """
-    monkeypatch.setattr(kube, "AGENT_IMAGE", GOOD_IMAGE)
+def _template_pod(image: str = GOOD_IMAGE) -> dict:
+    """The SandboxTemplate's pod, with the image deploy.sh would substitute."""
+    template = next(d for d in yaml.safe_load_all(TEMPLATE_PATH.read_text()) if d["kind"] == "SandboxTemplate")
+    pod = copy.deepcopy(template["spec"]["podTemplate"])
+    for c in pod["spec"]["containers"]:
+        c["image"] = c["image"].replace("__AGENT_IMAGE__", image)
+    return pod
 
 
-def a_job(**pod_overrides) -> dict:
-    """A real job_manifest() with the pod spec optionally mutated."""
-    grant = authorize.Grant(
-        caller="pytorch/ciforge",
-        manifest="ciforge-experiments",
-        workflow_ref="pytorch/ciforge/.github/workflows/x.yml@refs/heads/main",
-        clone_repo="pytorch/pytorch",
-        model="",
-        task="hello",
-        ref="",
-        pr=0,
-    )
-    job = kube.job_manifest("abc123456789", grant)
-    job["spec"]["template"]["spec"].update(pod_overrides)
-    return job
+def a_pod(**spec_overrides) -> dict:
+    """The real template pod with its spec optionally mutated."""
+    pod = _template_pod()
+    pod["spec"].update(spec_overrides)
+    return pod
 
 
-def _pod(job):
-    return job["spec"]["template"]["spec"]
+def _pod(pod):
+    return pod["spec"]
 
 
-def _all_containers(job):
-    return _pod(job)["containers"] + _pod(job).get("initContainers", [])
+def _all_containers(pod):
+    return _pod(pod)["containers"] + _pod(pod).get("initContainers", [])
 
 
-def _nodename_rule(pod: dict, *, is_job: bool, operation: str) -> bool:
+def _nodename_rule(spec: dict, *, operation: str) -> bool:
     """The one rule whose meaning depends on the REQUEST and not only on the object.
 
-    Every other mirror is a function of a Job, which is why none of them could see the
-    bug this signature exists for: the Pod binding matches UPDATE, and by the time a task
-    pod is updated the scheduler has already set spec.nodeName through pods/binding. A
-    rule of `!has(nodeName)` therefore denied every write to a running task pod — among
-    them the Job controller's finalizer removal, without which status.succeeded never
-    reaches 1 and the dispatcher waits out its whole deadline on a task that finished.
+    By the time a task pod is updated the scheduler has already set spec.nodeName through
+    pods/binding. A rule of `!has(nodeName)` therefore denied every write to a running
+    task pod — the controller's own label and status writes among them.
     """
-    return "nodeName" not in pod or (not is_job and operation == "UPDATE")
+    return "nodeName" not in spec or operation == "UPDATE"
 
 
 # Each entry mirrors one `validations:` item, keyed by the exact `message:` string in the
-# YAML, and paired with a Job the rule must reject. Keeping the message as the key is what
+# YAML, and paired with a pod the rule must reject. Keeping the message as the key is what
 # makes drift loud: reword a message in the policy and this test names the rule that lost
 # its mirror.
 MIRRORS = {
     "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)": (
-        lambda j: _pod(j).get("runtimeClassName") == "gvisor",
-        lambda: a_job(runtimeClassName="runc"),
+        lambda p: _pod(p).get("runtimeClassName") == "gvisor",
+        lambda: a_pod(runtimeClassName="runc"),
     ),
     "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC": (
-        lambda j: _pod(j).get("serviceAccountName") == "sandbox-agent",
-        lambda: a_job(serviceAccountName="sandbox-dispatcher"),
+        lambda p: _pod(p).get("serviceAccountName") == "sandbox-agent",
+        lambda: a_pod(serviceAccountName="sandbox-dispatcher"),
     ),
     "task pods must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox": (
-        lambda j: _pod(j).get("automountServiceAccountToken") is False,
-        lambda: a_job(automountServiceAccountToken=True),
+        lambda p: _pod(p).get("automountServiceAccountToken") is False,
+        lambda: a_pod(automountServiceAccountToken=True),
     ),
     "task pods must not share host namespaces (hostNetwork/hostPID/hostIPC)": (
-        lambda j: not any(_pod(j).get(k) for k in ("hostNetwork", "hostPID", "hostIPC")),
-        lambda: a_job(hostPID=True),
+        lambda p: not any(_pod(p).get(k) for k in ("hostNetwork", "hostPID", "hostIPC")),
+        lambda: a_pod(hostPID=True),
     ),
     "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": (
-        lambda j: _nodename_rule(_pod(j), is_job=True, operation="CREATE"),
-        lambda: a_job(nodeName="ip-10-0-0-1"),
+        lambda p: _nodename_rule(_pod(p), operation="CREATE"),
+        lambda: a_pod(nodeName="ip-10-0-0-1"),
     ),
     "task pods must use the default scheduler — an alternate scheduler need not honour the RuntimeClass node selector": (
-        lambda j: _pod(j).get("schedulerName", "default-scheduler") == "default-scheduler",
-        lambda: a_job(schedulerName="my-scheduler"),
+        lambda p: _pod(p).get("schedulerName", "default-scheduler") == "default-scheduler",
+        lambda: a_pod(schedulerName="my-scheduler"),
     ),
     "task pods must declare no volumes — see the module README before adding one": (
-        lambda j: not _pod(j).get("volumes"),
-        lambda: a_job(volumes=[{"name": "host", "hostPath": {"path": "/"}}]),
+        lambda p: not _pod(p).get("volumes"),
+        lambda: a_pod(volumes=[{"name": "host", "hostPath": {"path": "/"}}]),
     ),
     "task pods must claim no devices — a resource claim can attach host hardware and its mounts": (
-        lambda j: not _pod(j).get("resourceClaims"),
-        lambda: a_job(resourceClaims=[{"name": "gpu", "resourceClaimName": "gpu"}]),
+        lambda p: not _pod(p).get("resourceClaims"),
+        lambda: a_pod(resourceClaims=[{"name": "gpu", "resourceClaimName": "gpu"}]),
     ),
     "task pods must set no sysctls": (
-        lambda j: not _pod(j).get("securityContext", {}).get("sysctls"),
-        lambda: a_job(securityContext={"sysctls": [{"name": "net.core.somaxconn", "value": "1024"}]}),
+        lambda p: not _pod(p).get("securityContext", {}).get("sysctls"),
+        lambda: a_pod(securityContext={"sysctls": [{"name": "net.core.somaxconn", "value": "1024"}]}),
     ),
     "task pods must declare no init containers": (
-        lambda j: not _pod(j).get("initContainers"),
-        lambda: a_job(initContainers=[{"name": "sidecar", "image": GOOD_IMAGE, "restartPolicy": "Always"}]),
+        lambda p: not _pod(p).get("initContainers"),
+        lambda: a_pod(initContainers=[{"name": "sidecar", "image": GOOD_IMAGE, "restartPolicy": "Always"}]),
     ),
     "task containers must run the task image from harbor:30002/osdc/ci-agent-sandbox": (
-        lambda j: all(c["image"].startswith(f"{IMAGE_REPOSITORY}:") for c in _all_containers(j)),
-        lambda: a_job(
-            containers=[{**a_job()["spec"]["template"]["spec"]["containers"][0], "image": "docker.io/alpine"}]
-        ),
+        lambda p: all(c["image"].startswith(f"{IMAGE_REPOSITORY}:") for c in _all_containers(p)),
+        lambda: a_pod(containers=[{**a_pod()["spec"]["containers"][0], "image": "docker.io/alpine"}]),
     ),
     "a task pod runs exactly one container": (
-        lambda j: len(_pod(j)["containers"]) == 1,
-        lambda: a_job(containers=a_job()["spec"]["template"]["spec"]["containers"] * 2),
+        lambda p: len(_pod(p)["containers"]) == 1,
+        lambda: a_pod(containers=a_pod()["spec"]["containers"] * 2),
     ),
     "task containers must not use envFrom — it pulls a whole Secret or ConfigMap into the sandbox": (
-        lambda j: all(not c.get("envFrom") for c in _all_containers(j)),
+        lambda p: all(not c.get("envFrom") for c in _all_containers(p)),
         lambda: _with_container(envFrom=[{"secretRef": {"name": "bedrock"}}]),
     ),
     "task container env must be literal values — valueFrom reads Secrets, ConfigMaps and pod fields into the sandbox": (
-        lambda j: all(all("valueFrom" not in e for e in c.get("env", [])) for c in _all_containers(j)),
+        lambda p: all(all("valueFrom" not in e for e in c.get("env", [])) for c in _all_containers(p)),
         lambda: _with_container(env=[{"name": "X", "valueFrom": {"secretKeyRef": {"name": "s", "key": "k"}}}]),
     ),
     "task containers must set allowPrivilegeEscalation: false and runAsNonRoot: true, and must not be privileged": (
-        lambda j: all(
+        lambda p: all(
             c.get("securityContext", {}).get("allowPrivilegeEscalation") is False
             and c.get("securityContext", {}).get("privileged") in (None, False)
             and c.get("securityContext", {}).get("runAsNonRoot") is True
-            for c in _all_containers(j)
+            for c in _all_containers(p)
         ),
         lambda: _with_container(
             securityContext={"privileged": True, "runAsNonRoot": True, "allowPrivilegeEscalation": False}
         ),
     ),
     "task containers must not add Linux capabilities": (
-        lambda j: all(not c.get("securityContext", {}).get("capabilities", {}).get("add") for c in _all_containers(j)),
+        lambda p: all(not c.get("securityContext", {}).get("capabilities", {}).get("add") for c in _all_containers(p)),
         lambda: _with_container(
             securityContext={
                 "runAsNonRoot": True,
@@ -228,28 +209,28 @@ MIRRORS = {
         ),
     ),
     "task containers must not unmask /proc": (
-        lambda j: all(
-            c.get("securityContext", {}).get("procMount", "Default") == "Default" for c in _all_containers(j)
+        lambda p: all(
+            c.get("securityContext", {}).get("procMount", "Default") == "Default" for c in _all_containers(p)
         ),
         lambda: _with_container(
             securityContext={"runAsNonRoot": True, "allowPrivilegeEscalation": False, "procMount": "Unmasked"}
         ),
     ),
     "task containers must not publish a hostPort": (
-        lambda j: all("hostPort" not in p for c in _all_containers(j) for p in c.get("ports", [])),
+        lambda p: all("hostPort" not in p for c in _all_containers(p) for p in c.get("ports", [])),
         lambda: _with_container(ports=[{"containerPort": 8080, "hostPort": 8080}]),
     ),
     "task containers must set cpu, memory and ephemeral-storage limits": (
-        lambda j: all(
+        lambda p: all(
             {"cpu", "memory", "ephemeral-storage"} <= set(c.get("resources", {}).get("limits", {}))
-            for c in _all_containers(j)
+            for c in _all_containers(p)
         ),
         lambda: _with_container(resources={"requests": {"cpu": "2"}}),
     ),
     "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": (
-        lambda j: all(
+        lambda p: all(
             set(c.get("resources", {}).get("limits", {})) <= {"cpu", "memory", "ephemeral-storage"}
-            for c in _all_containers(j)
+            for c in _all_containers(p)
         ),
         # requests mirrors limits on purpose: Kubernetes requires that of an extended
         # resource, so this counterexample satisfies both the rule above and Guaranteed
@@ -261,60 +242,22 @@ MIRRORS = {
             }
         ),
     ),
-    "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it": (
-        lambda j: _pod(j).get("terminationGracePeriodSeconds", 30) <= 60,
-        lambda: a_job(terminationGracePeriodSeconds=3600),
-    ),
-    "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": (
-        lambda j: 0 < j["spec"].get("activeDeadlineSeconds", 0) <= 3600,
-        lambda: _without_job_field("activeDeadlineSeconds"),
-    ),
-    "task Jobs must run one pod at a time (parallelism: 1)": (
-        lambda j: j["spec"].get("parallelism", 1) == 1,
-        lambda: _with_job_field(parallelism=20),
-    ),
-    "task Jobs must run exactly one pod (completions: 1)": (
-        lambda j: j["spec"].get("completions", 1) == 1,
-        lambda: _with_job_field(completions=20),
-    ),
-    "task Jobs must set backoffLimit: 0 — a retry re-clones and re-prompts the model, and bills for it": (
-        lambda j: j["spec"].get("backoffLimit") == 0,
-        lambda: _with_job_field(backoffLimit=6),
-    ),
-    "task Job pod templates must carry the app: sandbox-task label": (
-        lambda j: j["spec"]["template"]["metadata"]["labels"].get("app") == "sandbox-task",
-        lambda: _with_template_labels({"app": "something-else"}),
+    "task pods must not set terminationGracePeriodSeconds above 60 — it is how long a deleted task pod may keep its node": (
+        lambda p: _pod(p).get("terminationGracePeriodSeconds", 30) <= 60,
+        lambda: a_pod(terminationGracePeriodSeconds=3600),
     ),
     "task containers must request exactly what they limit (Guaranteed QoS)": (
-        lambda j: all(c["resources"]["requests"] == c["resources"]["limits"] for c in _all_containers(j)),
+        lambda p: all(c["resources"]["requests"] == c["resources"]["limits"] for c in _all_containers(p)),
         lambda: _with_container(resources={"requests": {"cpu": "1"}, "limits": {"cpu": "8"}}),
     ),
 }
 
 
 def _with_container(**container_overrides) -> dict:
-    """A Job whose single container carries the given overrides."""
-    job = a_job()
-    _pod(job)["containers"][0].update(container_overrides)
-    return job
-
-
-def _with_job_field(**job_overrides) -> dict:
-    job = a_job()
-    job["spec"].update(job_overrides)
-    return job
-
-
-def _with_template_labels(labels: dict) -> dict:
-    job = a_job()
-    job["spec"]["template"]["metadata"]["labels"] = labels
-    return job
-
-
-def _without_job_field(name: str) -> dict:
-    job = a_job()
-    del job["spec"][name]
-    return job
+    """A pod whose single container carries the given overrides."""
+    pod = a_pod()
+    _pod(pod)["containers"][0].update(container_overrides)
+    return pod
 
 
 def test_validation_messages_are_distinct(policy):
@@ -345,30 +288,10 @@ def test_every_validation_has_a_mirror(policy):
 
 
 @pytest.mark.parametrize("message", sorted(MIRRORS))
-def test_real_job_manifest_satisfies_the_policy(message):
-    """What kube.job_manifest() builds today would be admitted."""
+def test_the_task_template_pod_satisfies_the_policy(message):
+    """What sandbox-template.yaml declares today would be admitted."""
     predicate, _ = MIRRORS[message]
-    assert predicate(a_job()), f"job_manifest() violates: {message}"
-
-
-TEMPLATE_PATH = MODULE / "kubernetes" / "base" / "sandbox-template.yaml"
-
-
-def _template_pod_as_job() -> dict:
-    """The SandboxTemplate's pod, image substituted as deploy.sh would, wrapped in the Job
-    shape the mirrors read. The Pod pass will see these pods once the dispatcher claims
-    from the template, so it must admit them already."""
-    template = next(d for d in yaml.safe_load_all(TEMPLATE_PATH.read_text()) if d["kind"] == "SandboxTemplate")
-    pod = template["spec"]["podTemplate"]
-    for c in pod["spec"]["containers"]:
-        c["image"] = c["image"].replace("__AGENT_IMAGE__", GOOD_IMAGE)
-    return {"spec": {"template": pod}}
-
-
-@pytest.mark.parametrize("message", sorted(m for m in MIRRORS if not m.startswith("task Jobs must")))
-def test_the_task_template_pod_satisfies_the_pod_rules(message):
-    predicate, _ = MIRRORS[message]
-    assert predicate(_template_pod_as_job()), f"the SandboxTemplate pod violates: {message}"
+    assert predicate(a_pod()), f"the SandboxTemplate pod violates: {message}"
 
 
 @pytest.mark.parametrize("message", sorted(MIRRORS))
@@ -379,27 +302,19 @@ def test_each_rule_rejects_its_own_violation(message):
 
 
 @pytest.mark.parametrize(
-    ("pod", "is_job", "operation", "admitted"),
+    ("spec", "operation", "admitted"),
     [
-        ({}, True, "CREATE", True),
-        ({"nodeName": "ip-10-0-0-1"}, True, "CREATE", False),
-        ({}, False, "CREATE", True),
-        ({"nodeName": "ip-10-0-0-1"}, False, "CREATE", False),
-        # The quadrant the Job-shaped mirrors structurally cannot reach, and the one that
-        # broke: the scheduler has bound the pod, so nodeName is set on every subsequent
-        # UPDATE the Pod binding sees.
-        ({"nodeName": "ip-10-0-0-1"}, False, "UPDATE", True),
-        # The fourth quadrant, and the one that keeps the exemption honest: a Job template
-        # is never bound by the scheduler, so nothing sets nodeName there. Drop the
-        # `not is_job` guard from the mirror and only this case reddens.
-        ({"nodeName": "ip-10-0-0-1"}, True, "UPDATE", False),
+        ({}, "CREATE", True),
+        ({"nodeName": "ip-10-0-0-1"}, "CREATE", False),
+        # The scheduler has bound the pod, so nodeName is set on every later UPDATE.
+        ({"nodeName": "ip-10-0-0-1"}, "UPDATE", True),
     ],
 )
-def test_the_nodename_rule_admits_a_bound_pod_on_update(pod, is_job, operation, admitted):
+def test_the_nodename_rule_admits_a_bound_pod_on_update(spec, operation, admitted):
     """Exempting UPDATE costs nothing: spec.nodeName is immutable through the pods main
     resource, so the only writer is the pods/binding subresource this policy never
     matched. Pinning it at CREATE is the whole of what the rule ever enforced."""
-    assert _nodename_rule(pod, is_job=is_job, operation=operation) is admitted
+    assert _nodename_rule(spec, operation=operation) is admitted
 
 
 def test_bindings_deny_rather_than_warn(policy, bindings):
@@ -413,56 +328,15 @@ def test_bindings_deny_rather_than_warn(policy, bindings):
         }
 
 
-def _binding_for(bindings, resource):
-    # Membership rather than list equality: the ephemeral-container gap the policy file
-    # prescribes closing is spelled `resources: ["pods", "pods/ephemeralcontainers"]` on
-    # the existing rule, and an `==` here would then report the Pod binding as missing —
-    # sending whoever makes that change after a helper rather than after their change.
-    matches = [
-        b for b in bindings if any(resource in r["resources"] for r in b["spec"]["matchResources"]["resourceRules"])
-    ]
-    assert len(matches) == 1, f"expected exactly one binding covering {resource}, found {len(matches)}"
-    return matches[0]
-
-
-def test_the_job_pass_is_not_label_scoped(bindings):
-    """A Job that simply omitted the label would otherwise skip the policy entirely —
-    which is the bug this policy exists to catch."""
-    assert "objectSelector" not in _binding_for(bindings, "jobs")["spec"]["matchResources"]
-
-
-def test_the_pod_pass_selects_the_label_the_job_template_stamps(bindings):
-    """Validating only the Job template leaves the window a mutating webhook writes into:
-    the pod is created later, by the Job controller, from a template already passed. That
-    second pass is label-scoped, so a label drift in job_manifest() would silently switch
-    it off rather than fail anything — hence this test rather than a comment."""
-    selector = _binding_for(bindings, "pods")["spec"]["matchResources"]["objectSelector"]["matchLabels"]
-    template_labels = a_job()["spec"]["template"]["metadata"]["labels"]
+def test_the_pod_pass_selects_the_label_the_template_stamps(bindings):
+    """The Pod pass is label-scoped, so a label drift in the template would silently
+    switch it off rather than fail anything — hence this test rather than a comment."""
+    (binding,) = bindings
+    selector = binding["spec"]["matchResources"]["objectSelector"]["matchLabels"]
+    template_labels = a_pod()["metadata"]["labels"]
     assert selector.items() <= template_labels.items(), (
-        f"pod binding selects {selector}, but the Job template stamps {template_labels}"
+        f"pod binding selects {selector}, but the template stamps {template_labels}"
     )
-
-
-# A Job field reached through `object`/`oldObject` rather than through `variables.pod`.
-#
-# `\s*` around the dots because CEL allows it there, and that is where an evasion would sit
-# (`object.spec .parallelism`). `\b` rather than a hand-built lookbehind: three rounds of
-# review each found a new hole in a cleverer predecessor — collapsing whitespace globally
-# welded `'app' in object.spec…` into one token and hid the real rule at the bottom of the
-# policy; collapsing it around dots then hid `'app' in .object.spec…`. A lexer is the only
-# thing that ends that regress, and a lexer is far too much machinery for a spelling lint.
-#
-# So this errs deliberately toward MATCHING. `variables.object.spec.x` — a member access on a
-# variable named `object`, which does not exist — would be flagged, as would a dotted path
-# inside a string literal such as `'registry/object.spec.image'`. Both cost a spurious RED on
-# a safe rule, which a maintainer reads and dismisses; the failure this test exists to prevent
-# is the opposite one, and is not on that list. Known misses, unchanged: a parenthesised
-# `(object.spec).suspend`, an access split by a CEL comment, and a future `variables` alias.
-_JOB_FIELD_ACCESS = re.compile(r"""(?<!['"])\b(?:old)?[Oo]bject\s*\.\s*spec\s*\.""")
-
-
-def _reaches_a_job_field(expression: str) -> bool:
-    return bool(_JOB_FIELD_ACCESS.search(expression))
 
 
 def test_the_kustomization_does_not_rewrite_the_dispatcher_identity():
@@ -471,8 +345,8 @@ def test_the_kustomization_does_not_rewrite_the_dispatcher_identity():
     The test above derives `system:serviceaccount:<ns>:<sa>` from dispatcher.yaml, which is
     the deployed value only because the base applies the manifests as written. Add a
     `namespace:` or a name prefix here and the cluster sees a subject the policy's
-    matchCondition does not name — the Job pass switches off silently, and deriving from
-    source would go on agreeing with itself.
+    matchCondition does not name — the claims pass switches off silently, and deriving
+    from source would go on agreeing with itself.
 
     Scope, stated rather than implied: this is a denylist of the directives that can rewrite
     an identity, so it is a tripwire on the deployment path staying simple, NOT a proof that
@@ -541,97 +415,21 @@ def test_the_kustomization_does_not_rewrite_the_dispatcher_identity():
         )
 
 
-def test_job_only_rules_are_guarded_for_the_pod_pass(policy):
-    """One policy matches two kinds, so a rule reaching `object.spec` needs a kind guard.
-
-    Five validations reach Job fields through `object.spec` rather than through
-    `variables.pod`, and all five carry the `!variables.isJob ||` prefix. Nothing else
-    requires it, so this enforces the SPELLING CONVENTION rather than proving each rule
-    unsafe without it. Before this test, a sixth Job-level bound written without the prefix
-    shipped a green unit suite. What that costs depends on the shape. A
-    `!has(object.spec.ttlSeconds...)`
-    rule is harmless — `has()` on an absent field of a dynamically typed object is simply
-    false. A rule that DEREFERENCES the field (`object.spec.ttlSecondsAfterFinished == 0`)
-    hits `no such key` on every task pod, and failurePolicy: Fail turns that evaluation
-    error into a denial: the Job controller can create no pod, and every /run hangs to its
-    deadline pointing at the Job controller rather than at the new rule.
-
-    Three things this does NOT prove, so nobody reads it as more than it is. It is textual,
-    so it sees neither an access through a future `variables` alias nor a parenthesised
-    spelling like `(object.spec).suspend`; a leading guard is not proof the whole expression
-    is protected, since a lower-precedence ternary later in the same expression can put a
-    dereference outside it; and the guard is not the only thing that can make a rule safe —
-    the `parallelism` and `completions` rules would also admit an absent field through their
-    own `!has(...)`. Splitting the Job bounds into a second policy whose matchConstraints
-    name only batch/jobs is what would make the guarantee structural instead.
-    """
-    unguarded = [
-        v["message"]
-        for v in policy["spec"]["validations"]
-        if _reaches_a_job_field(v["expression"]) and not v["expression"].lstrip().startswith("!variables.isJob ||")
-    ]
-    assert not unguarded, (
-        "these rules reach a Job field through object.spec without the `!variables.isJob ||` "
-        f"guard, so the Pod pass may deny every task pod: {unguarded}"
-    )
-
-
-def test_policy_fails_closed_and_covers_both_kinds(policy):
+def test_policy_fails_closed_and_covers_pods(policy):
     assert policy["spec"]["failurePolicy"] == "Fail"
-
-    # Membership, for the same reason _binding_for uses it: adding
-    # `pods/ephemeralcontainers` to the pods rule — the change this policy file prescribes
-    # — must not make this assertion claim the policy stopped covering pods.
-    # ONLY the resources list is relaxed to membership, and only so that adding
-    # `pods/ephemeralcontainers` — the change this policy file prescribes — does not make
-    # this assertion claim the Pod pass disappeared. apiGroups and operations stay exact:
-    # widening either is a change that should be read rather than absorbed here.
-    def covers(api_group: str, resource: str) -> bool:
-        return any(
-            r["apiGroups"] == [api_group]
-            and resource in r["resources"]
-            and set(r["operations"]) == {"CREATE", "UPDATE"}
-            for r in policy["spec"]["matchConstraints"]["resourceRules"]
-        )
-
-    assert covers("batch", "jobs"), "the Job pass matches nothing"
-    assert covers("", "pods"), "the Pod pass matches nothing"
+    # Membership for the resources list only, so adding `pods/ephemeralcontainers` — the
+    # change this policy file prescribes — does not make this claim the Pod pass vanished.
+    # apiGroups and operations stay exact: widening either should be read, not absorbed.
+    assert any(
+        r["apiGroups"] == [""] and "pods" in r["resources"] and set(r["operations"]) == {"CREATE", "UPDATE"}
+        for r in policy["spec"]["matchConstraints"]["resourceRules"]
+    ), "the Pod pass matches nothing"
 
 
-def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
-    """Scoping it to the one process holding create-Job RBAC is what lets the namespace
-    also hold an ordinary maintenance Job (none exists today) without that Job having to
-    satisfy a contract written for untrusted agent workloads.
-
-    The username is DERIVED from the Deployment rather than restated here, for the same
-    reason the image repository is read out of deploy.sh: a hand-written copy would make
-    the one value that gates the whole Job pass the one value checked against this test's
-    own opinion. Its drift also fails open — rename the SA or the namespace everywhere but
-    admissionpolicy.yaml and no Job request satisfies the condition, so every Job the
-    dispatcher creates is admitted unchecked, silently and with this suite green.
-
-    The Pod pass must stay unconditional: pods are created by the Job controller, so a
-    blanket userInfo condition would switch the second pass off entirely."""
-    conditions = policy["spec"]["matchConditions"]
-    assert len(conditions) == 1
-    expression = conditions[0]["expression"]
-    assert f"'{_deployed_dispatcher_identity()}'" in expression, (
-        f"the condition names a subject the module does not deploy; the Deployment runs as "
-        f"{_deployed_dispatcher_identity()}, so no Job request would satisfy it and the Job "
-        f"pass would be off: {expression}"
-    )
-    assert "request.kind.kind != 'Job'" in expression, (
-        "the condition must exempt non-Job requests, or it disables the Pod pass"
-    )
-    # Substrings cannot see the edit that matters here. Turn the `||` into `&&` and both
-    # assertions above still hold, while the Pod pass — which no Pod request can satisfy
-    # once it must ALSO come from the dispatcher's service account — is switched off with
-    # this suite green. The digest below is what makes that edit fail; the two assertions
-    # stay because they name what the condition is for when it does.
-    assert {c["name"]: _digest(c["expression"]) for c in conditions} == MATCH_CONDITION_DIGESTS, (
-        "the match condition that gates the whole policy changed — re-read this test's "
-        "reasoning against the new text before re-pinning"
-    )
+def test_the_pod_pass_is_unconditional(policy):
+    """Pods are created by the agent-sandbox controller, not the dispatcher, so a userInfo
+    condition of the claims policy's kind would switch the Pod pass off entirely."""
+    assert "matchConditions" not in policy["spec"]
 
 
 # Every rule's expression, pinned by digest of its EXACT parsed text — see _digest(). The
@@ -639,22 +437,10 @@ def test_the_job_pass_is_scoped_to_the_dispatchers_service_account(policy):
 # whitespace-NORMALISED expression instead tolerates reformatting, at the price of being
 # blind to whitespace inside a quoted CEL literal, where 'a  b' -> 'a b' IS semantic.
 #
-# Measured on this file rather than argued, because the earlier wording here claimed exact
-# hashing cost nothing and that is false. 27 validations: 6 are folded block scalars and 21
-# are one-line double-quoted scalars. Folding preserves the newline before a MORE-INDENTED
-# line, so re-indenting one continuation line of the privilege rule moves its exact digest
-# 8c0bbaf088a3 -> 00cb38b33db1 while the normalised digest does not move at all. That false
-# alarm is the live cost. The benefit is currently unreachable: NONE of the 15 quoted CEL
-# literals in this file contains a space, so there is no literal whitespace to be blind to
-# yet. Exact hashing is kept because it fails in the safe direction — a spurious re-pin
-# prompt, never a missed edit — and because the day a literal does gain a space, the
-# normalised version would go quietly wrong. Revisit deliberately, not by accident.
-#
-# THE VALUES BELOW WERE RE-PINNED WHOLESALE at that switch. That is legitimate here only
-# because the INPUT was independently shown unchanged — the policy file is byte-identical
-# across main, this commit's parent, this commit and the branch tip — so nothing could ride
-# along inside a recomputation. Six stored values actually moved, all validations. Any
-# FUTURE mismatch is a real edit and gets the full treatment below.
+# Exact hashing is kept because it fails in the safe direction — a re-indented
+# continuation line inside a folded scalar is a spurious re-pin prompt, never a missed
+# edit — and because normalising would go quietly wrong the day a quoted CEL literal
+# gains a space. Revisit deliberately, not by accident.
 #
 # The MIRRORS table above is keyed by MESSAGE, which cannot see an expression edited in
 # place with its message untouched — and that is the drift most likely to actually happen,
@@ -666,7 +452,7 @@ EXPRESSION_DIGESTS = {
     "task pods must set runtimeClassName: gvisor (this is also what confines them to the ai-sandbox fleet)": "93161384aabc",
     "task pods must run as serviceAccountName: sandbox-agent, which holds no RBAC": "2779cb7d8a6b",
     "task pods must set automountServiceAccountToken: false — a mounted token is API access from inside the sandbox": "224303faac17",
-    "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": "767387bc5943",
+    "task pods must not pin nodeName — it bypasses the scheduler, and with it the RuntimeClass node selector": "8e885c64824f",
     "task pods must use the default scheduler — an alternate scheduler need not honour the RuntimeClass node selector": "d76e4a690cdc",
     "task pods must not share host namespaces (hostNetwork/hostPID/hostIPC)": "1cafda1b80d7",
     "task pods must declare no volumes — see the module README before adding one": "0ad2da654e90",
@@ -684,26 +470,15 @@ EXPRESSION_DIGESTS = {
     "task containers must set cpu, memory and ephemeral-storage limits": "82ea58d521a8",
     "task containers must limit cpu, memory and ephemeral-storage and nothing else — any other key is an unapproved resource, device requests among them": "cbe9db10c667",
     "task containers must request exactly what they limit (Guaranteed QoS)": "e5824532099d",
-    "task pods must not set terminationGracePeriodSeconds above 60 — the Job deadline triggers termination, this caps the grace period configured for it": "4490bf5bfaf0",
-    "task Jobs must set activeDeadlineSeconds, at most 3600 — an unbounded task holds a fleet node and bills for it": "3bf5faca144b",
-    "task Jobs must run one pod at a time (parallelism: 1)": "240258b6ce47",
-    "task Jobs must run exactly one pod (completions: 1)": "dd57deb1df82",
-    "task Jobs must set backoffLimit: 0 — a retry re-clones and re-prompts the model, and bills for it": "80f672103226",
-    "task Job pod templates must carry the app: sandbox-task label": "ab1151632d34",
+    "task pods must not set terminationGracePeriodSeconds above 60 — it is how long a deleted task pod may keep its node": "4490bf5bfaf0",
 }
 
 
-# The expressions every pod-level rule is READ THROUGH, and the one that decides whether
-# a request is evaluated at all. EXPRESSION_DIGESTS covers `validations` only, so before
-# this a rewrite of `variables.pod` — the ternary that keeps the Job pass and the Pod pass
-# looking at the same fields — silently changed the meaning of every pod-level rule that
-# reads it, with nothing in this file able to see the edit.
-MATCH_CONDITION_DIGESTS = {
-    "job-writes-come-from-the-dispatcher": "7946d5ff4d30",
-}
+# The expressions every rule is READ THROUGH. EXPRESSION_DIGESTS covers `validations`
+# only, so without this a rewrite of `variables.pod` would silently change the meaning of
+# every rule that reads it.
 VARIABLE_DIGESTS = {
-    "pod": "14b9d426b721",
-    "isJob": "e99f115a3c1c",
+    "pod": "4cfabaaed490",
     "allContainers": "b41ce25c2638",
 }
 
@@ -753,18 +528,14 @@ def test_no_expression_changed_without_its_mirror_being_rechecked(policy):
     }
 
 
-def test_an_unsubstituted_task_image_is_rejected(monkeypatch):
-    """A last line rather than the first: the dispatcher already refuses at /run when
-    AGENT_IMAGE is empty, and a deploy.sh that failed to substitute leaves the literal
-    `__AGENT_IMAGE__` in dispatcher.yaml rather than an empty string. Both are rejected
-    here, which is what the rule is for — neither is reachable past the checks in front
-    of it today, and this is what keeps that true if one of them goes."""
+def test_an_unsubstituted_task_image_is_rejected():
+    """A deploy.sh that failed to substitute leaves the literal `__AGENT_IMAGE__` in the
+    template; an empty substitution leaves "". Both must be rejected."""
     predicate, _ = next(
         mirror for message, mirror in MIRRORS.items() if message.startswith("task containers must run the task image")
     )
     for value in ("", "__AGENT_IMAGE__"):
-        monkeypatch.setattr(kube, "AGENT_IMAGE", value)
-        assert not predicate(a_job()), f"an image of {value!r} must not be admitted"
+        assert not predicate(_template_pod(image=value)), f"an image of {value!r} must not be admitted"
 
 
 def test_the_policy_pins_the_repository_deploy_sh_actually_pushes_to(policy):
@@ -774,24 +545,9 @@ def test_the_policy_pins_the_repository_deploy_sh_actually_pushes_to(policy):
     )
     assert f"'{IMAGE_REPOSITORY}:'" in rule["expression"], (
         f"the image rule pins {rule['expression']}, but deploy.sh pushes to {IMAGE_REPOSITORY} — "
-        "every Job would be rejected"
+        "every task pod would be rejected"
     )
     assert rule["message"].endswith(IMAGE_REPOSITORY), "the rejection message names a repository nobody deploys"
-
-
-def test_the_deadline_ceiling_admits_the_deadline_the_dispatcher_deploys(policy):
-    """The 3600 in the policy is a second copy of TASK_DEADLINE_S, which is env
-    configurable. Raise the env past the ceiling and every Job is rejected at dispatch —
-    loudly, but with nothing in this suite noticing beforehand."""
-    rule = next(v for v in policy["spec"]["validations"] if "activeDeadlineSeconds" in v["expression"])
-    ceiling = int(re.search(r"activeDeadlineSeconds <= (\d+)", rule["expression"]).group(1))
-    assert ceiling >= kube.TASK_DEADLINE_S, (
-        f"the dispatcher's default deadline ({kube.TASK_DEADLINE_S}s) exceeds the policy ceiling ({ceiling}s)"
-    )
-    deployed = _deployed_env("TASK_DEADLINE_S")
-    assert deployed is None or int(deployed) <= ceiling, (
-        f"dispatcher.yaml deploys TASK_DEADLINE_S={deployed}, above the policy ceiling of {ceiling}s"
-    )
 
 
 def _dispatcher_deployment() -> dict:
@@ -814,25 +570,6 @@ def _deployed_dispatcher_identity() -> str:
     namespace = deployment["metadata"]["namespace"]
     service_account = deployment["spec"]["template"]["spec"]["serviceAccountName"]
     return f"system:serviceaccount:{namespace}:{service_account}"
-
-
-def _deployed_env(name: str) -> str | None:
-    """The literal value dispatcher.yaml sets for an env var, or None if it sets none.
-
-    A value this test cannot read is not the same as no value, and returning None for
-    both would quietly turn the comparison below into a no-op — so an `envFrom` block, or
-    a `valueFrom` on this variable, fails here instead.
-    """
-    deployment = _dispatcher_deployment()
-    for container in deployment["spec"]["template"]["spec"]["containers"]:
-        assert not container.get("envFrom"), (
-            f"{container['name']} pulls env from an envFrom source, which could set {name} out of this test's sight"
-        )
-        for entry in container.get("env", []):
-            if entry["name"] == name:
-                assert "value" in entry, f"{name} is set from {entry.get('valueFrom')}, which this test cannot read"
-                return entry["value"]
-    return None
 
 
 def test_the_jwks_configmap_ships_with_no_data(documents):
@@ -938,8 +675,8 @@ def test_each_claim_rule_rejects_its_own_violation(message):
 
 def test_the_claim_pass_is_scoped_to_the_dispatcher_and_enforced(documents, claim_policy):
     """The controller writes claims too; the dispatcher's writes are the threat. The
-    subject is derived from the Deployment for the reason the Job pass's is: drift here
-    fails open, admitting every claim unchecked."""
+    subject is derived from the Deployment rather than restated: drift here fails open,
+    admitting every claim unchecked."""
     assert claim_policy["spec"]["failurePolicy"] == "Fail"
     conditions = claim_policy["spec"]["matchConditions"]
     assert {c["name"]: _digest(c["expression"]) for c in conditions} == CLAIM_MATCH_CONDITION_DIGESTS

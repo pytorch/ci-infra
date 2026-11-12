@@ -2,7 +2,7 @@
 """Fetch GitHub's OIDC signing keys and write them into the ConfigMap the dispatcher reads.
 
 Runs as a CronJob, NOT inside the dispatcher. That separation is the point: the
-dispatcher is the process holding create-Job RBAC, so it is the one that must not be
+dispatcher is the process holding create-claim RBAC, so it is the one that must not be
 able to reach the internet, and its NetworkPolicy allows DNS and the Kubernetes API and
 nothing else. This job is allowed out to github.com and holds no RBAC beyond patching
 one named ConfigMap — because write access to that object is the power to choose which
