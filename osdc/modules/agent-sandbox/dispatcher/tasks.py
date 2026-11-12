@@ -12,6 +12,7 @@ substitute those calls.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -49,7 +50,7 @@ def _run_to_completion(task_id: str, grant) -> dict:
     _running_locked() counts against MAX_CONCURRENT_TASKS for the life of the pod.
 
     One deadline covers both waiting for a pod (a cold one waits on Karpenter) and the
-    run, the same budget the Job's activeDeadlineSeconds used to be.
+    run.
     """
     deadline = time.monotonic() + kube.TASK_DEADLINE_S
     try:
@@ -80,7 +81,7 @@ def _run_to_completion(task_id: str, grant) -> dict:
             env=kube.task_env(grant, int(time.time()) + remaining),
             cwd=TASK_CWD,
             time_limit_s=remaining,
-            stdout_limit=kube.MAX_LOG_BYTES,
+            stdout_limit=kube.MAX_RESULT_BYTES,
             stderr_limit=STDERR_LIMIT,
             rpc_timeout_s=remaining + RPC_GRACE_S,
         )
@@ -101,14 +102,26 @@ def _result_of(task_id: str, execution: sandboxd.Execution) -> dict:
         failure = f"task exited {execution.exit_code}"
     else:
         failure = ""
-    try:
-        result = kube.last_json_object(execution.stdout.decode(errors="replace"), task_id)
-    except kube.ApiError:
+    result = _last_json_object(execution.stdout.decode(errors="replace"))
+    if result is None:
         if execution.timed_out:
             return {"errors": {"dispatch": failure}}
         stderr = execution.stderr.decode(errors="replace").strip()[-STDERR_QUOTE_CHARS:]
         return {"errors": {"task": f"task exited {execution.exit_code} without a result: {stderr}"}}
     return _fail(result, failure) if failure else result
+
+
+def _last_json_object(text: str) -> dict | None:
+    """The result a task printed: the last line of stdout that parses as a JSON object,
+    so a stray log line before it is harmless. None when there is none."""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                continue
+    return None
 
 
 def _fail(result: dict, why: str) -> dict:

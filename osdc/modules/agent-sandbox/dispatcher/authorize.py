@@ -12,9 +12,9 @@ One decision is deliberately NOT here, and you have to read http_api.py for it: 
 Authorization header at all is never shown to this file — `http_api._grant_for` hands it
 the unauthenticated Grant directly. It is the only path that skips this file.
 
-JOB CONSTRUCTION consumes only the Grant. `kube.job_manifest` never sees the request
+TASK CONSTRUCTION consumes only the Grant. `kube.task_env` never sees the request
 body; http_api reads `wait` to pick a response shape and compares a supplied `model`
-against the Grant so a caller is told it was overruled, and neither reaches the Job.
+against the Grant so a caller is told it was overruled, and neither reaches the task.
 """
 
 from __future__ import annotations
@@ -34,10 +34,10 @@ class Denied(RuntimeError):
 
 @dataclass(frozen=True)
 class Grant:
-    """Everything the run is permitted to use, decided before any Job exists.
+    """Everything the run is permitted to use, decided before any claim exists.
 
-    Frozen, because the whole point is that nothing downstream may edit it. The Job
-    builder takes one of these and never sees the request body.
+    Frozen, because the whole point is that nothing downstream may edit it. The task
+    env builder takes one of these and never sees the request body.
     """
 
     # "pytorch/ciforge", for the log. The access-control key is `owner` below.
@@ -54,7 +54,7 @@ class Grant:
     ref: str
     # Pull request number, or 0 for "not a review". It names a PR OF `clone_repo`, so a
     # caller cannot reach another repository's review by number. Zero rather than None so
-    # the Job template has one thing to stringify and the agent one thing to parse.
+    # the task env has one thing to stringify and the agent one thing to parse.
     pr: int
     base: str = ""
     # Writes the run may propose (manifest.EffectSpec). Empty for the unauthenticated

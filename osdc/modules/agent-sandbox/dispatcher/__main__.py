@@ -18,7 +18,7 @@ The process is split by boundary, one file each, imports running strictly downwa
 
     __main__  -> http_api -> tasks -> kube, sandboxd
 
-    kube      the Kubernetes API: the SandboxClaim per task (and the old Job path)
+    kube      the Kubernetes API: the SandboxClaim per task
     sandboxd  the one call into a task pod's sandboxd that runs the task
     tasks     the task table and the claim -> run -> delete loop
     http_api  parse, bound, dispatch, answer
@@ -42,8 +42,7 @@ def main() -> None:
     loaded = http_api.manifests()
     server = http_api.HTTPServerV6(("::", PORT), http_api.Handler)
     print(
-        f"[sandbox-dispatcher] listening on [::]:{PORT}, namespace={kube.NAMESPACE}, image={kube.AGENT_IMAGE}, "
-        f"manifests={sorted(loaded)}",
+        f"[sandbox-dispatcher] listening on [::]:{PORT}, namespace={kube.NAMESPACE}, manifests={sorted(loaded)}",
         flush=True,
     )
     server.serve_forever()
