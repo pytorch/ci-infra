@@ -2,7 +2,10 @@
 
 Endpoints:
   GET  /healthz      -> {"status": "ok"}
-  POST /run          -> body {"manifest"?,"repo"?,"ref"?,"pr"?,"task"?,"wait"?}
+  POST /run          -> body {"manifest"?,"repo"?,"ref"?,"pr"?,"base"?,"task"?,"wait"?}
+                        `ref` is a branch, tag or full commit sha; `base` an optional full
+                        commit sha whose diff against the checked-out commit the task is
+                        given.
                         `manifest` names the capability manifest; required with a token.
                         wait=true (default): blocks, returns the task result
                         wait=false: returns {"task_id": ...} immediately
@@ -75,6 +78,20 @@ def _flag(name: str, default: str) -> bool:
 REQUIRE_AUTH = _flag("REQUIRE_AUTH", "false")
 
 TASK_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+# `ref` becomes a git fetch argument in the task pod, which refuses anything but a plain
+# ref name before fetching (agent/sandbox.py). The same rule runs here so a bad ref is a
+# 400 before a pod is scheduled rather than a clone error after it; the two copies are
+# kept identical by test_ref_rules_match_the_task_pod.
+REF_ALLOWED = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
+
+
+def plain_ref(ref: str) -> bool:
+    """A sha, `refs/pull/<n>/head`, or a branch or tag name — never a refspec or an option."""
+    return bool(REF_ALLOWED.match(ref)) and ".." not in ref and "//" not in ref and not ref.endswith(("/", ".lock"))
+
 
 _MANIFESTS: dict | None = None
 
@@ -159,9 +176,13 @@ class Handler(BaseHTTPRequestHandler):
         # 'repo' is not required. With a token it chooses among the repositories the
         # manifest allows (authorize.py refuses any other); without one the repository is
         # fixed, and a `repo` that differs is refused below rather than quietly replaced.
-        for key in ("manifest", "repo", "ref", "task", "model"):
+        for key in ("manifest", "repo", "ref", "base", "task", "model"):
             if key in spec and not isinstance(spec[key], str):
                 raise ValueError(f"'{key}' must be a string")
+        if spec.get("ref") and not plain_ref(spec["ref"]):
+            raise ValueError("'ref' must be a branch, tag or full commit sha, not a refspec")
+        if spec.get("base") and not SHA_RE.fullmatch(spec["base"]):
+            raise ValueError("'base' must be a full 40-character lowercase commit sha")
         if "wait" in spec and not isinstance(spec["wait"], bool):
             raise ValueError("'wait' must be a boolean")
         # Rejected here as a TYPE and again in authorize() as a VALUE, because the two
@@ -214,6 +235,7 @@ class Handler(BaseHTTPRequestHandler):
                 # like `ref`: it names a pull request of the v1 repository, the only one
                 # this Grant clones.
                 pr=spec.get("pr", 0),
+                base=spec.get("base", ""),
             )
         claims = oidc.verify(oidc.bearer_token(header))
         return authorize.authorize(claims, spec, manifests())
