@@ -1,7 +1,7 @@
 """Smoke tests for the agent-sandbox module.
 
 Validates the deployed standing infrastructure: namespace, quota, the gvisor
-RuntimeClass, the sigv4-proxy that holds the only AWS credential, the dispatcher and
+RuntimeClass, the agent-sandbox controller, the sigv4-proxy that holds the only AWS credential, the dispatcher and
 their Services, the dispatcher's namespaced RBAC, the credential-free sandbox-agent SA
 that task pods run as, and the NetworkPolicies. These check the security spine is wired
 — not that an agent run succeeds (that is the e2e test).
@@ -417,6 +417,36 @@ class TestSandboxDispatcher:
         assert "arc-runners" in allowed_ns, (
             f"sandbox-agent-ingress must allow the arc-runners namespace; got {allowed_ns}."
         )
+
+
+class TestAgentSandboxController:
+    """The upstream controller that will run task pods from SandboxClaims."""
+
+    CONTROLLER_NS = "agent-sandbox-system"
+
+    def test_controller_ready(self, all_deployments: dict) -> None:
+        assert_deployment_ready(all_deployments, self.CONTROLLER_NS, "agent-sandbox-controller")
+
+    def test_controller_is_not_on_the_sandbox_fleet(self, all_deployments: dict) -> None:
+        """It holds cluster-wide pod-create RBAC, so it must not sit beside task pods."""
+        deps = filter_deployments(all_deployments, namespace=self.CONTROLLER_NS, name="agent-sandbox-controller")
+        assert len(deps) == 1, f"Expected the agent-sandbox-controller Deployment in {self.CONTROLLER_NS}."
+        terms = deps[0]["spec"]["template"]["spec"]["affinity"]["nodeAffinity"][
+            "requiredDuringSchedulingIgnoredDuringExecution"
+        ]["nodeSelectorTerms"]
+        assert {"key": "node-fleet", "operator": "NotIn", "values": ["ai-sandbox"]} in terms[0]["matchExpressions"]
+
+    @pytest.mark.parametrize(
+        "crd",
+        [
+            "sandboxes.agents.x-k8s.io",
+            "sandboxtemplates.extensions.agents.x-k8s.io",
+            "sandboxclaims.extensions.agents.x-k8s.io",
+            "sandboxwarmpools.extensions.agents.x-k8s.io",
+        ],
+    )
+    def test_crds_are_installed(self, crd: str) -> None:
+        run_kubectl(["get", "crd", crd])
 
 
 class TestAgentSandboxQuota:
