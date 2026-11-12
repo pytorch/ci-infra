@@ -90,6 +90,8 @@ spec:
               value: "git-proxy.ai-sandbox.svc.cluster.local:8080"
             - name: SIGV4_PROXY
               value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
+            - name: SANDBOXD_TOKEN_FILE
+              value: /var/run/secrets/sandboxd/token
             - name: MAX_CONCURRENT_TASKS
               value: "6"
             # Whether a request with NO Authorization header is refused. A token that IS
@@ -111,6 +113,11 @@ spec:
             # the generated ConfigMap, which rolls this Deployment.
             - name: agent-capabilities
               mountPath: /etc/agent-sandbox/capabilities
+              readOnly: true
+            # The token task pods' sandboxd accepts (they hold only its digest). A volume,
+            # not env, so a rotation reaches the running dispatcher.
+            - name: sandboxd-token
+              mountPath: /var/run/secrets/sandboxd
               readOnly: true
           readinessProbe:
             httpGet:
@@ -141,6 +148,9 @@ spec:
         - name: agent-capabilities
           configMap:
             name: agent-capabilities
+        - name: sandboxd-token
+          secret:
+            secretName: sandboxd-token
 
 ---
 # Kept named sandbox-agent: it is the address arc-runners and the canary already use

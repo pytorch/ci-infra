@@ -24,11 +24,13 @@ actually holds (see *Limitations*).
    ai-sandbox namespace
    ┌───────────────────────────────────────────────────────────────────────┐
    │ [TRUSTED] sandbox-dispatcher   Deployment on base nodes                 │
-   │   • creates ONE Job per /run; RBAC: jobs + pods + pods/log, this ns     │
+   │   • ONE SandboxClaim per /run ──► agent-sandbox controller (own ns)     │
+   │   • then runs task.py in the claimed pod via its sandboxd (:9090)       │
    │   • no AWS identity, never clones, never prompts a model                │
-   │                       │ creates                                         │
+   │                       │ claim + sandboxd call                           │
    │                       ▼                                                 │
-   │ [UNTRUSTED] sandbox-task-<id>   Job, runtimeClassName: gvisor           │
+   │ [UNTRUSTED] sandbox-task-<id>   pod from the sandbox-task template,     │
+   │   runtimeClassName: gvisor, running sandboxd until the dispatcher asks  │
    │   • one task then exits; no credentials, no K8s token                   │
    │   • http ─────────► sigv4-proxy (signs Bedrock with IRSA)               │
    │   • http ─────────► git-proxy   (adds the GitHub token, private repos)  │
@@ -52,9 +54,12 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   with `--host`/`--name`; tasks send unsigned HTTP. Public repos are cloned directly and
   anonymously; the one GitHub credential lives in `git-proxy`, for private repos only —
   see *Private repositories* below.
-- **Privilege:** the dispatcher can create Jobs in this namespace and nothing else —
-  no ClusterRole, no write on pods, no secrets. Task pods run as `sandbox-agent`,
-  which has no RBAC and no mounted token.
+- **Privilege:** the dispatcher can create SandboxClaims in this namespace — no
+  ClusterRole, no write on pods, no secrets. A claim can only name the pool and an
+  expiry at most an hour after its creation (`admissionpolicy.yaml`), so the pod spec is
+  the template's, not the dispatcher's. The agent-sandbox controller holds the pod-create RBAC and runs on base
+  nodes. Task pods run as `sandbox-agent`, which has no RBAC and no mounted token.
+  (The Job RBAC is still granted until the Job path is removed.)
 - **Invocation:** `sandbox-agent` Service (`:8080`), reachable from `arc-runners`
   via `sandbox-agent-ingress` NetworkPolicy — BuildKit parity.
 
@@ -73,8 +78,8 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   The model works in a loop (`agent/agent_loop.py`) with three read-only tools over the
   checked-out commit — `list_dir`, `read_file`, `search` — until it answers, or 24 turns
   or 600 s run out (`errors.agent`). The 600 s shrinks to what is left of the task's own
-  deadline (`TASK_DEADLINE_S`, passed to the pod as `SANDBOX_DEADLINE`, less 30 s), so
-  time lost before the loop no longer lets the loop itself run into the Job deadline. It
+  deadline (`TASK_DEADLINE_S`, passed to the task as `SANDBOX_DEADLINE`, less 30 s), so
+  time lost before the loop no longer lets the loop itself run into the task deadline. It
   does not protect the stages before the loop, and a node clock more than 30 s off can
   defeat the margin. Tools also stop, and the model is told
   to answer, once the conversation nears a 200K-token window by the model's own count;
@@ -189,7 +194,7 @@ anywhere.
 
 ### The signing keys
 
-The dispatcher holds create-Job RBAC, so it is the component that must not be able to
+The dispatcher holds create-claim RBAC, so it is the component that must not be able to
 reach the internet — its NetworkPolicy allows DNS and the Kubernetes API and nothing
 else. GitHub's signing keys therefore arrive as a mounted ConfigMap, refreshed every six
 hours by a CronJob (`kubernetes/base/oidc.yaml`) whose Role can patch that one named
@@ -228,12 +233,15 @@ unchanged tree skips the build, a code change deploys a new immutable tag, and e
 one image does not re-roll the other. Requires a local docker daemon.
 
 - `ci-agent-sandbox` (`agent/`) — the untrusted task: `task.py` runs one task and exits,
-  `sandbox.py` is the clone + Bedrock library. Holds nothing.
-- `ci-agent-sandbox-dispatcher` (`dispatcher/`) — the trusted side: the HTTP surface and
-  the Job creation. The task image is stdlib-only; this one is not, and the separate-image
+  `sandbox.py` is the clone + Bedrock library, and the pod runs `sandboxd` (copied in
+  from the pinned upstream image) to start it. Holds nothing.
+- `ci-agent-sandbox-dispatcher` (`dispatcher/`) — the trusted side: the HTTP surface,
+  the claims and the `sandboxd` call. The task image is stdlib-only; this one is not, and the separate-image
   split is what keeps that from mattering. It installs `python3-jwt` and
   `python3-cryptography` **from apt, not pip**, because GitHub signs its OIDC tokens
-  RS256 and the standard library has no public-key crypto at all. None of that reaches
+  RS256 and the standard library has no public-key crypto at all — and `python3-grpcio`
+  for `sandboxd`, whose two messages `dispatcher/sandboxd.py` encodes by hand rather than
+  depend on generated stubs. None of that reaches
   the sandbox: `agent/` is built from its own Dockerfile and gains nothing from the line.
 
 ## Deploy
@@ -248,10 +256,35 @@ controller first (`kubernetes/controller/`: a pinned release manifest plus a pat
 keeping it on base nodes) and waits for its CRDs. To upgrade it, bump the release in
 `kubernetes/controller/kustomization.yaml`.
 
-The task pod is also described as a `SandboxTemplate` (`kubernetes/base/sandbox-template.yaml`)
-with a warm pool at 0 replicas. Its pod runs `sandboxd` from the task image rather than
-the task, behind a bearer token whose digest is in the template and whose value is the
-`sandboxd-token` Secret, minted by `deploy.sh` on first deploy. Nothing claims from it yet.
+## How a task runs
+
+1. The dispatcher creates a `SandboxClaim` against the `sandbox-task` warm pool: the pool
+   name and a `shutdownTime` (the deadline plus a minute), nothing about the task.
+2. The controller turns it into a pod from `kubernetes/base/sandbox-template.yaml`. The
+   pod runs `sandboxd`, not the task. The pool is at 0 replicas, so today every claim
+   is a cold start; warm pods are a replica change away.
+3. When the claim is Ready, the dispatcher calls the pod's `sandboxd`
+   (`ExecuteWithLimits` on `:9090`) to run `task.py` with the task's env, under the
+   remaining deadline, and gets back its exit code, stdout (the result JSON) and stderr.
+4. The dispatcher deletes the claim; the controller deletes the pod.
+
+Nothing per-task is in the pod spec, so a pod the controller replaces has nothing to
+re-run. If the dispatcher dies mid-task, the call drops and `sandboxd` kills the task; the
+claim expires at its `shutdownTime`.
+
+`sandboxd` runs whatever it is sent, so who can reach it is the boundary:
+
+- **Network:** `sandbox-task-ingress` admits only the dispatcher, on `:9090`.
+- **Token:** `sandboxd` requires a bearer token. The pod gets only its SHA-256 digest
+  (in the template), so code in it cannot learn the token; the dispatcher reads it from
+  the `sandboxd-token` Secret, which `deploy.sh` mints on first deploy. One token for all
+  task pods, because a warm pod exists before its task. Rotate by deleting the Secret and
+  redeploying.
+- **No TLS** (`sandboxd` does not terminate it): the prompt and result cross the pod
+  network in plaintext, as they already do on the caller's `/run`.
+- Code inside a task can reach its own `sandboxd`, which gains it nothing: it already runs
+  code in that pod. It could also kill or impersonate it and lie about the result — the
+  same as a task that lies, and the result is already untrusted.
 
 ## Use it (from a workflow job on an OSDC runner)
 
@@ -462,9 +495,10 @@ Background: [Securing Amazon Bedrock cross-Region inference](https://aws.amazon.
 
 ## The task-pod contract, and adding a volume
 
-`dispatcher/kube.py::job_manifest()` builds every task pod, and
+`kubernetes/base/sandbox-template.yaml` is every task pod, and
 `kubernetes/base/admissionpolicy.yaml` restates the same contract in CEL so the API
-server rejects a Job that does not match it. The two are deliberately redundant;
+server rejects a pod that does not match it — plus a policy bounding what the dispatcher
+may put in a claim. The copies are deliberately redundant;
 `dispatcher/test_admissionpolicy.py` is what keeps them from drifting apart.
 
 **Task pods declare no volumes at all.** That is a rule, not an accident of the current
@@ -473,7 +507,7 @@ would get into the untrusted side. An allowlist of safe volume shapes is express
 CEL, but it is a rule you can get subtly wrong; "none" is one you cannot. So a change
 that needs one — the planned
 `GITHUB_TOKEN` init container needs a shared `emptyDir` — is not a one-line edit to
-`job_manifest()`. It has to amend the volumes rule and the init-container rule in the
+the template. It has to amend the volumes rule and the init-container rule in the
 policy, re-pin their expression digests, and say in review which volume types are now
 reachable from inside gVisor and why that is acceptable.
 
@@ -504,14 +538,14 @@ token for the dispatcher; the task pod holds no credential at all.
   the `al2023@latest` fleets it does not pick up CVE fixes on node rotation.
 - **A cold fleet is slow to answer.** Task pods are created per request, so when no
   fleet node has a free slot the caller waits on Karpenter (1–2 minutes) before the
-  clone even starts. Nothing keeps a node warm.
-- **A dispatcher restart loses in-flight waits.** Results live in the dispatcher's
-  memory, so a rollout or crash drops the `/status` entry for a task still running; the
-  Job finishes regardless and the caller has to retry.
+  clone even starts. The warm pool is at 0, so nothing keeps a pod or node warm.
+- **A dispatcher restart loses in-flight tasks.** Results live in the dispatcher's
+  memory, and a dropped `sandboxd` call kills its task, so a rollout or crash fails every
+  task in flight; the caller has to retry.
 - **Output is trusted as-is.** Nothing validates or gates what a task returns before a
   caller acts on it.
-- **A task can overwrite the response fields the endpoints own.** `kube.task_result()`
-  returns the last `{`-prefixed line the task pod printed that parses as JSON (within
+- **A task can overwrite the response fields the endpoints own.** `kube.last_json_object()`
+  returns the last `{`-prefixed line the task printed that parses as JSON (within
   `MAX_LOG_BYTES`), and both payloads spread it *last* — `{"task_id": task_id,
   **result}` in `http_api.do_POST`, `{"state": "done", "task_id": task_id,
   **task["result"]}` in `tasks.status`. A task printing
@@ -528,7 +562,7 @@ token for the dispatcher; the task pod holds no credential at all.
   runner raises. `_run_to_completion()` catches `(ApiError, OSError)`, but
   `kube._k8s_api()` and `kube._read_token()` raise bare `RuntimeError` from outside
   `api_request()`'s try block, so those escape — including from the `finally:
-  kube.delete_job(...)`, which is why a leaked slot does not imply the Job was never
+  kube.delete_claim(...)`, which is why a leaked slot does not imply the claim was never
   created. The entry then stays `"running"` forever: `_prune_locked()` only drops
   `"done"` ones and `_running_locked()` keeps counting it against
   `MAX_CONCURRENT_TASKS`. Symptoms are spread out — a waiting `/run` gets no response
@@ -565,7 +599,7 @@ token for the dispatcher; the task pod holds no credential at all.
   Not reachable today: the task image clones `SANDBOX_REPO` and nothing else, and the
   model has no tool that runs commands. It becomes reachable the moment a task can
   execute arbitrary code, which is what the agentic option would add. Closing it means a
-  per-Job marker the dispatcher sets and the task cannot forge, or having the dispatcher
+  per-claim marker the dispatcher sets and the task cannot forge, or having the dispatcher
   fetch the pack and hand it over — the same shape as the `GITHUB_TOKEN` init-container
   note above.
 - **The clone reaches the internet directly.** `sandbox-task-egress` allows TCP 443

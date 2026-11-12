@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Sandbox dispatcher: one Job per request, so tasks run in parallel.
+"""Sandbox dispatcher: one sandbox pod per request, so tasks run in parallel.
 
 This is the trusted side of the sandbox and the only thing callers address
 (`sandbox-agent.ai-sandbox.svc:8080`, reachable from arc-runners like buildkitd). It
-never clones, never prompts a model and holds no AWS identity — it turns a request
-into a Kubernetes Job running the task image under gVisor, waits for it, and reads the
-result back out of the pod's log.
+never clones, never prompts a model and holds no AWS identity — it turns a request into
+an agent-sandbox SandboxClaim (a pod running the task image under gVisor), runs the task
+in that pod through its sandboxd, and returns what the task printed.
 
-Why a Job per request rather than a pool of warm workers: parallelism comes from
+Why a pod per request rather than a pool of shared workers: parallelism comes from
 Karpenter (a pending task pod adds an ai-sandbox node) instead of from replica count
 plus a connection-aware load balancer, and each task gets a fresh pod, which is the
 isolation reset a shared worker cannot give. The bound on all of it is
@@ -16,10 +16,11 @@ so without a cap a caller loop would provision nodes until an AWS quota noticed.
 
 The process is split by boundary, one file each, imports running strictly downward:
 
-    __main__  -> http_api -> tasks -> kube
+    __main__  -> http_api -> tasks -> kube, sandboxd
 
-    kube      the Kubernetes API and the Job template — the task-pod security boundary
-    tasks     the task table and the run-one-Job-to-completion loop
+    kube      the Kubernetes API: the SandboxClaim per task (and the old Job path)
+    sandboxd  the one call into a task pod's sandboxd that runs the task
+    tasks     the task table and the claim -> run -> delete loop
     http_api  parse, bound, dispatch, answer
     __main__  wiring, and nothing else
 
