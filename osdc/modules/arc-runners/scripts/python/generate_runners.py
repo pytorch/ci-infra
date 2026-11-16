@@ -32,7 +32,8 @@ if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
 from conditional_blocks import strip_conditional_block  # noqa: E402
-from fleet_naming import derive_fleet_name, derive_release_runner_group  # noqa: E402
+from fleet_naming import derive_fleet_name, derive_release_runner_group, derive_runner_pod_node_fleet  # noqa: E402
+from instance_specs import INSTANCE_SPECS  # noqa: E402
 from nodepool_defs import load_excluded_instance_types  # noqa: E402
 from runner_fleet_validator import validate_cluster_runner_fleets  # noqa: E402
 
@@ -370,6 +371,21 @@ def generate_runner(
         log_error(f"Invalid definition file {def_file}: {e}")
         return False
 
+    # The runner pod goes on the runner-pod pool of the job's architecture, so the
+    # runner agent reports runner.arch / RUNNER_ARCH truthfully for the job.
+    instance_spec = INSTANCE_SPECS.get(instance_type)
+    if instance_spec is None:
+        log_error(
+            f"Invalid definition file {def_file}: instance_type {instance_type} not found in INSTANCE_SPECS "
+            f"(scripts/python/instance_specs.py)"
+        )
+        return False
+    try:
+        runner_pod_node_fleet = derive_runner_pod_node_fleet(instance_spec["arch"])
+    except ValueError as e:
+        log_error(f"Invalid definition file {def_file}: {e}")
+        return False
+
     # Cluster-specific values. An additional-org override supplies its own
     # GitHub URL, secret, runner group, shard, and (optionally) max_runners;
     # every other value stays cluster-wide (shared across orgs).
@@ -523,6 +539,7 @@ def generate_runner(
         "{{RUNNER_NAME_NORMALIZED}}": normalized_name,
         "{{INSTANCE_TYPE}}": instance_type,
         "{{NODE_FLEET}}": node_fleet,
+        "{{RUNNER_POD_NODE_FLEET}}": runner_pod_node_fleet,
         "{{VCPU}}": str(vcpu),
         "{{MEMORY}}": str(memory),
         "{{MEMORY_BYTES}}": str(parse_memory_bytes(memory)),
