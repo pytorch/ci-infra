@@ -36,8 +36,45 @@ hooks warmer select `node-fleet=c7i-runner`.
 | S3 / ECR / state, Harbor PVCs, KMS | ~5 | |
 
 About $177/month before jobs. Each running job adds a runner node (m7g.xlarge, $0.16/h) and a workflow node
-(c7a.2xlarge, $0.41/h); idle nodes are removed 10 s after their last pod.
+(c7a.2xlarge, $0.41/h); idle nodes are removed 10 s after their last pod. Example: a 30-minute job costs about $0.30,
+and 80 runner-hours a month bring the total to $200–230.
 Keep `eks_version` current: extended support raises the control plane to ~$438/month.
+
+## Why staging costs more
+
+Staging's floor is about $3,200/month, mostly base nodes and BuildKit warm nodes (~$1,316).
+
+- Its 3 × m5.4xlarge base nodes reserve 24.5 vCPU / 87 GiB but use 0.37 vCPU / 5.45 GiB
+  (meta-staging-aws-ue2, measured 2026-11-15).
+- 49 idle listeners (one per runner type, 250m / 1331Mi each) hold half the CPU and three quarters of the memory
+  reserved. Each uses about 12 MiB.
+- The dev cluster has one runner type, so one listener, sized 100m / 256Mi.
+
+## Why one t3a.large is enough
+
+- Reservations come to about 1.6 vCPU / 3.6 GiB; a t3a.large has about 1.9 vCPU / 7 GiB usable. The Harbor and listener
+  overrides are what make it fit: Harbor's chart defaults alone reserve 1.5 vCPU.
+- It is burstable: it sustains 0.6 vCPU and the base node idles around 0.15 vCPU. Credit mode is AWS's default
+  (unlimited), so a long burst is billed (~$0.05 per vCPU-hour above baseline), not throttled.
+- Fallback if that ever costs more than it saves: m7i.large, $18.68/month more.
+
+## Options we rejected
+
+| Option | Saves/month | Why not |
+|--------|-------------|---------|
+| Karpenter and listeners on Fargate | nothing | Harbor still needs a node for its EBS volumes; each Fargate pod costs ~$9/month |
+| Spot base node | ~$35 | One interruption stops listeners, Karpenter and Harbor together; jobs hang with no clear cause |
+| Base node off at night | ~$30 | Jobs queued while it is off are missed; the node may come back in another AZ from Harbor's volumes |
+| NAT instance instead of NAT gateway | ~$30 | Slow sustained bandwidth for image pulls; we would own patching it |
+| Nodes in public subnets, no NAT | ~$33 | Every node gets a public IP; worth a look later |
+| minikube / k3s on one machine | $73+ | Removes the EKS fee and is the long-term goal, but OSDC does not run there today |
+
+## Risks
+
+- **One base node is a single point of failure.** A replacement takes a few minutes; fine for dev.
+- **The EKS version falls behind.** Extended support raises the control plane from $73 to ~$438/month. Upgrade dev with
+  prod.
+- **Dev drifts from prod.** Bugs in dropped modules show up only in staging, which stays the pre-merge check.
 
 ## Knobs this cluster uses
 
