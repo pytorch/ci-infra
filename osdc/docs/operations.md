@@ -147,7 +147,7 @@ To roll new runner configurations or AMIs without aborting in-flight CI jobs:
 
 ```bash
 just drain-runners meta-staging-aws-ue1      # patch maxRunners=0, taint nodes, wait for in-flight pods
-just resume-runners meta-staging-aws-ue1     # restore maxRunners from def files, remove the taint
+just resume-runners meta-staging-aws-ue1     # restore maxRunners from def files (additional_orgs sets too), remove the taint
 ```
 
 `drain-runners` waits up to `OSDC_DRAIN_TIMEOUT_SECS` (default `3600`) for runner pods to finish before declaring stragglers. The default 1h matches typical PyTorch suite duration — raise it for longer test windows.

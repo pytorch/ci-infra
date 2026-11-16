@@ -10,7 +10,8 @@ keyed by the AutoscalingRunnerSet metadata.name (after the chart's
 runnerScaleSetName -> metadata.name transformation).
 
 Used by `just resume-runners <cluster>` to restore per-RSS maxRunners after
-a `just drain-runners` cutover.
+a `just drain-runners` cutover, including the {resource_slug}-{def} scale
+sets that `arc-runners.additional_orgs` adds.
 
 Output (stdout): JSON object, sorted keys, two-space indent.
 Diagnostics: stderr only.
@@ -199,11 +200,17 @@ def build_max_runners_map(repo_root: Path, clusters_yaml: dict, cluster_id: str)
     When the cluster has pause_runners=true, every ARS renders with
     max_runners=0 — mirrors generate_runners.py so `just resume-runners` does
     not silently undo a pause by patching scale sets back to their def values.
+
+    Each `arc-runners.additional_orgs` entry adds a {resource_slug}-{def} ARS
+    per def, as generate_runners.py renders; the entry's own max_runners wins
+    over the def's, and pause/region exclusion still force 0.
     """
     prefix = resolve_runner_name_prefix(clusters_yaml, cluster_id)
     modules = enabled_arc_runner_modules(clusters_yaml, cluster_id)
 
     cluster_cfg = get_cluster(clusters_yaml, cluster_id)
+    arc_runners_config = resolve_value(cluster_cfg, clusters_yaml.get("defaults", {}), "arc-runners") or {}
+    additional_orgs = arc_runners_config.get("additional_orgs") or []
     region = cluster_cfg.get("region", "")
     nodepools_defs_dir = repo_root / "modules" / "nodepools" / "defs"
     excluded_instance_types = load_excluded_instance_types(nodepools_defs_dir, region)
@@ -217,11 +224,17 @@ def build_max_runners_map(repo_root: Path, clusters_yaml: dict, cluster_id: str)
             continue
         for def_file in def_files:
             name, instance_type, max_runners = parse_def_file(def_file, cluster_id)
-            ars_name = compute_ars_name(prefix, name)
-            if paused or instance_type in excluded_instance_types:
-                result[ars_name] = 0
-            else:
-                result[ars_name] = max_runners if max_runners is not None else MAX_INT32
+            targets = {compute_ars_name(prefix, name): max_runners}
+            for org in additional_orgs:
+                org_max = max_runners
+                if "max_runners" in org:
+                    org_max = resolve_max_runners(org["max_runners"], def_file, cluster_id)
+                targets[compute_ars_name(f"{org['resource_slug']}-", name)] = org_max
+            for ars_name, value in targets.items():
+                if paused or instance_type in excluded_instance_types:
+                    result[ars_name] = 0
+                else:
+                    result[ars_name] = value if value is not None else MAX_INT32
     return result
 
 
