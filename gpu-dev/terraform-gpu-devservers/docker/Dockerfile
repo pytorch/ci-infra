@@ -272,6 +272,15 @@ RUN sed -i 's/session    optional     pam_motd.so/#&/g' /etc/pam.d/sshd 2>/dev/n
     rm -rf /etc/update-motd.d/00-header /etc/update-motd.d/10-help-text /etc/update-motd.d/80-esm /etc/update-motd.d/95-hwe-eol 2>/dev/null || true && \
     chmod -x /usr/sbin/update-motd 2>/dev/null || true
 
+# Upgrade base-image libs (the base is a fixed Ubuntu snapshot).
+# --error-on=any fails the build instead of silently keeping the old versions.
+RUN apt-get update --error-on=any && \
+    apt-get install -y --no-install-recommends --only-upgrade \
+        libbrotli1 \
+        libgif7 \
+        libcups2t64 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Clean up
 RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
