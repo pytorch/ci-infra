@@ -23,6 +23,7 @@ from generate_nodepools import (
     generate_nodepool_yaml,
     main,
 )
+from instance_specs import INSTANCE_SPECS  # importable once generate_nodepools set sys.path
 
 # ============================================================================
 # Helpers
@@ -2227,3 +2228,33 @@ class TestRealStartupTaintsRegistry:
         np = parse_all_yaml(output)[0]
         keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
         assert "node-init.osdc.io/cache-enforcer" in keys
+
+
+# ============================================================================
+# Runner-pod pools: one per architecture
+# ============================================================================
+
+# Each runner pod lands on the pool matching its runner's architecture, so the
+# runner agent reports the job's architecture as runner.arch / RUNNER_ARCH.
+RUNNER_POD_POOL_ARCH = {
+    "arm64-runner": "arm64",
+}
+
+
+class TestRunnerPodPools:
+    @pytest.mark.parametrize("pool", sorted(RUNNER_POD_POOL_ARCH))
+    def test_pool_def_exists_with_expected_arch(self, pool):
+        data = yaml.safe_load((REAL_DEFS_DIR / f"{pool}.yaml").read_text())
+        assert data["fleet"]["name"] == pool
+        assert data["fleet"]["arch"] == RUNNER_POD_POOL_ARCH[pool]
+        assert data["fleet"].get("gpu", False) is False
+
+    @pytest.mark.parametrize("pool", sorted(RUNNER_POD_POOL_ARCH))
+    def test_every_instance_matches_pool_arch(self, pool):
+        data = yaml.safe_load((REAL_DEFS_DIR / f"{pool}.yaml").read_text())
+        wrong = {
+            inst["type"]: INSTANCE_SPECS[inst["type"]]["arch"]
+            for inst in data["fleet"]["instances"]
+            if INSTANCE_SPECS[inst["type"]]["arch"] != RUNNER_POD_POOL_ARCH[pool]
+        }
+        assert not wrong, f"{pool} must only use {RUNNER_POD_POOL_ARCH[pool]} instances, got {wrong}"

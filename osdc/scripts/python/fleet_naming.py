@@ -11,10 +11,10 @@ from __future__ import annotations
 import re
 
 # Reserved fleet names that workflow pods must never target.
-# c7i-runner is the dedicated runner-pod control-plane pool; allowing a workflow
-# pod to tolerate it would let user code preempt the orchestrator and break the
-# priority-class ladder.
-RESERVED_NODE_FLEET_NAMES = frozenset({"c7i-runner"})
+# c7i-runner (x86) and arm64-runner (Graviton) are the dedicated runner-pod
+# control-plane pools; allowing a workflow pod to tolerate one would let user code
+# preempt the orchestrator and break the priority-class ladder.
+RESERVED_NODE_FLEET_NAMES = frozenset({"c7i-runner", "arm64-runner"})
 
 # K8s DNS-1123 label: lowercase alphanumeric and dashes, start/end alphanumeric,
 # 1-63 chars. Matches the constraints applied at apply time by the API server.
