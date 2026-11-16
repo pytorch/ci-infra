@@ -582,7 +582,7 @@ clusters:
       - logging
 
   meta-dev-aws-ue1:
-    # Cost-minimal dev/test cluster in the dev AWS account (576436418915), for
+    # Cost-minimal cluster in the dev/test AWS account, for
     # quick experiments against a test repo. Keeps only the job path (ARC +
     # runner hooks, Karpenter, Harbor) on one small base node; drops BuildKit,
     # KEDA, caches, monitoring and logging. Always-on floor ~$177/month.
@@ -595,7 +595,7 @@ clusters:
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
       cluster_admin_role_names:
-        - osdc_dev_admin  # must exist in 576436418915 before `just deploy`
+        - osdc_dev_admin  # must exist in the test account before `just deploy`
     base:
       # One t3a.large hosts Harbor, Karpenter, the ARC controller and listeners
       # (~3 GiB used, ~1.6 vCPU reserved after the overrides below). Pinned to a

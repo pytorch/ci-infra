@@ -1,6 +1,6 @@
 # Dev cluster (`meta-dev-aws-ue1`)
 
-A cost-minimal OSDC cluster in the dev AWS account (576436418915, us-east-1) for trying ideas against a test repo,
+A cost-minimal OSDC cluster in the dev/test AWS account (us-east-1) for trying ideas against a test repo,
 then tearing them down. It is not a pre-merge gate: staging stays that.
 
 ## What it runs
@@ -51,7 +51,7 @@ All default to the prod shape, so other clusters are unchanged.
 | `harbor.resource_requests.<nginx\|database>.<cpu\|memory>` | Harbor request overrides; passed to Helm only when set |
 | `arc-runners.listener_cpu` / `arc-runners.listener_memory` | Listener requests = limits (default 250m / 1331Mi); GOMEMLIMIT = 90% of memory |
 
-## First deploy (one time, in account 576436418915)
+## First deploy (one time, in the test account)
 
 1. Create the cluster admin IAM role named in `access_config.cluster_admin_role_names` (`osdc_dev_admin`).
 2. `just bootstrap meta-dev-aws-ue1` — state bucket `ciforge-tfstate-meta-dev-aws-ue1` and the lock table, in
