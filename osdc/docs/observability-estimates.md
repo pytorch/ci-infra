@@ -146,7 +146,7 @@ Subset-scoped DaemonSets (not on every Karpenter node):
 
 | Source | Type | Scope | ~Lines/min per node | Notes |
 |--------|------|-------|:---:|-------|
-| **runner-hooks-warmer** | Pod log | `arc-runners` namespace, `nodeSelector: node-fleet=c7i-runner` (CPU runner pool only — not GPU, not BuildKit) | ~0 | Downloads runner-container-hooks zip once, main sleeps. Because it lives in `arc-runners`, its logs are sampled at 10% per the ARC pipeline. |
+| **runner-hooks-warmer** | Pod log | `arc-runners` namespace, node affinity `node-fleet In (c7i-runner, arm64-runner)` (runner-pod pools only — not workflow, GPU or BuildKit nodes) | ~0 | Downloads runner-container-hooks zip once, main sleeps. Because it lives in `arc-runners`, its logs are sampled at 10% per the ARC pipeline. |
 
 **Per-node totals**:
 

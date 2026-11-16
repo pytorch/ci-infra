@@ -19,7 +19,7 @@ Node provisioned by Karpenter
 │  │                             ~30-60s ImagePullBackOff race on fresh nodes until
 │  │                             registry-mirror-config writes containerd hosts.toml)
 │  ├─ runner-hooks-warmer      → downloads patched runner-container-hooks
-│  │                            (only on node-fleet=c7i-runner — the dedicated runner pool)
+│  │                            (only on node-fleet=c7i-runner / arm64-runner — the runner-pod pools)
 │  ├─ registry-mirror-config   → configures containerd to pull through Harbor (ALL nodes)
 │  └─ node-performance-tuning  → CPU governor, kubelet tuning, GPU persistence
 │                                (only on workload-type ∈ [github-runner, buildkit])
@@ -45,7 +45,7 @@ Runner pods include an init container that polls for a file on the host filesyst
 - Extracts to `/mnt/runner-container-hooks/dist/` on host NVMe
 - Validates `dist/index.js` exists after extraction
 - Writes version marker for idempotency
-- Pinned via `nodeSelector: node-fleet: c7i-runner` — runs only on the dedicated c7i-runner pool, where runner pods live. Workflow-pool nodes and GPU runner pools (g4dn/g5/g6/p4d/p5/p6) do NOT get this DaemonSet because runner pods never schedule there.
+- Pinned via node affinity `node-fleet In (c7i-runner, arm64-runner)` — runs only on the dedicated runner-pod pools (x86 and arm64), where runner pods live. Workflow-pool nodes and GPU runner pools (g4dn/g5/g6/p4d/p5/p6) do NOT get this DaemonSet because runner pods never schedule there.
 
 **Init container**: `wait-for-hooks` (`modules/arc-runners/templates/runner.yaml.tpl`)
 - Polls `/mnt/host-hooks/dist/index.js` every 10 seconds
