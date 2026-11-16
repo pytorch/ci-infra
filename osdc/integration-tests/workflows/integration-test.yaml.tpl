@@ -29,6 +29,23 @@ jobs:
             exit 1
           fi
           echo "PASS: Architecture is $ARCH"
+      # GitHub reports the runner agent's arch as runner.arch / RUNNER_ARCH. The agent
+      # runs in a separate runner pod, which must sit on a pool of the job's arch.
+      - name: Verify the runner agent reports the job's architecture
+        env:
+          CONTEXT_ARCH: ${{ runner.arch }}
+        run: |
+          case "$(uname -m)" in
+            x86_64) WANT=X64 ;;
+            aarch64) WANT=ARM64 ;;
+            *) echo "FAIL: unexpected uname -m: $(uname -m)"; exit 1 ;;
+          esac
+          echo "uname -m: $(uname -m), runner.arch: $CONTEXT_ARCH, RUNNER_ARCH: $RUNNER_ARCH"
+          if [ "$CONTEXT_ARCH" != "$WANT" ] || [ "$RUNNER_ARCH" != "$WANT" ]; then
+            echo "FAIL: the runner agent reports $CONTEXT_ARCH / $RUNNER_ARCH, the job runs on $WANT"
+            exit 1
+          fi
+          echo "PASS: the runner agent reports $WANT"
       - name: Verify AVX-512 support
         run: |
           if grep -q avx512 /proc/cpuinfo; then
@@ -167,6 +184,23 @@ jobs:
             exit 1
           fi
           echo "PASS: Architecture is $ARCH"
+      # GitHub reports the runner agent's arch as runner.arch / RUNNER_ARCH. The agent
+      # runs in a separate runner pod, which must sit on a pool of the job's arch.
+      - name: Verify the runner agent reports the job's architecture
+        env:
+          CONTEXT_ARCH: ${{ runner.arch }}
+        run: |
+          case "$(uname -m)" in
+            x86_64) WANT=X64 ;;
+            aarch64) WANT=ARM64 ;;
+            *) echo "FAIL: unexpected uname -m: $(uname -m)"; exit 1 ;;
+          esac
+          echo "uname -m: $(uname -m), runner.arch: $CONTEXT_ARCH, RUNNER_ARCH: $RUNNER_ARCH"
+          if [ "$CONTEXT_ARCH" != "$WANT" ] || [ "$RUNNER_ARCH" != "$WANT" ]; then
+            echo "FAIL: the runner agent reports $CONTEXT_ARCH / $RUNNER_ARCH, the job runs on $WANT"
+            exit 1
+          fi
+          echo "PASS: the runner agent reports $WANT"
       - name: Verify CPU count
         run: |
           EXPECTED={{VCPU__L_ARM64G3_16_62}}
@@ -1778,6 +1812,23 @@ jobs:
             exit 1
           fi
           echo "PASS: Found $GPU_COUNT GPU(s)"
+      # GitHub reports the runner agent's arch as runner.arch / RUNNER_ARCH. The agent
+      # runs in a separate runner pod, which must sit on a pool of the job's arch.
+      - name: Verify the runner agent reports the job's architecture
+        env:
+          CONTEXT_ARCH: ${{ runner.arch }}
+        run: |
+          case "$(uname -m)" in
+            x86_64) WANT=X64 ;;
+            aarch64) WANT=ARM64 ;;
+            *) echo "FAIL: unexpected uname -m: $(uname -m)"; exit 1 ;;
+          esac
+          echo "uname -m: $(uname -m), runner.arch: $CONTEXT_ARCH, RUNNER_ARCH: $RUNNER_ARCH"
+          if [ "$CONTEXT_ARCH" != "$WANT" ] || [ "$RUNNER_ARCH" != "$WANT" ]; then
+            echo "FAIL: the runner agent reports $CONTEXT_ARCH / $RUNNER_ARCH, the job runs on $WANT"
+            exit 1
+          fi
+          echo "PASS: the runner agent reports $WANT"
       - name: Verify GPU model
         run: |
           GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
