@@ -33,9 +33,10 @@ from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
 # Measured from Karpenter scheduling requests vs def values.
 #
 # Note: the runner-orchestrator (sidecar) pod is no longer accounted for
-# here. Per pytorch/ci-infra#500 it is pinned to the dedicated `c7i-runner`
-# NodePool, so it does not consume resources on the workflow node and must
-# not be added into per-workflow-pod totals on c7i / g5 / g4dn / etc.
+# here. Per pytorch/ci-infra#500 it is pinned to a dedicated runner-pod
+# NodePool (`c7i-runner` for x86, `arm64-runner` for arm64), so it does not
+# consume resources on the workflow node and must not be added into
+# per-workflow-pod totals on c7i / g5 / g4dn / etc.
 HOOKS_OVERHEAD_CPU_M = 320
 HOOKS_OVERHEAD_MEM_MI = 522
 
@@ -183,9 +184,9 @@ def compute_allocatable(
 def per_runner_total(runner: dict) -> tuple[int, int, int]:
     """Total resources per workflow pod (job container + hooks overhead).
 
-    The runner-orchestrator pod lives on the dedicated `c7i-runner`
-    NodePool (see ci-infra#500) and does not consume resources on the
-    workflow node, so it is not summed in here.
+    The runner-orchestrator pod lives on a dedicated runner-pod NodePool
+    (`c7i-runner` or `arm64-runner`, see ci-infra#500) and does not consume
+    resources on the workflow node, so it is not summed in here.
     """
     cpu = runner["vcpu"] * 1000 + HOOKS_OVERHEAD_CPU_M
     mem = runner["memory_mi"] + HOOKS_OVERHEAD_MEM_MI

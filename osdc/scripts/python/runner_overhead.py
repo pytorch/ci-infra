@@ -8,7 +8,7 @@
 Reads the rendered Helm values + ConfigMap pair under
 ``modules/arc-runners*/generated/*.yaml`` and extracts the resource requests
 of the three pods that participate in a runner: the runner pod (lands on the
-dedicated ``c7i-runner`` fleet today), the listener pod (lands on system
+dedicated runner-pod pool of its arch: ``c7i-runner`` or ``arm64-runner``), the listener pod (lands on system
 nodes via the ``CriticalAddonsOnly`` toleration), and the workflow pod
 template embedded in the ConfigMap (lands on the workflow fleet).
 
@@ -48,7 +48,7 @@ class RunnerPodOverhead:
 
     Fields:
         runner_cpu_m / runner_mem_mi:
-            Runner pod requests (lands on ``c7i-runner`` fleet today).
+            Runner pod requests (lands on the ``c7i-runner`` or ``arm64-runner`` pool).
         listener_cpu_m / listener_mem_mi:
             Listener pod requests (lands on system nodes via the
             ``CriticalAddonsOnly`` toleration).
