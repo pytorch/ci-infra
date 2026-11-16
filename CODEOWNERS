@@ -6,12 +6,12 @@
 # This is a comment.
 # Each line is a file pattern followed by one or more owners.
 
-/.github/workflows/ @jeanschmidt @zxiiro
-/ali/ @jeanschmidt @zxiiro
-/arc/ @jeanschmidt @zxiiro
+/.github/workflows/ @jeanschmidt @zxiiro @mtarsel
+/ali/ @jeanschmidt @zxiiro @mtarsel
+/arc/ @jeanschmidt @zxiiro @mtarsel
 /crcr @fffrog @can-gaa-hou
 /gpu-dev @huydhn
-/helpers/ @zxiiro @jeanschmidt
+/helpers/ @zxiiro @jeanschmidt @mtarsel
 /modules/backend-state/ @jeanschmidt
-/osdc @jeanschmidt @huydhn
-/scripts/ @jeanschmidt @zxiiro
+/osdc @jeanschmidt @huydhn @zxiiro @mtarsel
+/scripts/ @jeanschmidt @zxiiro @mtarsel
