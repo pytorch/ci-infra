@@ -91,12 +91,6 @@ variable "base_node_ami_version" {
   }
 }
 
-variable "base_node_disk_size" {
-  description = "Root EBS volume size (GiB) of each base node"
-  type        = number
-  default     = 100
-}
-
 variable "base_node_subnet_count" {
   description = "Pin the base node group to the first N entries of subnet_ids. 0 = all subnets."
   type        = number

@@ -585,7 +585,7 @@ clusters:
     # Cost-minimal dev/test cluster in the dev AWS account (576436418915), for
     # quick experiments against a test repo. Keeps only the job path (ARC +
     # runner hooks, Karpenter, Harbor) on one small base node; drops BuildKit,
-    # KEDA, caches, monitoring and logging. Always-on floor ~$178/month.
+    # KEDA, caches, monitoring and logging. Always-on floor ~$177/month.
     # Never a pre-merge gate: staging stays that.
     region: us-east-1
     cluster_name: meta-dev-aws-ue1
@@ -603,7 +603,6 @@ clusters:
       base_node_count: 1
       base_node_instance_type: t3a.large
       base_node_max_unavailable_percentage: 100
-      base_node_disk_size: 50
       base_node_subnet_count: 1
       single_nat_gateway: true
       nat_secondary_eip_count: 0  # extra SNAT IPs only matter at prod scale

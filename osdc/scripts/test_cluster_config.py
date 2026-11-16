@@ -257,7 +257,7 @@ class TestTfvars:
         cluster_cfg = {"cluster_name": "c", "region": "r", "base": {"base_node_count": 3}}
         cluster_config.tfvars("c", cluster_cfg, {})
         out = capsys.readouterr().out.strip()
-        for key in ("nat_secondary_eip_count", "base_node_disk_size", "base_node_subnet_count", "cluster_log_types"):
+        for key in ("nat_secondary_eip_count", "base_node_subnet_count", "cluster_log_types"):
             assert key not in out
 
     def test_cost_knobs_emitted_when_set(self, capsys):
@@ -266,7 +266,6 @@ class TestTfvars:
             "region": "r",
             "base": {
                 "nat_secondary_eip_count": 0,
-                "base_node_disk_size": 50,
                 "base_node_subnet_count": 1,
                 "cluster_log_types": ["api", "audit"],
             },
@@ -274,7 +273,6 @@ class TestTfvars:
         cluster_config.tfvars("c", cluster_cfg, {})
         out = capsys.readouterr().out.strip()
         assert '-var="nat_secondary_eip_count=0"' in out
-        assert '-var="base_node_disk_size=50"' in out
         assert '-var="base_node_subnet_count=1"' in out
         assert '-var="cluster_log_types=api,audit"' in out
 

@@ -13,7 +13,7 @@ Only the job path:
 | Base node DaemonSets (registry mirror, perf tuning, CVE mitigations, taint remover, NodeLocal DNS) | Nodes start with startup taints that only these remove |
 | `karpenter` | Creates runner and workflow nodes |
 | `arc` (controller, `runner-hooks-warmer`, wrapper) | The thing under test |
-| `nodepools-dev` + `arc-runners-dev` | A small runner set: `d-mt-l-x86iavx512-2-4`, `d-mt-l-arm64g2-6-25` |
+| `nodepools-dev` + `arc-runners-dev` | One runner type, `d-mt-l-x86iavx512-2-4` (max 4) |
 | `zombie-cleanup` | Stops a stuck runner pod from holding a node |
 
 Dropped: `buildkit`, `keda`, `hf-cache`, `pypi-cache`, `cache-enforcer`, `agent-sandbox`, `monitoring`, `logging`,
@@ -31,12 +31,12 @@ hooks warmer select `node-fleet=c7i-runner`.
 | EKS control plane | 73.00 | Every EKS cluster pays it |
 | 1 × t3a.large base node | 54.90 | Listeners must stay connected to GitHub; Karpenter must run to create nodes; Harbor needs EBS PVCs (no Fargate) |
 | NAT gateway | 32.85 | Pods are IPv6-only and GitHub is IPv4-only |
-| Base node disk (50 GB) | 4.00 | |
+| Base node disk (100 GB) | 8.00 | |
 | 1 public IPv4 (NAT) | 3.65 | `nat_secondary_eip_count: 0` drops the 7 prod SNAT IPs |
 | S3 / ECR / state, Harbor PVCs, KMS | ~5 | |
 
-About $173/month before jobs. Each running job adds a runner node (m7g.xlarge, $0.16/h) and a workflow node
-(c7a.2xlarge $0.41/h or t4g.2xlarge $0.27/h); idle nodes are removed 10 s after their last pod.
+About $177/month before jobs. Each running job adds a runner node (m7g.xlarge, $0.16/h) and a workflow node
+(c7a.2xlarge, $0.41/h); idle nodes are removed 10 s after their last pod.
 Keep `eks_version` current: extended support raises the control plane to ~$438/month.
 
 ## Knobs this cluster uses
@@ -47,7 +47,6 @@ All default to the prod shape, so other clusters are unchanged.
 |-------------------|--------|
 | `base.nat_secondary_eip_count` | Secondary EIPs per NAT gateway (default 7) |
 | `base.cluster_log_types` | EKS control-plane log types to CloudWatch; `[]` disables (default all 5) |
-| `base.base_node_disk_size` | Base node root volume, GiB (default 100) |
 | `base.base_node_subnet_count` | Pin the base node group to the first N subnets/AZs (default 0 = all) |
 | `harbor.resource_requests.<nginx\|database>.<cpu\|memory>` | Harbor request overrides; passed to Helm only when set |
 | `arc-runners.listener_cpu` / `arc-runners.listener_memory` | Listener requests = limits (default 250m / 1331Mi); GOMEMLIMIT = 90% of memory |

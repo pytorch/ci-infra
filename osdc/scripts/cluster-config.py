@@ -78,7 +78,7 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         pairs["cluster_admin_role_names"] = ",".join(cluster_admin_roles)
     # Cost knobs for small clusters. Emitted only when the cluster (or defaults)
     # sets them, so existing clusters keep the terraform defaults (prod shape).
-    for key in ("nat_secondary_eip_count", "base_node_disk_size", "base_node_subnet_count"):
+    for key in ("nat_secondary_eip_count", "base_node_subnet_count"):
         if base.get(key) is not None:
             pairs[key] = base[key]
     if "cluster_log_types" in base:

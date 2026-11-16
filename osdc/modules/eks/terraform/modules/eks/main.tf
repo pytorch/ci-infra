@@ -431,7 +431,7 @@ resource "aws_launch_template" "base" {
     device_name = "/dev/xvda"
 
     ebs {
-      volume_size           = var.base_node_disk_size
+      volume_size           = 100
       volume_type           = "gp3"
       iops                  = 3000
       throughput            = 125

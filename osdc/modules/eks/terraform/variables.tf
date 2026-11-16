@@ -95,12 +95,6 @@ variable "cluster_log_types" {
   default     = "api,audit,authenticator,controllerManager,scheduler"
 }
 
-variable "base_node_disk_size" {
-  description = "Root EBS volume size (GiB) of each base node"
-  type        = number
-  default     = 100
-}
-
 variable "base_node_subnet_count" {
   description = "Pin the base node group to the first N private subnets (AZs). 0 = all subnets. 1 keeps a single base node and its zonal EBS PVCs (Harbor) in one AZ."
   type        = number
