@@ -128,6 +128,32 @@ def parse_memory_bytes(memory_str):
     return int(s)
 
 
+# Listener pod sizing. The defaults are the prod shape; a small cluster lowers them
+# via arc-runners.listener_cpu / arc-runners.listener_memory in clusters.yaml
+# (staging measured ~12 MiB working set per idle listener against 1331Mi reserved).
+DEFAULT_LISTENER_CPU = "250m"
+DEFAULT_LISTENER_MEMORY = "1331Mi"
+# GOMEMLIMIT is the Go soft memory limit: 90% of the container limit, so the
+# runtime GCs harder before the kernel OOM-kills the listener.
+LISTENER_GOMEMLIMIT_RATIO = 0.9
+
+
+def listener_resources(cluster_config):
+    """Return (cpu, memory, gomemlimit) strings for the listener container.
+
+    >>> listener_resources({})
+    ('250m', '1331Mi', '1198MiB')
+    >>> listener_resources({"listener_cpu": "100m", "listener_memory": "256Mi"})
+    ('100m', '256Mi', '230MiB')
+    """
+    cpu = str(cluster_config.get("listener_cpu") or DEFAULT_LISTENER_CPU)
+    memory = str(cluster_config.get("listener_memory") or DEFAULT_LISTENER_MEMORY)
+    gomemlimit_mib = round(parse_memory_bytes(memory) * LISTENER_GOMEMLIMIT_RATIO / 1024**2)
+    if gomemlimit_mib < 1:
+        raise ValueError(f"arc-runners.listener_memory={memory!r} is too small for a listener")
+    return cpu, memory, f"{gomemlimit_mib}MiB"
+
+
 def load_clusters_yaml(repo_root):
     """Load clusters.yaml from the repository root."""
     config_path = repo_root / "clusters.yaml"
@@ -515,6 +541,8 @@ def generate_runner(
     output_content = template_content
     output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
     output_content = strip_conditional_block(output_content, "HF_CACHE", keep=hf_cache_enabled)
+    listener_cpu, listener_memory, listener_gomemlimit = listener_resources(cluster_config)
+
     replacements = {
         "{{GITHUB_CONFIG_URL}}": github_url,
         "{{GITHUB_SECRET_NAME}}": k8s_secret_ref,
@@ -555,6 +583,9 @@ def generate_runner(
             cluster_config.get("capacity_aware_age_threshold_seconds", 900)
         ),
         "{{CAPACITY_AWARE_FRESH_MULTIPLIER}}": str(fresh_multiplier),
+        "{{LISTENER_CPU}}": listener_cpu,
+        "{{LISTENER_MEMORY}}": listener_memory,
+        "{{LISTENER_GOMEMLIMIT}}": listener_gomemlimit,
     }
 
     for placeholder, value in replacements.items():

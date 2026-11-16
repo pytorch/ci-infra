@@ -42,6 +42,8 @@ Current modules:
 | `arc-runners` | ARC runner scale sets generated from `defs/` + templates — GitHub Actions self-hosted runners (requires `arc` + `nodepools`) |
 | `arc-runners-b200` | B200 ARC runner scale sets — delegates to upstream arc-runners deploy with B200-specific definitions |
 | `arc-runners-h100` | H100 ARC runner scale sets — delegates to upstream arc-runners deploy with H100-specific definitions |
+| `nodepools-dev` | Minimal NodePools for the cost-minimal dev cluster (small `c7i-runner` pool + the workflow fleets of the dev runners) — replaces `nodepools`; see `docs/dev-cluster.md` |
+| `arc-runners-dev` | Small ARC runner set for the dev cluster — delegates to upstream arc-runners deploy with dev definitions |
 | `buildkit` | Container build service — dual-arch BuildKit Deployments with HAProxy LB on dedicated nodes |
 | `pypi-cache` | Per-CUDA-slug nginx + pypiserver fanout backed by shared EFS wheelhouse, fed by an external wheel-build pipeline via S3 |
 | `cache-enforcer` | DaemonSet that installs iptables rules on runner nodes to block direct outbound access to external registries/PyPI, forcing traffic through internal caches |

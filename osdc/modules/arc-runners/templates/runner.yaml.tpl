@@ -152,14 +152,14 @@ listenerTemplate:
       - name: listener
         resources:
           limits:
-            cpu: "250m"
-            memory: "1331Mi"
+            cpu: "{{LISTENER_CPU}}"
+            memory: "{{LISTENER_MEMORY}}"
           requests:
-            cpu: "250m"
-            memory: "1331Mi"
+            cpu: "{{LISTENER_CPU}}"
+            memory: "{{LISTENER_MEMORY}}"
         env:
           - name: GOMEMLIMIT
-            value: "1198MiB"
+            value: "{{LISTENER_GOMEMLIMIT}}"
           - name: CAPACITY_AWARE_ENABLED
             value: "true"
           - name: CAPACITY_AWARE_PROACTIVE_CAPACITY

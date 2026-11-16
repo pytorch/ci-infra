@@ -61,9 +61,11 @@ osdc/
 │   ├── nodepools/          # Karpenter NodePools (pure compute provisioning)
 │   ├── nodepools-b200/     # B200 (Blackwell) GPU nodepools
 │   ├── nodepools-h100/     # H100 (Hopper) GPU nodepools
+│   ├── nodepools-dev/      # Minimal nodepools for the dev cluster (replaces nodepools there)
 │   ├── arc-runners/        # ARC runner scale sets (requires arc + nodepools)
 │   ├── arc-runners-b200/   # B200 GPU runner scale sets
 │   ├── arc-runners-h100/   # H100 GPU runner scale sets
+│   ├── arc-runners-dev/    # Small runner set for the dev cluster
 │   ├── buildkit/           # BuildKit build service (arm64 + amd64, HAProxy LB)
 │   ├── cache-enforcer/     # DaemonSet blocking direct registry/PyPI access (forces Harbor + pypi-cache)
 │   ├── harbor-cache-recovery/ # Recovers Harbor cache state after pod restarts/failures
@@ -170,6 +172,7 @@ In most cases, reading the relevant source or docs in the knowledge base first w
 | `arc-fork-build-deploy.md` | Building and deploying the ARC controller fork (image build, push, version pinning) |
 | `architecture.md` | Modular platform architecture — base vs modules, deployment layers |
 | `ci-pre-merge.md` | Pre-merge CI workflow and gating |
+| `dev-cluster.md` | Cost-minimal dev cluster (`meta-dev-aws-ue1`): kept modules, cost floor, small-cluster knobs, first-deploy steps |
 | `cluster-recreation.md` | Operator runbook for destroying and recreating an OSDC cluster (per-cluster cutover, accepted data losses for Harbor S3 + EFS pypi-cache, pre-flight checks) |
 | `current_runner_load_distribution.md` | 30-day job counts and peak concurrency analysis by runner type |
 | `loki_query.md` | CLI guide for querying Grafana Cloud Loki logs (credentials, LogQL patterns) |

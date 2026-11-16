@@ -10,7 +10,7 @@ terraform {
 }
 
 locals {
-  secondary_eip_count = 7
+  secondary_eip_count = var.nat_secondary_eip_count
   nat_gateway_count   = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : length(var.azs)) : 0
   nat_secondary_eips = var.enable_nat_gateway ? {
     for pair in flatten([

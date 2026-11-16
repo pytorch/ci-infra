@@ -75,6 +75,9 @@ INSTANCE_SPECS: dict[str, dict] = {
     "r7g.12xlarge": {"vcpu": 48, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "arm64"},
     "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "arm64"},
     "t4g.2xlarge": {"vcpu": 8, "memory_gib": 32, "memory_mi": 30310, "gpu": 0, "arch": "arm64"},
+    # Dev-cluster runner pool (modules/nodepools-dev); memory_mi estimated (x0.925)
+    "m7g.xlarge": {"vcpu": 4, "memory_gib": 16, "memory_mi": 15155, "gpu": 0, "arch": "arm64"},
+    "m7g.2xlarge": {"vcpu": 8, "memory_gib": 32, "memory_mi": 30310, "gpu": 0, "arch": "arm64"},
     "m7g.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "arm64"},
     "m7g.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "arm64"},
     "m7g.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
@@ -189,6 +192,8 @@ ENI_MAX_PODS: dict[str, int] = {
     "r7g.12xlarge": 234,
     "r7g.16xlarge": 737,
     "t4g.2xlarge": 58,
+    "m7g.xlarge": 58,
+    "m7g.2xlarge": 58,
     "m7g.8xlarge": 234,
     "m7g.12xlarge": 234,
     "m7g.16xlarge": 737,

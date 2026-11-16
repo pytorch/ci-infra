@@ -1,0 +1,14 @@
+# ARC runner definition (dev): l-arm64g2-6-25
+# Instance type: t4g.2xlarge (pool: t4g in nodepools-dev)
+# Capped at 2 concurrent runners so a runaway workflow cannot scale cost.
+runner:
+  name: l-arm64g2-6-25
+  instance_type: t4g.2xlarge
+  disk_size: 256
+  vcpu: 6
+  memory: 25Gi
+  gpu: 0
+  max_runners: 2
+  proactive_capacity: 0
+  hud_failure_base_capacity: 0
+  max_burst_capacity: 2

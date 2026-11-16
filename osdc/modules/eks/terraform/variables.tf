@@ -75,3 +75,39 @@ variable "cluster_admin_role_names" {
   type        = string
   default     = ""
 }
+
+# --- Cost knobs for small (dev) clusters. Defaults reproduce the prod shape. ---
+
+variable "nat_secondary_eip_count" {
+  description = "Secondary EIPs attached to each NAT gateway (SNAT port capacity at prod scale). 0 for small clusters."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.nat_secondary_eip_count >= 0 && var.nat_secondary_eip_count <= 7
+    error_message = "nat_secondary_eip_count must be between 0 and 7 (AWS caps a NAT gateway at 8 IPv4 addresses)."
+  }
+}
+
+variable "cluster_log_types" {
+  description = "Comma-separated EKS control-plane log types shipped to CloudWatch. Empty string disables control-plane logging."
+  type        = string
+  default     = "api,audit,authenticator,controllerManager,scheduler"
+}
+
+variable "base_node_disk_size" {
+  description = "Root EBS volume size (GiB) of each base node"
+  type        = number
+  default     = 100
+}
+
+variable "base_node_subnet_count" {
+  description = "Pin the base node group to the first N private subnets (AZs). 0 = all subnets. 1 keeps a single base node and its zonal EBS PVCs (Harbor) in one AZ."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.base_node_subnet_count >= 0
+    error_message = "base_node_subnet_count must be >= 0."
+  }
+}

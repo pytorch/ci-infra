@@ -91,6 +91,24 @@ variable "base_node_ami_version" {
   }
 }
 
+variable "base_node_disk_size" {
+  description = "Root EBS volume size (GiB) of each base node"
+  type        = number
+  default     = 100
+}
+
+variable "base_node_subnet_count" {
+  description = "Pin the base node group to the first N entries of subnet_ids. 0 = all subnets."
+  type        = number
+  default     = 0
+}
+
+variable "cluster_log_types" {
+  description = "EKS control-plane log types shipped to CloudWatch. Empty list disables control-plane logging."
+  type        = list(string)
+  default     = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+}
+
 variable "enable_secrets_encryption" {
   description = "Enable KMS envelope encryption for Kubernetes secrets at rest"
   type        = bool
