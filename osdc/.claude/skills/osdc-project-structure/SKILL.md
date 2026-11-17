@@ -172,7 +172,7 @@ In most cases, reading the relevant source or docs in the knowledge base first w
 | `arc-fork-build-deploy.md` | Building and deploying the ARC controller fork (image build, push, version pinning) |
 | `architecture.md` | Modular platform architecture — base vs modules, deployment layers |
 | `ci-pre-merge.md` | Pre-merge CI workflow and gating |
-| `dev-cluster.md` | Cost-minimal dev cluster (`meta-dev-aws-ue1`): kept modules, cost floor, small-cluster knobs, first-deploy steps |
+| `dev-cluster.md` | Cost-minimal dev cluster (`lf-dev-aws-ue1`): kept modules, cost floor, small-cluster knobs, first-deploy steps |
 | `cluster-recreation.md` | Operator runbook for destroying and recreating an OSDC cluster (per-cluster cutover, accepted data losses for Harbor S3 + EFS pypi-cache, pre-flight checks) |
 | `current_runner_load_distribution.md` | 30-day job counts and peak concurrency analysis by runner type |
 | `loki_query.md` | CLI guide for querying Grafana Cloud Loki logs (credentials, LogQL patterns) |

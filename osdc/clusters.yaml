@@ -581,17 +581,17 @@ clusters:
       - monitoring
       - logging
 
-  meta-dev-aws-ue1:
+  lf-dev-aws-ue1:
     # Cost-minimal cluster in the dev/test AWS account, for
     # quick experiments against a test repo. Keeps only the job path (ARC +
     # runner hooks, Karpenter, Harbor) on one small base node; drops BuildKit,
     # KEDA, caches, monitoring and logging. Always-on floor ~$177/month.
     # Never a pre-merge gate: staging stays that.
     region: us-east-1
-    cluster_name: meta-dev-aws-ue1
+    cluster_name: lf-dev-aws-ue1
     recycle_karpenter_nodes: true
     proactive_capacity_max: 0  # no warm pool: nodes exist only for in-flight jobs
-    state_bucket: ciforge-tfstate-meta-dev-aws-ue1
+    state_bucket: lf-osdc-tfstate-dev-ue1
     access_config:
       # Deployed manually: whoever runs the first deploy gets cluster admin.
       # Grant others later with `aws eks create-access-entry`.
@@ -642,7 +642,7 @@ clusters:
       # cluster pick up real pytorch jobs. The d-mt- prefix keeps labels distinct
       # from prod (mt-) and staging (c-mt-).
       github_config_url: "https://github.com/pytorch/pytorch-canary"
-      github_secret_name: meta-dev-aws-ue1
+      github_secret_name: lf-dev-aws-ue1
       runner_name_prefix: "d-mt-"
       # Staging measured ~12 MiB per idle listener against 1331Mi reserved.
       listener_cpu: "100m"

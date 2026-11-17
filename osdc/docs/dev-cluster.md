@@ -1,4 +1,4 @@
-# Dev cluster (`meta-dev-aws-ue1`)
+# Dev cluster (`lf-dev-aws-ue1`)
 
 A cost-minimal OSDC cluster in the dev/test AWS account (us-east-1) for trying ideas against a test repo,
 then tearing them down. It is not a pre-merge gate: staging stays that.
@@ -94,14 +94,14 @@ Deployed manually, not from CI. Run the first deploy with the identity the team 
 role): EKS makes it cluster admin, and that cannot change later. Grant anyone else access with
 `aws eks create-access-entry`.
 
-1. `just bootstrap meta-dev-aws-ue1` — state bucket `ciforge-tfstate-meta-dev-aws-ue1` and the lock table, in
+1. `just bootstrap lf-dev-aws-ue1` — state bucket `lf-osdc-tfstate-dev-ue1` and the lock table, in
    `STATE_REGION` (us-west-2) of this account.
-2. `just deploy-base meta-dev-aws-ue1`, then `just deploy-module meta-dev-aws-ue1 karpenter` and `... arc` (`arc`
+2. `just deploy-base lf-dev-aws-ue1`, then `just deploy-module lf-dev-aws-ue1 karpenter` and `... arc` (`arc`
    creates the `arc-runners` namespace).
 3. Create a GitHub App installed on `pytorch/pytorch-canary` (repository permissions: Administration read and write,
-   Metadata read) and its secret `meta-dev-aws-ue1` in `arc-runners`, with keys `github_app_id`,
+   Metadata read) and its secret `lf-dev-aws-ue1` in `arc-runners`, with keys `github_app_id`,
    `github_app_installation_id` and `github_app_private_key`.
-4. `just deploy meta-dev-aws-ue1` for the remaining modules.
+4. `just deploy lf-dev-aws-ue1` for the remaining modules.
 5. Add an AWS Budgets alert on the account (e.g. $300/month).
 
 Tear down with `scripts/destroy-cluster.sh`.
