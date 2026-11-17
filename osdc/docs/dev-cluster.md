@@ -90,12 +90,18 @@ All default to the prod shape, so other clusters are unchanged.
 
 ## First deploy (one time, in the test account)
 
-1. Create the cluster admin IAM role named in `access_config.cluster_admin_role_names` (`osdc_dev_admin`).
-2. `just bootstrap meta-dev-aws-ue1` — state bucket `ciforge-tfstate-meta-dev-aws-ue1` and the lock table, in
+Deployed manually, not from CI. Run the first deploy with the identity the team shares (e.g. the account's SSO admin
+role): EKS makes it cluster admin, and that cannot change later. Grant anyone else access with
+`aws eks create-access-entry`.
+
+1. `just bootstrap meta-dev-aws-ue1` — state bucket `ciforge-tfstate-meta-dev-aws-ue1` and the lock table, in
    `STATE_REGION` (us-west-2) of this account.
-3. Create a GitHub App installed on `pytorch/pytorch-canary` and its secret `meta-dev-aws-ue1` in `arc-runners`
-   (same shape as the staging secrets).
-4. `just deploy meta-dev-aws-ue1`.
+2. `just deploy-base meta-dev-aws-ue1`, then `just deploy-module meta-dev-aws-ue1 karpenter` and `... arc` (`arc`
+   creates the `arc-runners` namespace).
+3. Create a GitHub App installed on `pytorch/pytorch-canary` (repository permissions: Administration read and write,
+   Metadata read) and its secret `meta-dev-aws-ue1` in `arc-runners`, with keys `github_app_id`,
+   `github_app_installation_id` and `github_app_private_key`.
+4. `just deploy meta-dev-aws-ue1` for the remaining modules.
 5. Add an AWS Budgets alert on the account (e.g. $300/month).
 
 Tear down with `scripts/destroy-cluster.sh`.
