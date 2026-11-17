@@ -85,6 +85,9 @@ class TestReservedNames:
     def test_c7i_runner_is_reserved(self):
         assert "c7i-runner" in RESERVED_NODE_FLEET_NAMES
 
+    def test_arm64_runner_is_reserved(self):
+        assert "arm64-runner" in RESERVED_NODE_FLEET_NAMES
+
     def test_reserved_set_is_frozenset(self):
         assert isinstance(RESERVED_NODE_FLEET_NAMES, frozenset)
 
@@ -200,6 +203,12 @@ class TestValidateNodeFleetReserved:
         # The error must include the rejected value so the operator can match it
         # against the def file they're editing.
         assert "c7i-runner" in err
+
+    def test_arm64_runner_rejected_as_reserved(self):
+        ok, err = validate_node_fleet("arm64-runner")
+        assert ok is False
+        assert err is not None
+        assert "arm64-runner" in err
 
     def test_reserved_message_mentions_override(self):
         _, err = validate_node_fleet("c7i-runner")
