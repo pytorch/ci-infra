@@ -2238,6 +2238,7 @@ class TestRealStartupTaintsRegistry:
 # runner agent reports the job's architecture as runner.arch / RUNNER_ARCH.
 RUNNER_POD_POOL_ARCH = {
     "arm64-runner": "arm64",
+    "c7i-runner": "amd64",
 }
 
 
