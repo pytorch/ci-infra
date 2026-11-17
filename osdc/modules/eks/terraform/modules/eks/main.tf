@@ -101,7 +101,7 @@ resource "aws_eks_cluster" "this" {
     }
   }
 
-  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+  enabled_cluster_log_types = var.cluster_log_types
 
   tags = merge(
     var.tags,
@@ -340,7 +340,9 @@ resource "aws_eks_node_group" "base" {
   cluster_name    = aws_eks_cluster.this.name
   node_group_name = "${var.cluster_name}-base-nodes"
   node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = var.subnet_ids
+  # base_node_subnet_count > 0 pins the group to the first N subnets (AZs), so a
+  # replaced node lands in the AZ its zonal EBS PVCs (Harbor DB/Redis) live in.
+  subnet_ids = var.base_node_subnet_count > 0 ? slice(var.subnet_ids, 0, min(var.base_node_subnet_count, length(var.subnet_ids))) : var.subnet_ids
 
   # Fixed size - no auto-scaling
   scaling_config {

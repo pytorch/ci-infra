@@ -580,3 +580,76 @@ clusters:
       - harbor-cache-recovery
       - monitoring
       - logging
+
+  lf-dev-aws-ue1:
+    # Cost-minimal cluster in the dev/test AWS account, for
+    # quick experiments against a test repo. Keeps only the job path (ARC +
+    # runner hooks, Karpenter, Harbor) on one small base node; drops BuildKit,
+    # KEDA, caches, monitoring and logging. Always-on floor ~$177/month.
+    # Never a pre-merge gate: staging stays that.
+    region: us-east-1
+    cluster_name: lf-dev-aws-ue1
+    recycle_karpenter_nodes: true
+    proactive_capacity_max: 0  # no warm pool: nodes exist only for in-flight jobs
+    state_bucket: lf-osdc-tfstate-dev-ue1
+    access_config:
+      # Deployed manually: whoever runs the first deploy gets cluster admin.
+      # Grant others later with `aws eks create-access-entry`.
+      authentication_mode: API_AND_CONFIG_MAP
+    base:
+      # One t3a.large hosts Harbor, Karpenter, the ARC controller and listeners
+      # (~3 GiB used, ~1.6 vCPU reserved after the overrides below). Pinned to a
+      # single AZ so a replacement node can reattach Harbor's zonal EBS PVCs.
+      base_node_count: 1
+      base_node_instance_type: t3a.large
+      base_node_max_unavailable_percentage: 100
+      base_node_subnet_count: 1
+      single_nat_gateway: true
+      nat_secondary_eip_count: 0  # extra SNAT IPs only matter at prod scale
+      cluster_log_types: []       # no control-plane logs to CloudWatch
+      vpc_cidr: "10.32.0.0/16"    # next free /16 after meta-prod-aws-uw2's 10.28.0.0/16
+    coredns:
+      replicas: 2
+    harbor:
+      core_replicas: 1
+      registry_replicas: 1
+      nginx_replicas: 1
+      pdb_max_unavailable: "100%"
+      resource_requests:
+        nginx:
+          cpu: "100m"
+          memory: "128Mi"
+        database:
+          cpu: "250m"
+          memory: "512Mi"
+    karpenter:
+      replicas: 1
+      pdb_enabled: false
+      pdb_min_available: 0
+    arc:
+      replica_count: 1
+      controller_cpu_request: "250m"
+      controller_cpu_limit: "1"
+      controller_memory_request: "512Mi"
+      controller_memory_limit: "1Gi"
+    node_compactor:
+      enabled: false  # Karpenter WhenEmpty consolidation is enough at this size
+    nodepools:
+      gpu_consolidate_after: "10s"
+      cpu_consolidate_after: "10s"
+    arc-runners:
+      # Repo-scoped on purpose: an org-wide URL with prod's labels would let this
+      # cluster pick up real pytorch jobs. The d-mt- prefix keeps labels distinct
+      # from prod (mt-) and staging (c-mt-).
+      github_config_url: "https://github.com/pytorch/pytorch-canary"
+      github_secret_name: lf-dev-aws-ue1
+      runner_name_prefix: "d-mt-"
+      # Staging measured ~12 MiB per idle listener against 1331Mi reserved.
+      listener_cpu: "100m"
+      listener_memory: "256Mi"
+    modules:
+      - karpenter
+      - arc
+      - nodepools-dev
+      - arc-runners-dev
+      - zombie-cleanup

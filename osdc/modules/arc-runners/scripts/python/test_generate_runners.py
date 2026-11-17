@@ -15,6 +15,7 @@ from generate_runners import (
     compute_cluster_sharding,
     generate_runner,
     get_cluster_config,
+    listener_resources,
     load_clusters_yaml,
     load_excluded_instance_types,
     main,
@@ -1966,6 +1967,59 @@ def _listener_env_value(helm, name):
         if entry.get("name") == name:
             return entry.get("value")
     return None
+
+
+class TestListenerResources:
+    """Listener sizing knobs: arc-runners.listener_cpu / listener_memory."""
+
+    def test_defaults_are_prod_shape(self):
+        assert listener_resources({}) == ("250m", "1331Mi", "1198MiB")
+
+    def test_override(self):
+        cfg = {"listener_cpu": "100m", "listener_memory": "256Mi"}
+        assert listener_resources(cfg) == ("100m", "256Mi", "230MiB")
+
+    def test_gigabyte_memory(self):
+        assert listener_resources({"listener_memory": "1Gi"})[2] == "922MiB"
+
+    def test_too_small_memory_rejected(self):
+        with pytest.raises(ValueError, match="too small"):
+            listener_resources({"listener_memory": "1Ki"})
+
+    def test_real_template_defaults(self, real_template, tmp_path):
+        """With no override the rendered listener keeps the prod reservation (requests == limits)."""
+        helm, _, _ = _render_real(real_template, tmp_path, RUNNER_VARIANTS[0].values[0])
+        res = helm["listenerTemplate"]["spec"]["containers"][0]["resources"]
+        assert res["requests"] == {"cpu": "250m", "memory": "1331Mi"}
+        assert res["limits"] == res["requests"]
+        assert _listener_env_value(helm, "GOMEMLIMIT") == "1198MiB"
+
+    def test_real_template_override(self, real_template, tmp_path):
+        variant = RUNNER_VARIANTS[0].values[0]
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name=variant["name"],
+            instance_type=variant["instance_type"],
+            vcpu=variant["vcpu"],
+            memory=variant["memory"],
+            gpu=variant["gpu"],
+            disk_size=variant["disk_size"],
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+            "listener_cpu": "100m",
+            "listener_memory": "256Mi",
+        }
+        assert generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners") is True
+        helm = next(yaml.safe_load_all((output_dir / f"{variant['name']}.yaml").read_text()))
+        res = helm["listenerTemplate"]["spec"]["containers"][0]["resources"]
+        assert res["requests"] == {"cpu": "100m", "memory": "256Mi"}
+        assert res["limits"] == res["requests"]
+        assert _listener_env_value(helm, "GOMEMLIMIT") == "230MiB"
 
 
 class TestRealTemplate:

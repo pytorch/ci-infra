@@ -1,0 +1,15 @@
+# Karpenter NodePool fleet: c7i-runner (dev) — the runner-pod pool, sized down.
+# The fleet name is load-bearing: runner.yaml.tpl and the runner-hooks-warmer
+# DaemonSet select node-fleet=c7i-runner. Runner pods request 750m / 1Gi, so an
+# m7g.xlarge holds ~4 runners; prod's smallest option is an m7g.8xlarge.
+fleet:
+  name: c7i-runner
+  arch: arm64
+  gpu: false
+  instances:
+    - type: m7g.xlarge
+      weight: 100
+      node_disk_size: 100
+    - type: m7g.2xlarge
+      weight: 80
+      node_disk_size: 100

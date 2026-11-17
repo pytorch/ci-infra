@@ -1795,6 +1795,26 @@ _deploy-harbor cluster:
         exit 1
     fi
 
+    # Optional resource-request overrides for small clusters
+    # (harbor.resource_requests.<nginx|database>.<cpu|memory>). Passed only when
+    # set, so clusters without them send the same Helm input as before and the
+    # input-hash check below does not trigger a Harbor upgrade.
+    HARBOR_RESOURCE_SETS=()
+    for spec in nginx:nginx database:database.internal; do
+        component="${spec%%:*}"
+        value_path="${spec#*:}"
+        for res in cpu memory; do
+            req=$(uv run {{CFG}} "$CLUSTER" "harbor.resource_requests.${component}.${res}" "")
+            if [[ -n "$req" ]]; then
+                if [[ ! "$req" =~ ^[0-9]+(\.[0-9]+)?(m|Ki|Mi|Gi)?$ ]]; then
+                    echo "ERROR: harbor.resource_requests.${component}.${res}='${req}' is not a Kubernetes quantity." >&2
+                    exit 1
+                fi
+                HARBOR_RESOURCE_SETS+=(--set "${value_path}.resources.requests.${res}=${req}")
+            fi
+        done
+    done
+
     # Install Harbor (using traditional Helm repo to avoid ghcr.io auth/rate-limit issues)
     echo "Installing Harbor..."
     helm repo add harbor https://helm.goharbor.io 2>/dev/null || true
@@ -1833,6 +1853,7 @@ _deploy-harbor cluster:
             --set core.replicas="${HARBOR_CORE_REPLICAS}" \
             --set registry.replicas="${HARBOR_REGISTRY_REPLICAS}" \
             --set nginx.replicas="${HARBOR_NGINX_REPLICAS}" \
+            ${HARBOR_RESOURCE_SETS[@]+"${HARBOR_RESOURCE_SETS[@]}"} \
             --timeout 15m \
             --wait \
             --burst-limit 10000 \

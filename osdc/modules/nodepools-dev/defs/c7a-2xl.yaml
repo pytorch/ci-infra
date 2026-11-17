@@ -1,0 +1,13 @@
+# Karpenter NodePool fleet: c7a-2xl (dev) — workflow pods of l-x86iavx512-2-4.
+# Prod's fleet falls back up to c7a.48xlarge; dev stops at c7a.4xlarge.
+fleet:
+  name: c7a-2xl
+  arch: amd64
+  gpu: false
+  instances:
+    - type: c7a.2xlarge
+      weight: 100
+      node_disk_size: 200
+    - type: c7a.4xlarge
+      weight: 85
+      node_disk_size: 300

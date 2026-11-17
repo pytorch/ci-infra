@@ -41,6 +41,12 @@ variable "single_nat_gateway" {
   default     = false
 }
 
+variable "nat_secondary_eip_count" {
+  description = "Secondary EIPs attached to each NAT gateway"
+  type        = number
+  default     = 7
+}
+
 variable "enable_dns_hostnames" {
   description = "Enable DNS hostnames in the VPC"
   type        = bool

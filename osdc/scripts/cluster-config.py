@@ -76,6 +76,14 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     cluster_admin_roles = access_config.get("cluster_admin_role_names", [])
     if cluster_admin_roles:
         pairs["cluster_admin_role_names"] = ",".join(cluster_admin_roles)
+    # Cost knobs for small clusters. Emitted only when the cluster (or defaults)
+    # sets them, so existing clusters keep the terraform defaults (prod shape).
+    for key in ("nat_secondary_eip_count", "base_node_subnet_count"):
+        if base.get(key) is not None:
+            pairs[key] = base[key]
+    if "cluster_log_types" in base:
+        # An empty list is meaningful: it disables control-plane logging.
+        pairs["cluster_log_types"] = ",".join(base.get("cluster_log_types") or [])
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 

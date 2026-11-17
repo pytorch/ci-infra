@@ -252,6 +252,37 @@ class TestTfvars:
         out = capsys.readouterr().out.strip()
         assert '-var="eks_version=1.30"' in out
 
+    def test_cost_knobs_absent_by_default(self, capsys):
+        """Clusters that do not set the cost knobs emit no -var for them (terraform defaults apply)."""
+        cluster_cfg = {"cluster_name": "c", "region": "r", "base": {"base_node_count": 3}}
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        for key in ("nat_secondary_eip_count", "base_node_subnet_count", "cluster_log_types"):
+            assert key not in out
+
+    def test_cost_knobs_emitted_when_set(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "base": {
+                "nat_secondary_eip_count": 0,
+                "base_node_subnet_count": 1,
+                "cluster_log_types": ["api", "audit"],
+            },
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="nat_secondary_eip_count=0"' in out
+        assert '-var="base_node_subnet_count=1"' in out
+        assert '-var="cluster_log_types=api,audit"' in out
+
+    def test_empty_cluster_log_types_disables_logging(self, capsys):
+        """An explicit empty list is emitted as an empty string, not dropped."""
+        cluster_cfg = {"cluster_name": "c", "region": "r", "base": {"cluster_log_types": []}}
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="cluster_log_types="' in out
+
     def test_no_base_key(self, capsys):
         """Cluster with no 'base' key should use defaults for everything."""
         cluster_cfg = {

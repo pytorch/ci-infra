@@ -56,8 +56,9 @@ module "vpc" {
     cidrsubnet(var.vpc_cidr, 8, 194),
   ]
 
-  enable_nat_gateway = true
-  single_nat_gateway = var.single_nat_gateway
+  enable_nat_gateway      = true
+  single_nat_gateway      = var.single_nat_gateway
+  nat_secondary_eip_count = var.nat_secondary_eip_count
 
   tags = merge(local.tags, {
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
@@ -85,6 +86,9 @@ module "eks" {
   base_node_instance_type              = var.base_node_instance_type
   base_node_max_unavailable_percentage = var.base_node_max_unavailable_percentage
   base_node_ami_version                = var.base_node_ami_version
+  base_node_subnet_count               = var.base_node_subnet_count
+
+  cluster_log_types = var.cluster_log_types != "" ? split(",", var.cluster_log_types) : []
 
   coredns_replicas = var.coredns_replicas
 

@@ -66,6 +66,7 @@ Reference documentation in `docs/`:
 | Doc | What it covers |
 |-----|---------------|
 | `docs/architecture.md` | Platform design — base vs modules separation, cluster lifecycle on AWS EKS |
+| `docs/dev-cluster.md` | Cost-minimal dev cluster (`lf-dev-aws-ue1`, test account) — what it keeps, cost floor, the small-cluster knobs, first-deploy steps |
 | `docs/modules.md` | Module contract — what a module is, directory structure, required files |
 | `docs/observability.md` | Three-Alloy observability architecture — monitoring + logging pipelines to Grafana Cloud |
 | `docs/observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |

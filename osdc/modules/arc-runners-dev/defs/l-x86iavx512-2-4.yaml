@@ -1,0 +1,15 @@
+# ARC runner definition (dev): l-x86iavx512-2-4
+# Instance type: c7a.2xlarge (pool: c7a-2xl in nodepools-dev)
+# Capped at 4 concurrent runners so a runaway workflow cannot scale cost.
+runner:
+  name: l-x86iavx512-2-4
+  instance_type: c7a.2xlarge
+  node_fleet: c7a-2xl
+  disk_size: 15
+  vcpu: 2
+  memory: 4Gi
+  gpu: 0
+  max_runners: 4
+  proactive_capacity: 0
+  hud_failure_base_capacity: 0
+  max_burst_capacity: 4
