@@ -3,8 +3,10 @@
 import pytest
 from fleet_naming import (
     RESERVED_NODE_FLEET_NAMES,
+    RUNNER_POD_NODE_FLEETS,
     derive_fleet_name,
     derive_release_runner_group,
+    derive_runner_pod_node_fleet,
     validate_node_fleet,
 )
 
@@ -214,3 +216,23 @@ class TestValidateNodeFleetReserved:
         _, err = validate_node_fleet("c7i-runner")
         assert err is not None
         assert "override" in err
+
+
+# ============================================================================
+# derive_runner_pod_node_fleet
+# ============================================================================
+
+
+class TestDeriveRunnerPodNodeFleet:
+    def test_amd64_uses_c7i_runner(self):
+        assert derive_runner_pod_node_fleet("amd64") == "c7i-runner"
+
+    def test_arm64_uses_arm64_runner(self):
+        assert derive_runner_pod_node_fleet("arm64") == "arm64-runner"
+
+    def test_unknown_arch_raises(self):
+        with pytest.raises(ValueError, match="no runner-pod pool"):
+            derive_runner_pod_node_fleet("riscv64")
+
+    def test_every_runner_pod_pool_is_reserved(self):
+        assert set(RUNNER_POD_NODE_FLEETS.values()) <= RESERVED_NODE_FLEET_NAMES
