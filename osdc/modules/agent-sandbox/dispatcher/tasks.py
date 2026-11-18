@@ -49,7 +49,7 @@ def _run_to_completion(task_id: str, grant) -> dict:
     _running_locked() counts against MAX_CONCURRENT_TASKS for the life of the pod.
 
     One deadline covers both waiting for a pod (a cold one waits on Karpenter) and the
-    run, the same budget the Job's activeDeadlineSeconds used to be.
+    run.
     """
     deadline = time.monotonic() + kube.TASK_DEADLINE_S
     try:

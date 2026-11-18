@@ -2,7 +2,7 @@
 #
 # The dispatcher verifies GitHub Actions tokens, which are signed RS256 with keys GitHub
 # publishes and rotates. It cannot fetch them itself: it is the process holding
-# create-Job RBAC, so it is precisely the one that must not be able to reach the
+# create-claim RBAC, so it is precisely the one that must not be able to reach the
 # internet — see the egress policy in networkpolicy.yaml. So the keys arrive as a
 # mounted ConfigMap, and a separate CronJob with no such RBAC fetches them.
 #
@@ -182,7 +182,7 @@ spec:
 # Three pods are permitted off-cluster, not two: this one, the sigv4 proxy, and every
 # task pod (`sandbox-task-egress`, TCP 443 to anywhere, because a clone has to reach
 # GitHub). The one that is not is the dispatcher — `sandbox-dispatcher-egress` permits
-# DNS and the API server only, which is the point, since it is the pod holding create-Job
+# DNS and the API server only, which is the point, since it is the pod holding create-claim
 # RBAC. "Permits", not "enforces": see the header of networkpolicy.yaml on the IPv4
 # egress interface this cluster does not cover.
 #

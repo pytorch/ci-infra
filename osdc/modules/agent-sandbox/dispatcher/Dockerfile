@@ -11,7 +11,7 @@
 # adding a JWT library here costs the sandbox nothing.
 #
 # The same image also runs the JWKS refresher CronJob, under a different command and a
-# different service account with no create-Job RBAC. One image, two callers.
+# different service account with no create-claim RBAC. One image, two callers.
 #
 # Built and pushed to the in-cluster Harbor osdc project by the module's deploy.sh
 # under a content-hash tag — not built by hand. See the module README.

@@ -1,17 +1,16 @@
 """Everything that talks to the Kubernetes API: the SandboxClaim each task runs in.
 
 This is the bottom of the dispatcher: it imports no other module here, so the task
-lifecycle above it can be read without knowing how a Job is spelled, and this file can
+lifecycle above it can be read without knowing how a claim is spelled, and this file can
 be reviewed as one thing — the security boundary for every task pod.
 
 Access is stdlib urllib against the in-cluster API with the projected SA token, the same
-shape as base/kubernetes/node-taint-remover. RBAC is namespaced to sandboxclaims (and,
-until the Job path is removed, jobs + pods + pods/log) in ai-sandbox.
+shape as base/kubernetes/node-taint-remover. RBAC is namespaced to sandboxclaims in
+ai-sandbox.
 
 A task's pod is the `sandbox-task` SandboxTemplate (kubernetes/base/sandbox-template.yaml);
 a claim only names its warm pool and an expiry, and the task itself is started in the pod
-through sandboxd (sandboxd.py). The Job functions below are the previous path, kept until
-it is removed.
+through sandboxd (sandboxd.py).
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ import functools
 import json
 import os
 import ssl
-import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -35,10 +33,6 @@ NAMESPACE = os.environ.get("NAMESPACE", "ai-sandbox")
 CLAIMS_PATH = f"/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/{NAMESPACE}/sandboxclaims"
 # The SandboxWarmPool (and SandboxTemplate) every claim draws from.
 WARM_POOL = "sandbox-task"
-# Substituted by deploy.sh: the content-hash tag of the task image it just built.
-AGENT_IMAGE = os.environ.get("AGENT_IMAGE", "")
-REGION = os.environ.get("AWS_REGION", "us-east-1")
-SIGV4_PROXY = os.environ.get("SIGV4_PROXY", "sigv4-proxy.ai-sandbox.svc.cluster.local:8080")
 # Where the git credential proxy listens. dispatcher.yaml sets it; empty disables the
 # proxy path entirely.
 GIT_PROXY = os.environ.get("GIT_PROXY", "")
@@ -54,12 +48,12 @@ GIT_PROXY = os.environ.get("GIT_PROXY", "")
 # benefit. It must agree with the allowlist in kubernetes/base/git-proxy.yaml: a repo
 # here but not there fetches and gets 403.
 PRIVATE_REPOS = frozenset({"pytorch/ciforge"})
-DEFAULT_MODEL = os.environ.get("BEDROCK_DEFAULT_MODEL_ID", "")
 
 # Covers pod scheduling (including a Karpenter node when the fleet is full or cold), the
 # fetch and diff (each git step bounded at 120s in the task image) and the agent loop
-# (at most 600s). The loop does not assume the rest was quick: the Job carries this
-# deadline as SANDBOX_DEADLINE, and the task ends the loop early enough to report.
+# (at most 600s). The loop does not assume the rest was quick: the task gets its
+# deadline as SANDBOX_DEADLINE and ends the loop early enough to report. The template's
+# sandboxd --execute-max-time-limit is the same number.
 TASK_DEADLINE_S = int(os.environ.get("TASK_DEADLINE_S", "900"))
 # A claim is deleted as soon as its task returns; its shutdownTime, this long past the
 # deadline, is the backstop for a dispatcher that died mid-task. Short on purpose: a
@@ -67,13 +61,9 @@ TASK_DEADLINE_S = int(os.environ.get("TASK_DEADLINE_S", "900"))
 CLAIM_GRACE_S = 60
 # Claim Ready=False reasons that waiting cannot fix: fail the task instead of the deadline.
 PERMANENT_CLAIM_FAILURES = frozenset({"TemplateNotFound", "WarmPoolNotFound"})
-# Finished Jobs are deleted as soon as their log is read; this is the backstop for a
-# dispatcher that died mid-wait, and has to outlast a plausible restart.
-JOB_TTL_S = 3600
-SLOT_CPU = os.environ.get("TASK_CPU", "2")
-SLOT_MEMORY = os.environ.get("TASK_MEMORY", "4Gi")
-SLOT_DISK = os.environ.get("TASK_EPHEMERAL_STORAGE", "20Gi")
 
+# The most a task may print (its stdout cap on the sandboxd call), and the most read from
+# any API response.
 MAX_LOG_BYTES = 1024 * 1024
 # How much of a non-2xx body to READ, not how much of it survives into the error: the
 # quote itself is bounded by ERROR_QUOTE_CHARS below. Same number as the request-body cap
@@ -120,8 +110,8 @@ def _ssl_context() -> ssl.SSLContext:
     return ctx
 
 
-def api_request(method: str, path: str, body: dict | None = None, raw: bool = False, content_type: str = ""):
-    """One API call. Returns parsed JSON, or text when raw (pod logs are not JSON).
+def api_request(method: str, path: str, body: dict | None = None, content_type: str = ""):
+    """One API call. Returns parsed JSON.
 
     `content_type` exists for PATCH, which the API server rejects as application/json —
     it wants to be told which patch dialect the body is in.
@@ -131,8 +121,7 @@ def api_request(method: str, path: str, body: dict | None = None, raw: bool = Fa
     headers = {"Authorization": f"Bearer {_read_token()}"}
     if data:
         headers["Content-Type"] = content_type or "application/json"
-    if not raw:
-        headers["Accept"] = "application/json"
+    headers["Accept"] = "application/json"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)  # noqa: S310
     try:
         with urllib.request.urlopen(req, context=_ssl_context(), timeout=30) as resp:  # noqa: S310
@@ -140,15 +129,13 @@ def api_request(method: str, path: str, body: dict | None = None, raw: bool = Fa
     except urllib.error.HTTPError as exc:
         detail = exc.read(MAX_ERROR_BYTES).decode(errors="replace")[:ERROR_QUOTE_CHARS] if hasattr(exc, "read") else ""
         raise ApiError(f"{method} {path} -> {exc.code}: {detail}") from None
-    if raw:
-        return payload.decode(errors="replace")
     try:
         return json.loads(payload or b"{}")
     except ValueError as exc:
         # ValueError is neither ApiError nor OSError, so it would slip past every
         # caller's except clause, escape do_POST, and close the connection with no
         # response — the one answer this endpoint exists to avoid. Reachable through the
-        # MAX_LOG_BYTES cap: a pod list past it is truncated into invalid JSON.
+        # MAX_LOG_BYTES cap: a response past it is truncated into invalid JSON.
         raise ApiError(f"{method} {path} -> unparseable response: {exc}") from None
 
 
@@ -175,7 +162,7 @@ def effects_env(grant) -> str:
 def task_env(grant, deadline: int) -> dict[str, str]:
     """Every per-task input task.py reads, from the Grant alone — never the request body.
 
-    One place, so a way of starting the task other than this Job cannot forget an input.
+    One place, so nothing that starts the task can forget an input.
 
     It reads one thing besides the Grant — `PRIVATE_REPOS`, to decide whether to hand the
     task the proxy's address. That is deployment topology ("which repos need a credential
@@ -272,133 +259,3 @@ def delete_claim(task_id: str) -> None:
         api_request("DELETE", f"{CLAIMS_PATH}/sandbox-task-{task_id}", body={"propagationPolicy": "Background"})
     except (ApiError, OSError) as exc:
         print(f"[sandbox-dispatcher] delete sandbox-task-{task_id} failed (shutdownTime will collect it): {exc}")
-
-
-def job_manifest(task_id: str, grant) -> dict:
-    """The Job for one task: the task image under gVisor, with no identity.
-
-    Takes a `Grant`, never a request body, and that signature is the layering rule made
-    unavoidable: by the time execution reaches this function every decision has been
-    made, and there is nothing here to make one from. The capability manifest decides the
-    Grant's values in authorize.py; this function never sees it.
-
-    The task's own inputs come from task_env().
-
-    Every isolation property of a task pod is decided here, which is why
-    kubernetes/base/admissionpolicy.yaml restates the same contract in the API server:
-    a bug in this function is otherwise the whole of the sandbox failing open.
-
-    backoffLimit 0 on purpose — a retry would clone and prompt the model a second time
-    and bill for it, and the result object already carries per-stage errors, so a
-    failure here is worth surfacing rather than repeating.
-    """
-    return {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": {
-            "name": f"sandbox-task-{task_id}",
-            "namespace": NAMESPACE,
-            "labels": {"app": "sandbox-task", "osdc.io/module": "agent-sandbox"},
-        },
-        "spec": {
-            "backoffLimit": 0,
-            "activeDeadlineSeconds": TASK_DEADLINE_S,
-            "ttlSecondsAfterFinished": JOB_TTL_S,
-            "template": {
-                "metadata": {"labels": {"app": "sandbox-task", "osdc.io/module": "agent-sandbox"}},
-                "spec": {
-                    "restartPolicy": "Never",
-                    # gvisor pins the pod to the ai-sandbox fleet and runs it under
-                    # runsc; the SA has no RBAC and no token mounted.
-                    "runtimeClassName": "gvisor",
-                    "serviceAccountName": "sandbox-agent",
-                    "automountServiceAccountToken": False,
-                    "containers": [
-                        {
-                            "name": "task",
-                            "image": AGENT_IMAGE,
-                            "env": [
-                                {"name": "PYTHONUNBUFFERED", "value": "1"},
-                                {"name": "AWS_REGION", "value": REGION},
-                                {"name": "SIGV4_PROXY", "value": SIGV4_PROXY},
-                                {"name": "BEDROCK_DEFAULT_MODEL_ID", "value": DEFAULT_MODEL},
-                                # The deadline is when activeDeadlineSeconds fires (it counts
-                                # from Job start, which is about now).
-                                *(
-                                    {"name": k, "value": v}
-                                    for k, v in task_env(grant, int(time.time()) + TASK_DEADLINE_S).items()
-                                ),
-                            ],
-                            "securityContext": {
-                                "runAsNonRoot": True,
-                                "runAsUser": 1000,
-                                "allowPrivilegeEscalation": False,
-                            },
-                            # requests == limits (Guaranteed QoS): fleet capacity stays
-                            # a division, not a guess, and disk is the dimension the
-                            # caller picks — an uncapped clone evicts its own pod
-                            # instead of pushing the node into DiskPressure.
-                            "resources": {
-                                "requests": {
-                                    "cpu": SLOT_CPU,
-                                    "memory": SLOT_MEMORY,
-                                    "ephemeral-storage": SLOT_DISK,
-                                },
-                                "limits": {
-                                    "cpu": SLOT_CPU,
-                                    "memory": SLOT_MEMORY,
-                                    "ephemeral-storage": SLOT_DISK,
-                                },
-                            },
-                        }
-                    ],
-                },
-            },
-        },
-    }
-
-
-def create_job(task_id: str, grant) -> None:
-    api_request("POST", f"/apis/batch/v1/namespaces/{NAMESPACE}/jobs", body=job_manifest(task_id, grant))
-
-
-def job_state(task_id: str) -> tuple[str, str]:
-    """(state, detail) for a Job: 'running', 'succeeded' or 'failed'."""
-    job = api_request("GET", f"/apis/batch/v1/namespaces/{NAMESPACE}/jobs/sandbox-task-{task_id}")
-    status = job.get("status", {})
-    if status.get("succeeded"):
-        return "succeeded", ""
-    conditions = status.get("conditions") or []
-    for cond in conditions:
-        if cond.get("type") == "Failed" and cond.get("status") == "True":
-            return "failed", cond.get("reason") or cond.get("message") or "Job failed"
-    return "running", ""
-
-
-def task_result(task_id: str) -> dict:
-    """Parse the result the task printed. Its log IS the transport.
-
-    The last JSON object on stdout wins, so a stray log line before it is harmless.
-    """
-    pods = api_request(
-        "GET",
-        f"/api/v1/namespaces/{NAMESPACE}/pods?labelSelector=job-name%3Dsandbox-task-{task_id}",
-    )
-    items = pods.get("items") or []
-    if not items:
-        raise ApiError(f"no pod found for sandbox-task-{task_id}")
-    name = items[-1]["metadata"]["name"]
-    log = api_request("GET", f"/api/v1/namespaces/{NAMESPACE}/pods/{name}/log", raw=True)
-    return last_json_object(log, task_id)
-
-
-def delete_job(task_id: str) -> None:
-    """Delete the Job and its pod. Not fatal — ttlSecondsAfterFinished is the backstop."""
-    try:
-        api_request(
-            "DELETE",
-            f"/apis/batch/v1/namespaces/{NAMESPACE}/jobs/sandbox-task-{task_id}",
-            body={"propagationPolicy": "Background"},
-        )
-    except (ApiError, OSError) as exc:
-        print(f"[sandbox-dispatcher] delete sandbox-task-{task_id} failed (TTL will collect it): {exc}")

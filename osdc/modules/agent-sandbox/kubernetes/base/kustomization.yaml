@@ -5,11 +5,10 @@
 # across this output at apply time (kustomize can read neither clusters.yaml, terraform
 # outputs, nor the cluster's own Service CIDR).
 #
-# There is no Deployment for the sandbox itself: the dispatcher creates one Job per
-# request, so task pods exist only while a task runs. The Job template lives in
-# dispatcher/kube.py rather than here — it is built per request from the task image tag
-# deploy.sh substituted above. admissionpolicy.yaml is the cluster-side check on what
-# that template is allowed to contain.
+# There is no Deployment for the sandbox itself: the dispatcher creates one SandboxClaim
+# per request against the sandbox-task warm pool (sandbox-template.yaml), and the
+# agent-sandbox controller turns it into a pod. admissionpolicy.yaml is the cluster-side
+# check on what that pod and claim are allowed to contain.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

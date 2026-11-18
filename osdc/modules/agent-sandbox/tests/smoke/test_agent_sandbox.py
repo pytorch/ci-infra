@@ -1,20 +1,20 @@
 """Smoke tests for the agent-sandbox module.
 
 Validates the deployed standing infrastructure: namespace, quota, the gvisor
-RuntimeClass, the agent-sandbox controller and the task SandboxTemplate, the sigv4-proxy that holds the only AWS credential, the dispatcher and
-their Services, the dispatcher's namespaced RBAC, the credential-free sandbox-agent SA
-that task pods run as, and the NetworkPolicies. These check the security spine is wired
-— not that an agent run succeeds (that is the e2e test).
+RuntimeClass, the agent-sandbox controller and the task SandboxTemplate, the sigv4-proxy
+that holds the only AWS credential, the dispatcher and their Services, the dispatcher's
+namespaced RBAC, the credential-free sandbox-agent SA that task pods run as, and the
+NetworkPolicies. These check the security spine is wired — not that an agent run
+succeeds (that is the e2e test).
 
-There is no standing worker to assert on: the dispatcher creates one Job per request, so
+There is no standing worker to assert on: the dispatcher claims one pod per request, so
 task pods exist only while a task runs. Their shape is asserted in the dispatcher's own
-unit tests, against the Job manifest it builds — and here against the API server, which
-is the only place the admission policy's CEL is actually evaluated.
+unit tests, against the SandboxTemplate — and here against the API server, which is the
+only place the admission policy's CEL is actually evaluated.
 """
 
 from __future__ import annotations
 
-import re
 import subprocess
 
 import pytest
@@ -81,7 +81,7 @@ class TestTaskAdmissionPolicy:
     task pod could not be updated after binding.
     """
 
-    POLICY = "agent-sandbox-task-jobs"
+    POLICY = "agent-sandbox-task-pods"
 
     def _server_dry_run(self, manifest: str) -> subprocess.CompletedProcess:
         """Apply against the API server without persisting. Server-side dry-run runs the
@@ -102,7 +102,7 @@ class TestTaskAdmissionPolicy:
 
     def _task_pod(self, name: str, **spec_overrides: object) -> str:
         """A pod carrying the task label, so the Pod pass sees it. That pass is not
-        scoped to the dispatcher's service account — pods are created by the Job
+        scoped to the dispatcher's service account — pods are created by the agent-sandbox
         controller — which is what lets this run under the smoke suite's own identity."""
         spec: dict = {
             "runtimeClassName": "gvisor",
@@ -137,37 +137,7 @@ class TestTaskAdmissionPolicy:
             }
         )
 
-    # `<gvk>:` at the start of a line, one block per matched kind. Anchored and whole-token on
-    # purpose: a substring test for "v1, Kind=Pod" also swallows "example.com/v1, Kind=Pod"
-    # and "v1, Kind=PodTemplate". Leading indent tolerated, because an indented block would
-    # otherwise go unparsed and therefore unnoticed. `ERROR:` is deliberately NOT required:
-    # a Job block reporting something else ("expression must evaluate to bool") has to be
-    # seen too, and keying on the GVK rather than on the message keeps that true.
-    _GVK_HEADER = re.compile(r"^[ \t]*(\S+, Kind=\S+?):", re.MULTILINE)
-    # Both spellings of the core group. A core GVK renders `<group>/<version>, Kind=<kind>` with
-    # group empty, so the API server emits `/v1, Kind=Pod`; accept the unslashed form too rather
-    # than depend on that leading slash surviving a Kubernetes upgrade. Still whole-token, so
-    # `example.com/v1, Kind=Pod` remains a failure rather than being swallowed.
-    EXPECTED_TYPE_CHECK_KINDS = frozenset({"/v1, Kind=Pod", "v1, Kind=Pod"})
-
-    @classmethod
-    def _is_expected_pod_diagnostic(cls, warning: str) -> bool:
-        """True only if every diagnostic BLOCK in this entry is against the Pod kind.
-
-        Attribution is by GVK block, not by counting `ERROR:` tokens. One GVK's compilation
-        can report several errors under a single header, and a CEL source line echoed into
-        the message can itself contain the token — a count would then reject an ordinary
-        Pod-only entry and restore the permanent red this whole predicate exists to remove.
-        What must not be ignored is text belonging to NO block, which is what the head check
-        below rejects: an entry whose text starts before any header this test recognises.
-        """
-        headers = cls._GVK_HEADER.findall(warning)
-        if not headers or not set(headers) <= cls.EXPECTED_TYPE_CHECK_KINDS:
-            return False
-        head = warning[: cls._GVK_HEADER.search(warning).start()]
-        return not head.strip()
-
-    def test_policy_and_both_bindings_are_deployed(self) -> None:
+    def test_policy_and_its_binding_are_deployed(self) -> None:
         policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
         assert policy["spec"]["failurePolicy"] == "Fail"
         bound = {
@@ -175,51 +145,20 @@ class TestTaskAdmissionPolicy:
             for b in run_kubectl(["get", "validatingadmissionpolicybinding"])["items"]
             if b["spec"]["policyName"] == self.POLICY
         }
-        assert bound == {"agent-sandbox-task-jobs", "agent-sandbox-task-pods"}, (
-            f"the policy needs both its bindings to be enforced on Jobs and on Pods; found {sorted(bound)}."
-        )
+        assert bound == {self.POLICY}, f"the policy is inert without its binding; found {sorted(bound)}."
 
     def test_the_policy_type_checks(self) -> None:
-        """Type checking is advisory, and against Pod it is EXPECTED to complain.
-
-        The API server type-checks every expression against every GVK matchConstraints
-        resolves to, and this policy names two. Job-level rules reach fields a PodSpec does
-        not have (`parallelism`, `completions`, `backoffLimit`, `template`) behind a
-        `!variables.isJob ||` guard the static checker cannot follow, so each produces a
-        `v1, Kind=Pod` diagnostic here, permanently, on a policy that is working correctly.
-        Runtime is unaffected: VAP compiles `object` as DynType for evaluation, which is why
-        type checking is warnings-only rather than a denial. Asserting the list is empty
-        would turn `just smoke` red on every cluster with this module enabled.
-
-        So SUPPRESS the one recognised shape rather than filter for the failing one: an entry
-        is expected only if every `<gvk>:` block it carries is against `v1, Kind=Pod`.
-        Everything else reddens — a Job-side diagnostic, an entry combining both kinds, an
-        entry with no warning text, an entry whose text starts before any header this test
-        recognises. Suppressing by substring instead would have swallowed
-        `example.com/v1, Kind=Pod` and `v1, Kind=PodTemplate`, and a payload-format change
-        would have turned the assertion permanently vacuous — worse than the red it removes.
-
-        Three limits stated rather than papered over. An empty warning list is legitimate, so
-        this cannot detect that suppression is over-broad. A rule wrong against Pod ALONE is
-        suppressed; `test_job_only_rules_are_guarded_for_the_pod_pass` covers the shapes of
-        that visible statically, and splitting this into a Jobs policy and a Pods policy is
-        what would recover the rest. And only the two core-group header spellings are
-        recognised — any other payload format reddens with the raw entries in the message,
-        which is the signal needed to pin the new format down.
-        """
+        """Advisory — VAP evaluates `object` dynamically, so a warning here is not a
+        denial — but the policy matches Pods alone, so every expression should check
+        cleanly against the Pod schema."""
         policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
         status = policy.get("status", {})
         assert status.get("observedGeneration") == policy["metadata"]["generation"], (
             "the API server has not finished type-checking this generation of the policy yet — "
             f"observedGeneration={status.get('observedGeneration')}, generation={policy['metadata']['generation']}."
         )
-        assert "typeChecking" in status, "no typeChecking result on an observed policy generation"
-        warnings = status["typeChecking"].get("expressionWarnings") or []
-        failures = [w for w in warnings if not self._is_expected_pod_diagnostic(w.get("warning", ""))]
-        assert not failures, (
-            f"CEL type-check warnings on {self.POLICY} that are not the expected Pod-side "
-            f"diagnostics from the guarded Job-only rules: {failures}"
-        )
+        warnings = status.get("typeChecking", {}).get("expressionWarnings") or []
+        assert not warnings, f"CEL type-check warnings on {self.POLICY}: {warnings}"
 
     def test_a_compliant_task_pod_is_admitted(self) -> None:
         """The positive half. Without it a policy that denies everything — a broken
@@ -279,7 +218,7 @@ class TestTaskAdmissionPolicy:
         name = "admission-probe-" + case.lower().replace(" ", "-")
         result = self._server_dry_run(self._task_pod(name, **overrides))
         assert result.returncode != 0, f"a task pod with {case} was ADMITTED — the policy is not enforcing."
-        assert "agent-sandbox-task-jobs" in result.stderr, (
+        assert self.POLICY in result.stderr, (
             f"a task pod with {case} was rejected, but not by this policy: {result.stderr.strip()}"
         )
 
@@ -410,8 +349,8 @@ class TestGitProxy:
 
 class TestSandboxDispatcher:
     """The callable entry point — a Deployment + Service reachable from arc-runners,
-    like buildkitd. It creates one Job per request, so there is no standing worker: task
-    pods exist only while a task runs, and the Job manifest is asserted in the
+    like buildkitd. It claims one pod per request, so there is no standing worker: task
+    pods exist only while a task runs, and their template is asserted in the
     dispatcher's unit tests."""
 
     def test_dispatcher_ready(self, all_deployments: dict) -> None:
@@ -434,32 +373,6 @@ class TestSandboxDispatcher:
             "sandbox-dispatcher must not set runtimeClassName — the sandbox fleet is for task pods."
         )
 
-    def test_dispatcher_knows_the_task_image(self, all_deployments: dict) -> None:
-        """AGENT_IMAGE is what it stamps into every Job. Unsubstituted, /run answers 500
-        rather than creating a Job that cannot pull."""
-        dep = _deployment(all_deployments, "sandbox-dispatcher")
-        env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
-        image = env.get("AGENT_IMAGE", "")
-        assert image, "sandbox-dispatcher must set AGENT_IMAGE — it stamps that image into every Job."
-        assert "__" not in image, f"AGENT_IMAGE must be substituted by deploy.sh; got {image!r}."
-
-    def test_dispatcher_has_invokable_bedrock_model(self, all_deployments: dict) -> None:
-        """BEDROCK_DEFAULT_MODEL_ID is passed to every task pod. Without it every /run
-        that doesn't pass "model" returns errors.bedrock="no model configured". A bare
-        foundation-model ID is also wrong: Anthropic models on Bedrock are
-        INFERENCE_PROFILE-only (the ON_DEMAND Claude 3 is refused as provider-legacy),
-        so the ID needs a `us.`/`global.` routing prefix.
-        """
-        dep = _deployment(all_deployments, "sandbox-dispatcher")
-        env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
-        model = env.get("BEDROCK_DEFAULT_MODEL_ID", "")
-        assert model, (
-            "sandbox-dispatcher must set BEDROCK_DEFAULT_MODEL_ID — set agent_sandbox.default_model_id in clusters.yaml."
-        )
-        assert model.startswith(("us.", "global.", "eu.", "apac.")), (
-            f"BEDROCK_DEFAULT_MODEL_ID must be a cross-region inference profile ID, got {model!r}."
-        )
-
     def test_auth_is_required(self, all_deployments: dict) -> None:
         """A request with no OIDC token must be refused. "false" is a rollback switch; a
         cluster left on it has /run open to every pod in arc-runners."""
@@ -469,7 +382,7 @@ class TestSandboxDispatcher:
 
     def test_concurrency_is_capped(self, all_deployments: dict) -> None:
         """Authentication bounds who may call, not how often, so an uncapped dispatcher
-        turns a caller loop into unbounded Jobs and, through Karpenter, unbounded nodes."""
+        turns a caller loop into unbounded pods and, through Karpenter, unbounded nodes."""
         dep = _deployment(all_deployments, "sandbox-dispatcher")
         env = {e["name"]: e.get("value", "") for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", [])}
         cap = env.get("MAX_CONCURRENT_TASKS", "")
@@ -538,6 +451,11 @@ class TestTaskTemplate:
         assert not any("__" in a for a in container["args"]), f"sandboxd args not substituted: {container['args']}"
 
     def test_template_has_invokable_bedrock_model(self) -> None:
+        """Without a default model every /run that doesn't pass "model" returns
+        errors.bedrock="no model configured". A bare foundation-model ID is also wrong:
+        Anthropic models on Bedrock are INFERENCE_PROFILE-only, so the ID needs a
+        `us.`/`global.` routing prefix — set agent_sandbox.default_model_id in clusters.yaml.
+        """
         env = {e["name"]: e.get("value", "") for e in self._container().get("env", [])}
         model = env.get("BEDROCK_DEFAULT_MODEL_ID", "")
         assert model.startswith(("us.", "global.", "eu.", "apac.")), (
@@ -551,7 +469,7 @@ class TestTaskTemplate:
 
 class TestAgentSandboxQuota:
     def test_quota_bounds_the_namespace(self) -> None:
-        """The bound that holds even if a dispatcher is buggy: without it, Jobs created
+        """The bound that holds even if a dispatcher is buggy: without it, pods claimed
         per request become ai-sandbox nodes until an AWS quota notices."""
         rq = run_kubectl(["get", "resourcequota", "ai-sandbox"], namespace=NAMESPACE)
         hard = rq["spec"]["hard"]
@@ -577,8 +495,8 @@ class TestDispatcherRBAC:
         assert role["metadata"]["namespace"] == NAMESPACE
 
     def test_role_grants_no_write_on_pods(self) -> None:
-        """The Job controller creates the pods. A dispatcher that could create pods
-        directly could create one without the gvisor RuntimeClass."""
+        """The agent-sandbox controller creates the pods. A dispatcher that could create
+        pods directly could create one without the gvisor RuntimeClass."""
         role = run_kubectl(["get", "role", "sandbox-dispatcher"], namespace=NAMESPACE)
         pod_verbs = {v for rule in role["rules"] if "pods" in rule.get("resources", []) for v in rule["verbs"]}
         assert pod_verbs <= {"get", "list", "watch"}, f"pods must be read-only for the dispatcher; got {pod_verbs}."
@@ -594,15 +512,9 @@ class TestDispatcherRBAC:
         for resource in ("sandboxes.agents.x-k8s.io", "sandboxtemplates.extensions.agents.x-k8s.io", "pods"):
             assert self._can_i("create", resource, DISPATCHER, NAMESPACE) == "no", resource
 
-    def test_dispatcher_can_create_jobs_here(self) -> None:
-        subject = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"
-        assert self._can_i("create", "jobs", subject, NAMESPACE) == "yes"
-
-    def test_dispatcher_cannot_create_jobs_elsewhere(self) -> None:
-        """Namespaced Role, not a ClusterRole: a compromised dispatcher must not be able
-        to run pods outside the sandbox namespace."""
-        subject = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"
-        assert self._can_i("create", "jobs", subject, "default") == "no"
+    def test_dispatcher_cannot_create_jobs(self) -> None:
+        """Jobs carry a pod spec, which is exactly what the dispatcher must not write."""
+        assert self._can_i("create", "jobs", DISPATCHER, NAMESPACE) == "no"
 
     def test_dispatcher_cannot_read_secrets(self) -> None:
         subject = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"

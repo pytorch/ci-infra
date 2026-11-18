@@ -9,7 +9,7 @@ on the way out. Bedrock is the same shape, through the sigv4 proxy signing with 
 IRSA identity. This process never sees a token of either kind.
 
 The HTTP surface lives in the dispatcher (../dispatcher/http_api.py): it turns each
-request into one Job, so nothing here has to serialize or refuse concurrent work.
+request into one task pod, so nothing here has to serialize or refuse concurrent work.
 """
 
 from __future__ import annotations

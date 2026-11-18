@@ -231,7 +231,7 @@ spec:
           resources:
             # 500m to match sigv4-proxy, NOT a full core: the namespace quota allows
             # limits.cpu 28, and 12 task slots + 2 dispatchers + 2 sigv4 + 2 git-proxy
-            # at 1 core each comes to 28. Over it, the 12th task's Job is created and
+            # at 1 core each comes to 28. Over it, the 12th task's claim is created and
             # only its POD is refused, so the caller hangs to its deadline rather than
             # getting a clean 429.
             #

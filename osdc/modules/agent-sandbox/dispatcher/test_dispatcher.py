@@ -2,8 +2,9 @@
 
 Stdlib-only, so nothing needs stubbing: the dispatcher runs against a fake Kubernetes
 API on a real socket, and its HTTP surface is driven over a real socket too. The fake
-API records what was created, which is where the Job-shape assertions come from — that
-manifest is the security boundary for every task pod (gVisor, no token, capped disk).
+API records the claims created, and sandboxd is replaced by a recorder of the calls made
+to it. The task pod itself is asserted from sandbox-template.yaml — it is the security
+boundary for every task pod (gVisor, no token, capped disk).
 
 One file for four modules, deliberately: these are the same assertions the single-file
 dispatcher carried, against the same behaviour, which is what makes the split reviewable
@@ -67,7 +68,7 @@ entrypoint = _load_entrypoint()
 
 
 def a_grant(task="", ref="", model="", caller="unauthenticated", pr=0):
-    """The Grant an unauthenticated caller gets today. job_manifest takes one of these
+    """The Grant an unauthenticated caller gets today. task_env takes one of these
     rather than a request body, which is the layering rule made unavoidable.
 
     `pr` defaults to 0, the not-a-review case, so the review tests have to ask for it."""
@@ -104,17 +105,15 @@ def signed(tmp_path, monkeypatch):
 def fake_k8s(monkeypatch, tmp_path):
     """Stand in for the API server and the task pod's sandboxd.
 
-    The API server records claims (and the old path's Jobs), answers polls with a claim
-    that is Ready on a pod IP, and serves a pod log; sandboxd.execute is replaced by a
-    recorder returning `state["log"]` as the task's stdout. The real gRPC call is tested
+    The API server records claims and answers polls with a claim that is Ready on a pod
+    IP; sandboxd.execute is replaced by a recorder returning `state["log"]` as the task's
+    stdout. The real gRPC call is tested
     in test_sandboxd.py.
     """
     state = {
-        "jobs": [],
         "claims": [],
         "deleted": [],
         "executions": [],
-        "job_status": {"succeeded": 1},
         "claim_status": {
             "conditions": [{"type": "Ready", "status": "True", "reason": "DependenciesReady"}],
             "sandbox": {"name": "sandbox-task-x", "podIPs": ["fd00::42"]},
@@ -136,7 +135,7 @@ def fake_k8s(monkeypatch, tmp_path):
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            state["claims" if "/sandboxclaims" in self.path else "jobs"].append(body)
+            state["claims"].append(body)
             self._json({"metadata": {"name": body["metadata"]["name"]}}, code=201)
 
         def do_DELETE(self):
@@ -144,18 +143,7 @@ def fake_k8s(monkeypatch, tmp_path):
             self._json({"status": "Success"})
 
         def do_GET(self):
-            if "/pods/" in self.path and self.path.endswith("/log"):
-                body = state["log"].encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            elif "/pods?" in self.path:
-                self._json({"items": [{"metadata": {"name": "sandbox-task-abc-xyz"}}]})
-            elif "/jobs/" in self.path:
-                self._json({"status": state["job_status"]})
-            elif "/sandboxclaims/" in self.path:
+            if "/sandboxclaims/" in self.path:
                 self._json({"status": state["claim_status"]})
             else:
                 self._json({}, code=404)
@@ -176,7 +164,6 @@ def fake_k8s(monkeypatch, tmp_path):
     monkeypatch.setattr(kube, "TOKEN_PATH", token)
     monkeypatch.setattr(kube, "CA_PATH", tmp_path / "absent-ca.crt")
     monkeypatch.setattr(kube, "_k8s_api", lambda: f"http://{host}:{port}")
-    monkeypatch.setattr(kube, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:deadbeef")
     monkeypatch.setattr(tasks, "POLL_INTERVAL_S", 0)
 
     def fake_execute(pod_ip, **kwargs):
@@ -198,89 +185,45 @@ def fake_k8s(monkeypatch, tmp_path):
     httpd.server_close()
 
 
-class TestJobManifest:
-    """The Job template is the security boundary for every task pod, so assert it
-    rather than trusting that a manifest reviewed once stays that way."""
-
-    def _pod_spec(self):
-        return kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
-
-    def test_runs_under_gvisor_on_the_sandbox_fleet(self):
-        assert self._pod_spec()["runtimeClassName"] == "gvisor"
-
-    def test_task_pod_gets_no_kubernetes_identity(self):
-        """The dispatcher holds the RBAC; a task pod that could reach the API server
-        would hand the untrusted side the ability to create its own pods."""
-        spec = self._pod_spec()
-        assert spec["serviceAccountName"] == "sandbox-agent"
-        assert spec["automountServiceAccountToken"] is False
-
-    def test_requests_equal_limits_and_disk_is_capped(self):
-        resources = self._pod_spec()["containers"][0]["resources"]
-        assert resources["requests"] == resources["limits"]
-        assert resources["requests"]["ephemeral-storage"]
-
-    def test_no_retry(self):
-        """A retry re-clones and re-prompts the model — and bills for it. The result
-        object already carries per-stage errors."""
-        job = kube.job_manifest("abc123abc123", a_grant())
-        assert job["spec"]["backoffLimit"] == 0
-        assert job["spec"]["activeDeadlineSeconds"] == kube.TASK_DEADLINE_S
-        assert job["spec"]["ttlSecondsAfterFinished"] == kube.JOB_TTL_S
-
-    def test_spec_is_passed_as_env_not_baked_into_the_image(self):
-        spec = kube.job_manifest("abc123abc123", a_grant(ref="v1", model="us.x"))
-        env = {e["name"]: e["value"] for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
-        assert env["SANDBOX_REPO"] == "org/repo"
-        assert env["SANDBOX_REF"] == "v1"
-        assert env["SANDBOX_BASE"] == ""
-        assert env["SANDBOX_EFFECTS"] == "[]"
-        assert env["SANDBOX_MODEL"] == "us.x"
-        assert env["SANDBOX_TASK"] == "", "an omitted task must arrive empty so run_task applies its default"
-
-    def test_the_task_is_told_when_its_deadline_fires(self, monkeypatch):
-        monkeypatch.setattr(kube.time, "time", lambda: 1_000_000.4)
-        spec = kube.job_manifest("abc123abc123", a_grant())
-        env = {e["name"]: e["value"] for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
-        assert env["SANDBOX_DEADLINE"] == str(1_000_000 + kube.TASK_DEADLINE_S)
-
-    def test_task_env_carries_every_input_task_py_reads(self):
-        """task_env() is the one list of task inputs, so it must name every variable
-        task.py's SPEC_ENV reads. Read out of task.py rather than restated."""
-        source = (Path(__file__).parent.parent / "agent" / "task.py").read_text()
-        reads = set(re.findall(r'^\s+"(SANDBOX_[A-Z_]+)":', source.split("SPEC_ENV = {", 1)[1].split("}", 1)[0], re.M))
-        assert reads, "parsed nothing out of task.py's SPEC_ENV — its shape changed"
-        assert set(kube.task_env(a_grant(), 0)) - {"GIT_PROXY"} == reads
-
-    def test_carries_the_task_image_the_dispatcher_was_given(self, monkeypatch):
-        monkeypatch.setattr(kube, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:cafe1234")
-        assert self._pod_spec()["containers"][0]["image"] == "harbor:30002/osdc/ci-agent-sandbox:cafe1234"
-
-    def test_gvisor_label_matches_the_network_policy_selector(self):
-        """sandbox-task-egress selects app=sandbox-task; a label drift here silently
-        leaves task pods with no egress allow-list at all."""
-        labels = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["metadata"]["labels"]
-        assert labels["app"] == "sandbox-task"
-
-
 class TestTaskTemplate:
-    """The SandboxTemplate the dispatcher will claim from. It runs sandboxd rather than
-    the task, but the pod around it must stay the one job_manifest() builds."""
+    """The SandboxTemplate is the security boundary for every task pod, so assert it
+    rather than trusting that a manifest reviewed once stays that way."""
 
     def _container(self):
         return _template_pod()["spec"]["containers"][0]
 
-    def test_isolates_the_pod_like_the_job_does(self):
-        job_pod = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]
-        tmpl = _template_pod()
-        assert tmpl["metadata"]["labels"] == job_pod["metadata"]["labels"]
-        for key in ("restartPolicy", "runtimeClassName", "serviceAccountName", "automountServiceAccountToken"):
-            assert tmpl["spec"][key] == job_pod["spec"][key], key
-        job_container = job_pod["spec"]["containers"][0]
-        assert self._container()["securityContext"] == job_container["securityContext"]
-        assert self._container()["resources"] == job_container["resources"]
+    def test_runs_under_gvisor_on_the_sandbox_fleet(self):
+        assert _template_pod()["spec"]["runtimeClassName"] == "gvisor"
+
+    def test_task_pod_gets_no_kubernetes_identity(self):
+        """The dispatcher holds the RBAC; a task pod that could reach the API server
+        would hand the untrusted side the ability to create its own pods."""
+        spec = _template_pod()["spec"]
+        assert spec["serviceAccountName"] == "sandbox-agent"
+        assert spec["automountServiceAccountToken"] is False
+        assert "volumes" not in spec
+
+    def test_no_restart(self):
+        """A restarted container is a fresh sandboxd mid-task; the task fails instead."""
+        assert _template_pod()["spec"]["restartPolicy"] == "Never"
+
+    def test_runs_as_non_root_without_escalation(self):
+        context = self._container()["securityContext"]
+        assert context["runAsNonRoot"] is True
+        assert context["allowPrivilegeEscalation"] is False
+
+    def test_requests_equal_limits_and_disk_is_capped(self):
+        resources = self._container()["resources"]
+        assert resources["requests"] == resources["limits"]
+        assert resources["requests"]["ephemeral-storage"]
+
+    def test_carries_the_task_image_deploy_sh_substitutes(self):
         assert self._container()["image"] == "__AGENT_IMAGE__"
-        assert "volumes" not in tmpl["spec"]
+
+    def test_label_matches_the_network_policy_selector(self):
+        """sandbox-task-egress selects app=sandbox-task; a label drift here silently
+        leaves task pods with no egress allow-list at all."""
+        assert _template_pod()["metadata"]["labels"]["app"] == "sandbox-task"
 
     def test_runs_sandboxd_behind_the_token_digest(self):
         """Only the digest belongs in the pod: anything in its spec is readable from
@@ -320,10 +263,29 @@ class TestTaskTemplate:
         assert pool["spec"]["sandboxTemplateRef"]["name"] == _manifests()["SandboxTemplate"]["metadata"]["name"]
 
 
+class TestTaskEnv:
+    def test_the_task_spec_comes_from_the_grant(self):
+        env = kube.task_env(a_grant(ref="v1", model="us.x"), 1_000_900)
+        assert env["SANDBOX_REPO"] == "org/repo"
+        assert env["SANDBOX_REF"] == "v1"
+        assert env["SANDBOX_BASE"] == ""
+        assert env["SANDBOX_EFFECTS"] == "[]"
+        assert env["SANDBOX_MODEL"] == "us.x"
+        assert env["SANDBOX_TASK"] == "", "an omitted task must arrive empty so run_task applies its default"
+        assert env["SANDBOX_DEADLINE"] == "1000900"
+
+    def test_task_env_carries_every_input_task_py_reads(self):
+        """task_env() is the one list of task inputs, so it must name every variable
+        task.py's SPEC_ENV reads. Read out of task.py rather than restated."""
+        source = (Path(__file__).parent.parent / "agent" / "task.py").read_text()
+        reads = set(re.findall(r'^\s+"(SANDBOX_[A-Z_]+)":', source.split("SPEC_ENV = {", 1)[1].split("}", 1)[0], re.M))
+        assert reads, "parsed nothing out of task.py's SPEC_ENV — its shape changed"
+        assert set(kube.task_env(a_grant(), 0)) - {"GIT_PROXY"} == reads
+
+
 class TestGitProxy:
     def _env(self, grant):
-        spec = kube.job_manifest("abc123abc123", grant)["spec"]["template"]["spec"]
-        return {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+        return kube.task_env(grant, 0)
 
     def test_a_private_repo_is_told_where_the_proxy_is(self, monkeypatch):
         """The credential lives in the proxy, so the pod needs its address and nothing
@@ -357,8 +319,10 @@ class TestGitProxy:
         """
         monkeypatch.setattr(kube, "GIT_PROXY", "git-proxy.ai-sandbox.svc:8080")
         monkeypatch.setattr(kube, "PRIVATE_REPOS", frozenset({"org/repo"}))
-        spec = kube.job_manifest("abc123abc123", a_grant())["spec"]["template"]["spec"]
-        env = {e["name"] for e in spec["containers"][0]["env"]}
+        # What a task process sees: the pod's env, which sandboxd passes on, plus the
+        # per-task env the dispatcher sends with the call.
+        container = _template_pod()["spec"]["containers"][0]
+        env = {e["name"] for e in container["env"]} | set(kube.task_env(a_grant(), 0))
         assert env == {
             "PYTHONUNBUFFERED",
             "AWS_REGION",
@@ -376,8 +340,8 @@ class TestGitProxy:
         }
         # Nothing mounts a credential either — a Secret volume or envFrom would carry one
         # in without ever naming it above.
-        assert "envFrom" not in spec["containers"][0]
-        assert not spec.get("volumes")
+        assert "envFrom" not in container
+        assert not _template_pod()["spec"].get("volumes")
 
     def test_the_proxy_allowlist_and_private_repos_name_the_same_repos(self):
         """Two copies of one list, in two languages. A repo in PRIVATE_REPOS but not in
@@ -402,8 +366,7 @@ class TestPullRequestReview:
     """The PR number's journey from request body to task pod."""
 
     def _env(self, grant):
-        spec = kube.job_manifest("abc123abc123", grant)["spec"]["template"]["spec"]
-        return {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+        return kube.task_env(grant, 0)
 
     def test_the_pull_request_number_reaches_the_pod(self):
         assert self._env(a_grant(pr=42))["SANDBOX_PR"] == "42"
@@ -451,7 +414,6 @@ class TestRunToCompletion:
         result = tasks._run_to_completion("abc123abc123", a_grant(ref="v1"))
         assert result == {"cloned": True, "report": "ok"}
         assert [c["metadata"]["name"] for c in fake_k8s["claims"]] == ["sandbox-task-abc123abc123"]
-        assert fake_k8s["jobs"] == [], "the Job path must no longer run tasks"
         (run,) = fake_k8s["executions"]
         assert run["pod_ip"] == "fd00::42"
         assert run["command"] == tasks.TASK_COMMAND
@@ -849,7 +811,7 @@ class TestCapacity:
 
     def test_over_capacity_is_429(self, server, monkeypatch):
         """/run is unauthenticated, so the cap is what stops a caller loop turning into
-        unbounded Jobs and, through Karpenter, unbounded nodes."""
+        unbounded pods and, through Karpenter, unbounded nodes."""
         monkeypatch.setattr(tasks, "MAX_CONCURRENT_TASKS", 1)
         tasks._TASKS.clear()
         assert tasks.start_task("unauthenticated") is not None  # occupy the only slot
@@ -858,15 +820,8 @@ class TestCapacity:
         assert exc.value.code == 429
         assert "at capacity" in json.loads(exc.value.read())["error"]
 
-    def test_missing_task_image_is_500_not_a_broken_job(self, server, monkeypatch):
-        monkeypatch.setattr(kube, "AGENT_IMAGE", "")
-        with pytest.raises(urllib.error.HTTPError) as exc:
-            _post(f"{server}/run", {"task": "hello"})
-        assert exc.value.code == 500
-        assert "AGENT_IMAGE" in json.loads(exc.value.read())["error"]
-
     def test_finished_results_are_pruned(self, monkeypatch):
-        """Results live in memory so /status can answer after the Job is gone — the one
+        """Results live in memory so /status can answer after the pod is gone — the one
         thing in a long-running dispatcher that would otherwise grow forever."""
         monkeypatch.setattr(tasks, "RESULT_RETENTION_S", 0)
         tasks._TASKS.clear()
@@ -911,7 +866,7 @@ class TestInClusterConfig:
         """A 403 here means the Role is wrong — the message has to say so rather than
         surfacing as a bare failure."""
         with pytest.raises(kube.ApiError, match="404"):
-            kube.api_request("GET", "/apis/batch/v1/namespaces/ai-sandbox/nope")
+            kube.api_request("GET", "/api/v1/namespaces/ai-sandbox/nope")
 
 
 class TestPolling:
@@ -940,26 +895,16 @@ class TestPolling:
         assert "did not finish" in result["errors"]["dispatch"]
         assert fake_k8s["executions"] == []
 
-    def test_running_job_reports_running(self, fake_k8s):
-        fake_k8s["job_status"] = {"active": 1}
-        assert kube.job_state("abc123abc123") == ("running", "")
-
-    def test_missing_pod_is_an_api_error(self, fake_k8s, monkeypatch):
-        monkeypatch.setattr(kube, "api_request", lambda method, path, **kw: {"items": []} if "/pods?" in path else {})
-        with pytest.raises(kube.ApiError, match="no pod found"):
-            kube.task_result("abc123abc123")
-
-    def test_log_without_json_is_an_api_error(self, fake_k8s):
-        fake_k8s["log"] = "Traceback (most recent call last):\n  ImportError\n"
+    def test_output_without_json_is_an_api_error(self):
         with pytest.raises(kube.ApiError, match="no result JSON"):
-            kube.task_result("abc123abc123")
+            kube.last_json_object("Traceback (most recent call last):\n  ImportError\n", "abc123abc123")
 
-    def test_a_brace_line_that_is_not_json_is_skipped(self, fake_k8s):
-        """Anything the task or git writes to stdout lands in the same log, so a line
+    def test_a_brace_line_that_is_not_json_is_skipped(self):
+        """Anything the task or git writes to stdout lands in the same stream, so a line
         that merely starts with { must not shadow the real result."""
         # Scanned last line first, so the trailing junk is what has to be skipped.
-        fake_k8s["log"] = '{"cloned": true, "report": "the real one"}\n{not json at all\n'
-        assert kube.task_result("abc123abc123")["report"] == "the real one"
+        stdout = '{"cloned": true, "report": "the real one"}\n{not json at all\n'
+        assert kube.last_json_object(stdout, "abc123abc123")["report"] == "the real one"
 
     def test_api_failure_while_polling_is_reported(self, fake_k8s, monkeypatch):
         def boom(task_id):
@@ -993,20 +938,9 @@ class TestPolling:
         assert loaded == {}, "the context must be cached, not rebuilt on every call"
         kube._ssl_context.cache_clear()
 
-    def test_delete_failure_is_logged_not_raised(self, fake_k8s, monkeypatch, capsys):
-        """The TTL collects the Job anyway; failing the request over cleanup would
-        throw away a result that is already in hand."""
-
-        def boom(*a, **kw):
-            raise kube.ApiError("jobs.batch is forbidden")
-
-        monkeypatch.setattr(kube, "api_request", boom)
-        kube.delete_job("abc123abc123")
-        assert "TTL will collect it" in capsys.readouterr().out
-
 
 class TestRequestBodyLimits:
-    """The body is read before any Job is created, on a thread ThreadingHTTPServer does
+    """The body is read before any claim is created, on a thread ThreadingHTTPServer does
     not cap, from a declared length the caller controls. /run is unauthenticated."""
 
     @staticmethod

@@ -86,8 +86,8 @@ spec:
               ephemeral-storage: "20Gi"
 
 ---
-# Claims must name a warm pool. At zero replicas every claim is a cold start — the same
-# one-pod-per-request behaviour as the Jobs — and warm pods are a replica change away.
+# Claims must name a warm pool. At zero replicas every claim is a cold start — one pod
+# created per request — and warm pods are a replica change away.
 # Warm pods count against quota.yaml.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
