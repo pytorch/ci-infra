@@ -348,7 +348,7 @@ class TestECRImages:
 
 
 class TestCoreDNSTopology:
-    """Verify CoreDNS replicaCount, topology spread, autoscaling, and PDB.
+    """Verify CoreDNS replicaCount, base-node pinning, topology spread, autoscaling, and PDB.
 
     Pinned via aws_eks_addon.coredns configuration_values in
     modules/eks/terraform/modules/eks/main.tf. Replica count is per-cluster
@@ -384,6 +384,14 @@ class TestCoreDNSTopology:
             assert rule.get("labelSelector", {}).get("matchLabels", {}).get("k8s-app") == "kube-dns", (
                 f"CoreDNS zone spread labelSelector mismatch. Constraint: {rule}"
             )
+
+    def test_pinned_to_base_nodes(self):
+        """A hard nodeSelector keeps zones with only Karpenter nodes out of the zone spread."""
+        deploy = run_kubectl(["get", "deployment", "coredns"], namespace="kube-system")
+        selector = deploy.get("spec", {}).get("template", {}).get("spec", {}).get("nodeSelector", {})
+        assert selector.get("role") == "base-infrastructure", (
+            f"CoreDNS Deployment nodeSelector is {selector}, expected role=base-infrastructure"
+        )
 
     def test_hostname_topology_spread_is_soft(self, resolve_config):
         """Soft hostname spread (ScheduleAnyway) keeps replicas off the same node when possible."""
