@@ -8,7 +8,8 @@ set -euo pipefail
 #   1. Builds the task and dispatcher images and pushes them to the in-cluster Harbor
 #      `osdc` project under content-hash tags (skipped if a tag already exists).
 #   2. Reads the sigv4-proxy IRSA role ARN from terraform outputs.
-#   3. Applies the namespace, quota, gvisor RuntimeClass, service accounts, dispatcher
+#   3. Applies the upstream agent-sandbox controller and its CRDs (kubernetes/controller).
+#   4. Applies the namespace, quota, gvisor RuntimeClass, service accounts, dispatcher
 #      RBAC, sigv4-proxy, git-proxy, the dispatcher + Service, and the NetworkPolicies.
 #      Both image tags, the region, the Bedrock model, the proxy's IRSA role ARN, the
 #      cluster's API-server ClusterIP and its kube-dns ClusterIP are substituted in.
@@ -209,6 +210,15 @@ git_proxy_config_hash() {
 }
 GIT_PROXY_CONFIG_HASH_BEFORE=$(git_proxy_config_hash || true)
 
+# --- The agent-sandbox controller, before anything that uses its CRDs ---
+echo "[agent-sandbox] Applying the agent-sandbox controller..."
+kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/controller/"
+kubectl wait --for=condition=Established --timeout=2m \
+  crd/sandboxes.agents.x-k8s.io \
+  crd/sandboxtemplates.extensions.agents.x-k8s.io \
+  crd/sandboxclaims.extensions.agents.x-k8s.io \
+  crd/sandboxwarmpools.extensions.agents.x-k8s.io
+
 # --- Apply manifests (substitute both images, region, model, role ARN, API CIDR, DNS) ---
 echo "[agent-sandbox] Applying base manifests (task image: ${AGENT_IMAGE}, dispatcher: ${DISPATCHER_IMAGE}, default model: ${BEDROCK_DEFAULT_MODEL_ID})..."
 kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
@@ -400,6 +410,7 @@ fi
 # and swallowing the failure tells the operator it succeeded. There is no task rollout to
 # wait for — task pods only exist while a request is in flight.
 echo "[agent-sandbox] Waiting for rollouts..."
+kubectl rollout status deployment/agent-sandbox-controller -n agent-sandbox-system --timeout=5m
 kubectl rollout status deployment/sigv4-proxy -n "$NAMESPACE" --timeout=5m
 # git-proxy too, and this is also what catches an absent git-proxy-credentials Secret:
 # the pod would otherwise sit in CreateContainerConfigError behind a green deploy, and

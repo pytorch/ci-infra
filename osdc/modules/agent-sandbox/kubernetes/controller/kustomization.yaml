@@ -1,0 +1,39 @@
+# The upstream agent-sandbox controller (kubernetes-sigs/agent-sandbox): the Sandbox CRDs
+# plus the extensions (SandboxTemplate / SandboxClaim / SandboxWarmPool). It turns the
+# dispatcher's SandboxClaims into task pods, so it holds cluster-wide pod-create RBAC and,
+# like the dispatcher, must never run on the ai-sandbox fleet.
+#
+# Pinned to a release manifest; bump the version here to upgrade. Its image comes from
+# registry.k8s.io, which nodes pull through the Harbor mirror.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: agent-sandbox-controller
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: agent-sandbox-controller
+      spec:
+        template:
+          spec:
+            nodeSelector:
+              role: base-infrastructure
+            tolerations:
+              - key: CriticalAddonsOnly
+                operator: Exists
+                effect: NoSchedule
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: node-fleet
+                          operator: NotIn
+                          values: ["ai-sandbox"]
