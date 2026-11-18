@@ -534,6 +534,11 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.12.0.0/16"
+      # Append only: each AZ's subnet CIDRs follow from its position. The first
+      # three are the cluster's current AZs in their existing order, and the
+      # EKS cluster and base node group AZs. The last two add g6 capacity for
+      # Karpenter nodes; use1-az3 is skipped because it offers no g6. At most 6.
+      availability_zones: [use1-az6, use1-az1, use1-az2, use1-az4, use1-az5]
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:

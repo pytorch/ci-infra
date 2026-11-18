@@ -283,6 +283,32 @@ class TestTfvars:
         out = capsys.readouterr().out.strip()
         assert '-var="cluster_log_types="' in out
 
+    def test_availability_zones_absent_by_default(self, capsys):
+        """Without base.availability_zones, tofu keeps its first-three-AZs default."""
+        cluster_config.tfvars("c", {"cluster_name": "c", "region": "r"}, {})
+        out = capsys.readouterr().out.strip()
+        assert "availability_zone_ids" not in out
+
+    def test_availability_zones_emitted_in_order(self, capsys):
+        """Order is kept: tofu derives each AZ's subnet CIDRs from its position."""
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "base": {"availability_zones": ["use1-az6", "use1-az1", "use1-az4"]},
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="availability_zone_ids=use1-az6,use1-az1,use1-az4"' in out
+
+    @pytest.mark.parametrize("value", [[], None])
+    def test_availability_zones_empty_is_an_error(self, capsys, value):
+        """An emptied or null key fails instead of falling back to the default AZs."""
+        cluster_cfg = {"cluster_name": "c", "region": "r", "base": {"availability_zones": value}}
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert exc.value.code == 1
+        assert "availability_zones is empty" in capsys.readouterr().err
+
     def test_no_base_key(self, capsys):
         """Cluster with no 'base' key should use defaults for everything."""
         cluster_cfg = {

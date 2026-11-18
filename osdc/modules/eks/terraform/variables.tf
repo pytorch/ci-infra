@@ -17,6 +17,28 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
+# --- Explicit AZ list (clusters.yaml base.availability_zones) ---
+# Empty = the first three AZs the region lists. Append only: each AZ's subnet
+# CIDRs follow from its position, and positions index count-based VPC
+# resources, so reordering or removing one would replace subnets, NAT gateways
+# and their EIPs. The subnet guard in main.tf fails the plan instead.
+
+variable "availability_zone_ids" {
+  description = "Comma-separated AZ IDs (e.g. use1-az6,use1-az1), in order. The first three are the EKS cluster's AZs."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = contains([0, 2, 3, 4, 5, 6], length(compact(split(",", var.availability_zone_ids))))
+    error_message = "availability_zone_ids must be empty or list 2 to 6 AZs (EKS needs 2; the subnet layout fits 6)."
+  }
+
+  validation {
+    condition     = length(distinct(compact(split(",", var.availability_zone_ids)))) == length(compact(split(",", var.availability_zone_ids)))
+    error_message = "availability_zone_ids lists the same AZ twice."
+  }
+}
+
 variable "single_nat_gateway" {
   description = "Use a single NAT gateway (cost saving) vs one per AZ (HA)"
   type        = bool
@@ -96,7 +118,7 @@ variable "cluster_log_types" {
 }
 
 variable "base_node_subnet_count" {
-  description = "Pin the base node group to the first N private subnets (AZs). 0 = all subnets. 1 keeps a single base node and its zonal EBS PVCs (Harbor) in one AZ."
+  description = "Pin the base node group to the first N private subnets (AZs). 0 = all EKS subnets (at most the first three AZs). 1 keeps a single base node and its zonal EBS PVCs (Harbor) in one AZ."
   type        = number
   default     = 0
 

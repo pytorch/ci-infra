@@ -254,6 +254,20 @@ Monitoring deploy order is strict: (1) namespace + DCGM DaemonSet via kustomizat
   ```
   Consumed by `scripts/cluster-config.py` into tofu vars. Without this, no IAM role gets cluster-admin via access entries.
 
+**Base: availability zones** (optional, `base.availability_zones`). Without it the VPC uses the first three AZs the region lists. With it, the VPC uses exactly these zone IDs, in order:
+```yaml
+base:
+  vpc_cidr: "10.12.0.0/16"
+  availability_zones: [use1-az6, use1-az1, use1-az2, use1-az4, use1-az5]   # zone IDs, not names: names differ per account
+```
+- **CIDRs follow from position.** Positions 0–2 get a /18 private subnet (`cidrsubnet(vpc, 2, i)`), the same layout as the default. Positions 3–5 get the /20s left in the fourth /18 (`cidrsubnet(vpc, 4, 10+i)`). Every position gets a /24 public subnet (`cidrsubnet(vpc, 8, 192+i)`). That's at most 6 AZs.
+- **Append only.** Positions index count-based subnets, NAT gateways, EIPs and route tables, and set each AZ's CIDRs. Reordering or removing an entry would replace those resources, so tofu fails the plan if an existing private subnet is no longer at its position (AZ and CIDR). To stop using an AZ, keep its entry.
+- **Moving an existing cluster.** List its current AZs first, in AZ-name order (the order the default used), as zone IDs (`aws ec2 describe-availability-zones`).
+- **First three = EKS AZs.** The EKS cluster and base node group use only the first three private subnets. EKS can't move a node group to new subnets, and cluster subnets must stay in their original AZs. Further AZs get Karpenter nodes only, through the `karpenter.sh/discovery` subnet tag.
+- **Each new AZ costs EIPs.** It adds a NAT gateway with 1 + `nat_secondary_eip_count` EIPs (8 by default). Check the account's EIP quota first.
+- **Validation.** Tofu checks for 2–6 unique zone IDs, each available in the region. `cluster-config.py` rejects an empty or null list.
+- **Deploy with `just deploy <cluster>`.** Base creates the new subnets and the karpenter module tags them `karpenter.sh/discovery`. `just deploy-base` alone leaves them untagged, so Karpenter ignores them until `just deploy-module <cluster> karpenter`. On prod, drain the cluster first, outside US working hours, and undrain after.
+
 **Karpenter:**
 ```yaml
 karpenter:

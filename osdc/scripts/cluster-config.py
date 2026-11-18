@@ -84,6 +84,14 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     if "cluster_log_types" in base:
         # An empty list is meaningful: it disables control-plane logging.
         pairs["cluster_log_types"] = ",".join(base.get("cluster_log_types") or [])
+    # Ordered zone IDs; tofu validates them and derives subnet CIDRs from position.
+    # Without the key, tofu uses the first three AZs the region lists. An empty or
+    # null value is an error, not a silent fallback to that default.
+    if "availability_zones" in base:
+        if not base["availability_zones"]:
+            print(f"Error: {cluster_id}: base.availability_zones is empty; remove the key instead", file=sys.stderr)
+            sys.exit(1)
+        pairs["availability_zone_ids"] = ",".join(base["availability_zones"])
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 
