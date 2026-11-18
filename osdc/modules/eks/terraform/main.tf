@@ -12,14 +12,55 @@ data "aws_availability_zones" "available" {
     name   = "opt-in-status"
     values = ["opt-in-not-required"]
   }
+
+  lifecycle {
+    precondition {
+      condition = (
+        length(local.configured_az_ids) == length(local.configured_private_subnets) &&
+        length(local.configured_az_ids) == length(local.configured_public_subnets) &&
+        length(local.configured_az_ids) != 1
+      )
+      error_message = "availability_zone_ids, private_subnet_cidrs and public_subnet_cidrs must all be empty, or all list the same number (2 or more) of entries."
+    }
+
+    postcondition {
+      condition     = alltrue([for id in local.configured_az_ids : contains(self.zone_ids, id)])
+      error_message = "availability_zone_ids lists an AZ ID that is not an available, opt-in-not-required AZ in this region."
+    }
+  }
 }
 
 locals {
-  azs = slice(
+  # clusters.yaml base.availability_zones, split back into lists. See
+  # scripts/cluster-config.py.
+  configured_az_ids          = compact(split(",", var.availability_zone_ids))
+  configured_private_subnets = compact(split(",", var.private_subnet_cidrs))
+  configured_public_subnets  = compact(split(",", var.public_subnet_cidrs))
+
+  # AZ names differ between accounts for the same zone ID, so clusters.yaml
+  # pins zone IDs. The VPC module still gets names: it keys the NAT secondary
+  # EIPs by AZ name, and passing IDs would replace every one of them.
+  az_name_by_id = zipmap(
+    data.aws_availability_zones.available.zone_ids,
+    data.aws_availability_zones.available.names
+  )
+
+  azs = length(local.configured_az_ids) > 0 ? [
+    for id in local.configured_az_ids : local.az_name_by_id[id]
+    ] : slice(
     data.aws_availability_zones.available.names,
     0,
     min(length(data.aws_availability_zones.available.names), 3)
   )
+
+  # Default layout: a /18 private and a /24 public subnet per AZ (at most 3,
+  # so the /18s fit). Only the selected branch is evaluated.
+  private_subnets = length(local.configured_az_ids) > 0 ? local.configured_private_subnets : [
+    for i in range(length(local.azs)) : cidrsubnet(var.vpc_cidr, 2, i)
+  ]
+  public_subnets = length(local.configured_az_ids) > 0 ? local.configured_public_subnets : [
+    for i in range(length(local.azs)) : cidrsubnet(var.vpc_cidr, 8, 192 + i)
+  ]
 
   tags = {
     Cluster = var.cluster_name
@@ -37,24 +78,8 @@ module "vpc" {
   azs    = local.azs
   region = var.aws_region
 
-  # Dynamic subnet sizing based on AZ count
-  private_subnets = length(local.azs) == 2 ? [
-    cidrsubnet(var.vpc_cidr, 2, 0),
-    cidrsubnet(var.vpc_cidr, 2, 1),
-    ] : [
-    cidrsubnet(var.vpc_cidr, 2, 0),
-    cidrsubnet(var.vpc_cidr, 2, 1),
-    cidrsubnet(var.vpc_cidr, 2, 2),
-  ]
-
-  public_subnets = length(local.azs) == 2 ? [
-    cidrsubnet(var.vpc_cidr, 8, 192),
-    cidrsubnet(var.vpc_cidr, 8, 193),
-    ] : [
-    cidrsubnet(var.vpc_cidr, 8, 192),
-    cidrsubnet(var.vpc_cidr, 8, 193),
-    cidrsubnet(var.vpc_cidr, 8, 194),
-  ]
+  private_subnets = local.private_subnets
+  public_subnets  = local.public_subnets
 
   enable_nat_gateway      = true
   single_nat_gateway      = var.single_nat_gateway
@@ -76,8 +101,13 @@ module "eks" {
   cluster_name    = var.cluster_name
   cluster_version = var.eks_version
   vpc_id          = module.vpc.vpc_id
-  subnet_ids      = module.vpc.private_subnet_ids
   enable_irsa     = true
+
+  # The cluster and base node group stay on the first three AZs. EKS can't
+  # move a node group to new subnets (it would be replaced), and a cluster's
+  # subnets must stay in the AZs it was created with. Private subnets past the
+  # third carry Karpenter nodes only; Karpenter finds them by discovery tag.
+  subnet_ids = slice(module.vpc.private_subnet_ids, 0, min(length(module.vpc.private_subnet_ids), 3))
 
   cluster_endpoint_private_access = true
   cluster_endpoint_public_access  = true

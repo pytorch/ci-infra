@@ -22,6 +22,7 @@ Usage:
     cluster-config.py --list
 """
 
+import ipaddress
 import os
 import sys
 from pathlib import Path
@@ -47,6 +48,41 @@ def resolve(cluster_cfg, defaults, dotpath):
     if val is not None:
         return val
     return dval
+
+
+def availability_zone_vars(azs, vpc_cidr):
+    """Turn base.availability_zones into comma-separated tofu vars.
+
+    Each entry is {zone_id, private_cidr, public_cidr}. Order matters: the VPC
+    module indexes subnets, NAT gateways and route tables by position, and the
+    first three entries are the EKS cluster's AZs. Raises ValueError on a
+    malformed list, since tofu would only catch most of these at apply time.
+    """
+    if not isinstance(azs, list) or len(azs) < 2:
+        raise ValueError("base.availability_zones must list at least 2 AZs (EKS needs subnets in 2 AZs)")
+    keys = ("zone_id", "private_cidr", "public_cidr")
+    for i, az in enumerate(azs):
+        if not isinstance(az, dict) or any(not az.get(k) for k in keys):
+            raise ValueError(f"base.availability_zones[{i}] must set {', '.join(keys)}: {az!r}")
+    zone_ids = [az["zone_id"] for az in azs]
+    if len(set(zone_ids)) != len(zone_ids):
+        raise ValueError(f"base.availability_zones has duplicate zone IDs: {zone_ids}")
+    vpc = ipaddress.ip_network(vpc_cidr)
+    subnets = []
+    for az in azs:
+        for key in ("private_cidr", "public_cidr"):
+            net = ipaddress.ip_network(az[key])
+            if not net.subnet_of(vpc):
+                raise ValueError(f"{az['zone_id']} {key} {net} is outside vpc_cidr {vpc}")
+            clash = next((s for s in subnets if s.overlaps(net)), None)
+            if clash:
+                raise ValueError(f"{az['zone_id']} {key} {net} overlaps {clash}")
+            subnets.append(net)
+    return {
+        "availability_zone_ids": ",".join(zone_ids),
+        "private_subnet_cidrs": ",".join(az["private_cidr"] for az in azs),
+        "public_subnet_cidrs": ",".join(az["public_cidr"] for az in azs),
+    }
 
 
 def tfvars(cluster_id, cluster_cfg, defaults):
@@ -84,6 +120,13 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     if "cluster_log_types" in base:
         # An empty list is meaningful: it disables control-plane logging.
         pairs["cluster_log_types"] = ",".join(base.get("cluster_log_types") or [])
+    # Explicit AZ list. Without it, tofu uses the first three AZs the region lists.
+    if base.get("availability_zones"):
+        try:
+            pairs.update(availability_zone_vars(base["availability_zones"], pairs["vpc_cidr"]))
+        except ValueError as e:
+            print(f"Error: cluster '{cluster_id}': {e}", file=sys.stderr)
+            sys.exit(1)
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 

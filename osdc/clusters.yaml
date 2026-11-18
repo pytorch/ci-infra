@@ -561,6 +561,26 @@ clusters:
       base_node_count: 4
       base_node_instance_type: m7i.4xlarge
       vpc_cidr: "10.12.0.0/16"
+      # Append only: entries index count-based VPC resources, and the first
+      # three are the EKS cluster and base node group AZs. The first three
+      # repeat the default layout; the last two add g6 capacity for Karpenter
+      # nodes. use1-az3 is skipped: it offers no g6.
+      availability_zones:
+        - zone_id: use1-az6
+          private_cidr: "10.12.0.0/18"
+          public_cidr: "10.12.192.0/24"
+        - zone_id: use1-az1
+          private_cidr: "10.12.64.0/18"
+          public_cidr: "10.12.193.0/24"
+        - zone_id: use1-az2
+          private_cidr: "10.12.128.0/18"
+          public_cidr: "10.12.194.0/24"
+        - zone_id: use1-az4
+          private_cidr: "10.12.208.0/20"
+          public_cidr: "10.12.195.0/24"
+        - zone_id: use1-az5
+          private_cidr: "10.12.224.0/20"
+          public_cidr: "10.12.196.0/24"
     node_compactor:
       min_node_age_seconds: 300
     arc-runners:
