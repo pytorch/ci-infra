@@ -10,6 +10,7 @@ dispatcher carried, against the same behaviour, which is what makes the split re
 as a move rather than a rewrite.
 """
 
+import datetime
 import importlib.util
 import json
 import re
@@ -30,6 +31,7 @@ import jwt
 import kube
 import oidc
 import pytest
+import sandboxd
 import tasks
 import test_authorize
 import test_oidc
@@ -100,8 +102,28 @@ def signed(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_k8s(monkeypatch, tmp_path):
-    """Stand in for the API server: record Jobs, answer polls, serve a pod log."""
-    state = {"jobs": [], "deleted": [], "job_status": {"succeeded": 1}, "log": '{"cloned": true, "report": "ok"}\n'}
+    """Stand in for the API server and the task pod's sandboxd.
+
+    The API server records claims (and the old path's Jobs), answers polls with a claim
+    that is Ready on a pod IP, and serves a pod log; sandboxd.execute is replaced by a
+    recorder returning `state["log"]` as the task's stdout. The real gRPC call is tested
+    in test_sandboxd.py.
+    """
+    state = {
+        "jobs": [],
+        "claims": [],
+        "deleted": [],
+        "executions": [],
+        "job_status": {"succeeded": 1},
+        "claim_status": {
+            "conditions": [{"type": "Ready", "status": "True", "reason": "DependenciesReady"}],
+            "sandbox": {"name": "sandbox-task-x", "podIPs": ["fd00::42"]},
+        },
+        "log": '{"cloned": true, "report": "ok"}\n',
+        "exit_code": 0,
+        "stderr": b"",
+        "timed_out": False,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, payload, code=200):
@@ -113,8 +135,9 @@ def fake_k8s(monkeypatch, tmp_path):
             self.wfile.write(body)
 
         def do_POST(self):
-            state["jobs"].append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            self._json({"metadata": {"name": state["jobs"][-1]["metadata"]["name"]}}, code=201)
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            state["claims" if "/sandboxclaims" in self.path else "jobs"].append(body)
+            self._json({"metadata": {"name": body["metadata"]["name"]}}, code=201)
 
         def do_DELETE(self):
             state["deleted"].append(self.path)
@@ -132,6 +155,8 @@ def fake_k8s(monkeypatch, tmp_path):
                 self._json({"items": [{"metadata": {"name": "sandbox-task-abc-xyz"}}]})
             elif "/jobs/" in self.path:
                 self._json({"status": state["job_status"]})
+            elif "/sandboxclaims/" in self.path:
+                self._json({"status": state["claim_status"]})
             else:
                 self._json({}, code=404)
 
@@ -153,6 +178,19 @@ def fake_k8s(monkeypatch, tmp_path):
     monkeypatch.setattr(kube, "_k8s_api", lambda: f"http://{host}:{port}")
     monkeypatch.setattr(kube, "AGENT_IMAGE", "harbor:30002/osdc/ci-agent-sandbox:deadbeef")
     monkeypatch.setattr(tasks, "POLL_INTERVAL_S", 0)
+
+    def fake_execute(pod_ip, **kwargs):
+        state["executions"].append({"pod_ip": pod_ip, **kwargs})
+        return sandboxd.Execution(
+            exit_code=state["exit_code"],
+            stdout=state["log"].encode(),
+            stderr=state["stderr"],
+            timed_out=state["timed_out"],
+            stdout_truncated=False,
+            stderr_truncated=False,
+        )
+
+    monkeypatch.setattr(sandboxd, "execute", fake_execute)
     kube._ssl_context.cache_clear()  # cached across calls; don't leak one between tests
     tasks._TASKS.clear()
     yield state
@@ -401,61 +439,148 @@ class TestPullRequestReview:
             _post(f"{server}/run", {"pr": -1})
         assert exc.value.code == 400
 
-    def test_a_reviewed_pull_request_reaches_the_job(self, server, fake_k8s):
-        """End to end over the real socket: request body to Job env, which is the only
-        path production uses and the one the two unit tests above cannot see."""
+    def test_a_reviewed_pull_request_reaches_the_task(self, server, fake_k8s):
+        """End to end over the real socket: request body to the env sandboxd starts the
+        task with, which is the only path production uses."""
         _post(f"{server}/run", {"pr": 42})
-        env = fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]
-        assert {"name": "SANDBOX_PR", "value": "42"} in env
+        assert fake_k8s["executions"][-1]["env"]["SANDBOX_PR"] == "42"
 
 
 class TestRunToCompletion:
-    def test_creates_one_job_and_returns_the_parsed_result(self, fake_k8s):
-        result = tasks._run_to_completion("abc123abc123", a_grant())
+    def test_claims_a_sandbox_and_runs_the_task_in_it(self, fake_k8s):
+        result = tasks._run_to_completion("abc123abc123", a_grant(ref="v1"))
         assert result == {"cloned": True, "report": "ok"}
-        assert len(fake_k8s["jobs"]) == 1
-        assert fake_k8s["jobs"][0]["metadata"]["name"] == "sandbox-task-abc123abc123"
+        assert [c["metadata"]["name"] for c in fake_k8s["claims"]] == ["sandbox-task-abc123abc123"]
+        assert fake_k8s["jobs"] == [], "the Job path must no longer run tasks"
+        (run,) = fake_k8s["executions"]
+        assert run["pod_ip"] == "fd00::42"
+        assert run["command"] == tasks.TASK_COMMAND
+        assert run["cwd"] == tasks.TASK_CWD
+        deadline = int(run["env"].pop("SANDBOX_DEADLINE"))
+        assert run["env"] == {k: v for k, v in kube.task_env(a_grant(ref="v1"), 0).items() if k != "SANDBOX_DEADLINE"}
+        assert time.time() < deadline <= time.time() + kube.TASK_DEADLINE_S
+        assert 0 < run["time_limit_s"] <= kube.TASK_DEADLINE_S
+        assert run["stdout_limit"] == kube.MAX_LOG_BYTES
 
-    def test_deletes_the_job_after_reading_the_log(self, fake_k8s):
-        """The log is the result transport, so the Job can only be collected after it
-        has been read — and it must be, or finished Jobs pile up against the quota."""
+    def test_deletes_the_claim_after_the_task_returns(self, fake_k8s):
+        """Or finished pods pile up against the quota until shutdownTime."""
         tasks._run_to_completion("abc123abc123", a_grant())
-        assert any("sandbox-task-abc123abc123" in path for path in fake_k8s["deleted"])
+        assert any(p.endswith("/sandboxclaims/sandbox-task-abc123abc123") for p in fake_k8s["deleted"])
 
     def test_last_json_line_wins(self, fake_k8s):
         fake_k8s["log"] = 'warning: detached HEAD\n{"cloned": true, "file_count": 3}\n'
         assert tasks._run_to_completion("abc123abc123", a_grant())["file_count"] == 3
 
-    def test_failed_pod_without_output_reports_the_reason(self, fake_k8s):
-        fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]}
-        fake_k8s["log"] = "Killed\n"
+    def test_an_exit_without_a_result_reports_its_code_and_stderr(self, fake_k8s):
+        """The detail a pod-level "Pod failed" never carried: the task's own exit status
+        and what it wrote to stderr."""
+        fake_k8s["log"] = ""
+        fake_k8s["exit_code"] = 2
+        fake_k8s["stderr"] = b"Traceback ...\nKeyError: SANDBOX_REPO is required\n"
         result = tasks._run_to_completion("abc123abc123", a_grant())
-        assert "DeadlineExceeded" in result["errors"]["task"]
+        assert "exited 2" in result["errors"]["task"]
+        assert "SANDBOX_REPO is required" in result["errors"]["task"]
 
-    def test_a_failed_pod_proposes_nothing_whatever_it_printed(self, fake_k8s):
-        fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]}
+    def test_a_failed_run_proposes_nothing_whatever_it_printed(self, fake_k8s):
+        """The failure is the dispatcher's fact, recorded over whatever the task printed."""
+        fake_k8s["timed_out"] = True
         fake_k8s["log"] = (
             json.dumps({"head_sha": "e" * 40, "errors": {}, "effects": [{"effect": "pr_comment", "body": "x"}]}) + "\n"
         )
         result = tasks._run_to_completion("abc123456789", a_grant())
         assert "effects" not in result
-        assert result["errors"]["dispatch"] == "pod failed: DeadlineExceeded"
+        assert result["errors"]["dispatch"] == f"task did not finish within {kube.TASK_DEADLINE_S}s"
 
-    def test_failed_pod_that_did_print_a_result_keeps_it(self, fake_k8s):
+    def test_a_failed_run_that_did_print_a_result_keeps_it(self, fake_k8s):
         """A task whose clone failed still printed the errors object — that is the
-        answer, and it must not be replaced by a generic pod failure."""
-        fake_k8s["job_status"] = {"conditions": [{"type": "Failed", "status": "True", "reason": "BackoffLimit"}]}
+        answer, and it must not be replaced by a generic failure."""
         fake_k8s["log"] = '{"cloned": false, "errors": {"clone": "could not read Username"}}\n'
+        fake_k8s["exit_code"] = 1
         result = tasks._run_to_completion("abc123abc123", a_grant())
         assert result["errors"]["clone"] == "could not read Username"
+        assert result["errors"]["dispatch"] == "task exited 1"
+
+    def test_a_task_past_its_time_limit_is_reported_as_such(self, fake_k8s):
+        fake_k8s["timed_out"] = True
+        fake_k8s["exit_code"] = 137
+        result = tasks._run_to_completion("abc123abc123", a_grant())
+        assert "did not finish" in result["errors"]["dispatch"]
+
+    def test_an_unreachable_sandboxd_is_reported_not_raised(self, fake_k8s, monkeypatch):
+        def boom(pod_ip, **kw):
+            raise sandboxd.SandboxdError("sandboxd at [fd00::42]:9090: UNAVAILABLE: connection refused")
+
+        monkeypatch.setattr(sandboxd, "execute", boom)
+        result = tasks._run_to_completion("abc123abc123", a_grant())
+        assert "UNAVAILABLE" in result["errors"]["dispatch"]
+        assert any(p.endswith("/sandboxclaims/sandbox-task-abc123abc123") for p in fake_k8s["deleted"])
 
     def test_api_failure_is_reported_not_raised(self, monkeypatch, fake_k8s):
         def boom(*a, **kw):
-            raise kube.ApiError("jobs.batch is forbidden")
+            raise kube.ApiError("sandboxclaims.extensions.agents.x-k8s.io is forbidden")
 
-        monkeypatch.setattr(kube, "create_job", boom)
+        monkeypatch.setattr(kube, "create_claim", boom)
         result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "forbidden" in result["errors"]["dispatch"]
+        assert fake_k8s["executions"] == []
+
+
+class TestClaim:
+    def test_names_the_pool_and_expires_shortly_after_the_deadline(self):
+        """Nothing about the task is in it, and a forgotten claim lasts the deadline plus
+        a minute — a pending pod has no deadline of its own, so this bounds its quota."""
+        now = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+        claim = kube.claim_manifest("abc123abc123", now=now)
+        assert claim["metadata"]["name"] == "sandbox-task-abc123abc123"
+        shutdown = now + datetime.timedelta(seconds=kube.TASK_DEADLINE_S + kube.CLAIM_GRACE_S)
+        assert claim["spec"] == {
+            "warmPoolRef": {"name": kube.WARM_POOL},
+            "lifecycle": {"shutdownTime": shutdown.strftime("%Y-%m-%dT%H:%M:%SZ"), "shutdownPolicy": "Delete"},
+        }
+        assert kube.CLAIM_GRACE_S <= 120
+
+    def test_the_pool_is_the_one_deployed(self):
+        assert _manifests()["SandboxWarmPool"]["metadata"]["name"] == kube.WARM_POOL
+
+    def test_a_ready_claim_without_a_pod_ip_is_still_pending(self, fake_k8s):
+        fake_k8s["claim_status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+        assert kube.claim_state("abc123abc123") == ("pending", "")
+
+    def test_an_unreconciled_claim_is_pending(self, fake_k8s):
+        fake_k8s["claim_status"] = {}
+        assert kube.claim_state("abc123abc123") == ("pending", "")
+
+    @pytest.mark.parametrize("reason", sorted(kube.PERMANENT_CLAIM_FAILURES))
+    def test_a_permanent_failure_fails_now_not_at_the_deadline(self, fake_k8s, reason):
+        """Otherwise each such request holds a slot for the whole deadline, and six of
+        them turn every later call on the replica into a 429."""
+        fake_k8s["claim_status"] = {
+            "conditions": [{"type": "Ready", "status": "False", "reason": reason, "message": "not found"}]
+        }
+        state, detail = kube.claim_state("abc123abc123")
+        assert state == "failed"
+        assert reason in detail
+        result = tasks._run_to_completion("abc123abc123", a_grant())
+        assert reason in result["errors"]["dispatch"]
+        assert fake_k8s["executions"] == []
+
+    def test_a_transient_failure_keeps_waiting(self, fake_k8s):
+        fake_k8s["claim_status"] = {"conditions": [{"type": "Ready", "status": "False", "reason": "SandboxNotReady"}]}
+        assert kube.claim_state("abc123abc123") == ("pending", "")
+
+    def test_a_pod_that_exited_before_the_task_fails_the_task(self, fake_k8s):
+        fake_k8s["claim_status"] = {
+            "conditions": [{"type": "Finished", "status": "True", "reason": "PodFailed", "message": "Pod failed"}]
+        }
+        assert kube.claim_state("abc123abc123")[0] == "failed"
+
+    def test_delete_failure_is_logged_not_raised(self, fake_k8s, monkeypatch, capsys):
+        def boom(*a, **kw):
+            raise kube.ApiError("sandboxclaims.extensions.agents.x-k8s.io is forbidden")
+
+        monkeypatch.setattr(kube, "api_request", boom)
+        kube.delete_claim("abc123abc123")
+        assert "shutdownTime will collect it" in capsys.readouterr().out
 
 
 @pytest.fixture
@@ -604,7 +729,7 @@ class TestHTTPSurface:
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
         )
         body = json.loads(_opener.open(req, timeout=30).read())
-        env = {e["name"]: e["value"] for e in fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]}
+        env = fake_k8s["executions"][-1]["env"]
         offered = json.loads(env["SANDBOX_EFFECTS"])
         assert {e["effect"] for e in offered} == {"pr_comment", "check_run"}
         # The tool is offered the room screening leaves after the provenance line, so a
@@ -634,9 +759,9 @@ class TestHTTPSurface:
         here = Path(__file__).parent
         assert source(here / "http_api.py") == source(here.parent / "agent" / "sandbox.py")
 
-    def test_a_sha_ref_and_base_reach_the_job(self, server, fake_k8s):
+    def test_a_sha_ref_and_base_reach_the_task(self, server, fake_k8s):
         _post(f"{server}/run", {"ref": "b" * 40, "base": "a" * 40})
-        env = {e["name"]: e["value"] for e in fake_k8s["jobs"][-1]["spec"]["template"]["spec"]["containers"][0]["env"]}
+        env = fake_k8s["executions"][-1]["env"]
         assert env["SANDBOX_REF"] == "b" * 40
         assert env["SANDBOX_BASE"] == "a" * 40
 
@@ -655,6 +780,13 @@ class TestHTTPSurface:
         with pytest.raises(urllib.error.HTTPError) as exc:
             _post(f"{server}/run", {field: value})
         assert exc.value.code == 400
+
+    def test_text_with_no_utf8_form_is_400_before_taking_a_slot(self, server, fake_k8s):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{server}/run", {"task": "\ud800"})
+        assert exc.value.code == 400
+        assert not fake_k8s["claims"]
+        assert tasks.slots_in_use() == 0
 
     def test_async_run_returns_a_task_id_then_a_result(self, server):
         req = urllib.request.Request(  # noqa: S310
@@ -686,16 +818,16 @@ class TestHTTPSurface:
 
 class TestCapacity:
     def test_tasks_run_in_parallel(self, server, fake_k8s, monkeypatch):
-        """The point of the design: concurrent requests must each get their own Job
+        """The point of the design: concurrent requests must each get their own pod
         instead of queueing behind one slot."""
         gate = threading.Event()
-        real_state = kube.job_state
+        real_state = kube.claim_state
 
         def slow_state(task_id):
             gate.wait(10)
             return real_state(task_id)
 
-        monkeypatch.setattr(kube, "job_state", slow_state)
+        monkeypatch.setattr(kube, "claim_state", slow_state)
         results = []
         threads = [
             Thread(target=lambda: results.append(_post(f"{server}/run", {"task": "hello"})), daemon=True)
@@ -703,12 +835,12 @@ class TestCapacity:
         ]
         for t in threads:
             t.start()
-        # All three Jobs exist before any of them is allowed to finish.
+        # All three claims exist before any of them is allowed to finish.
         for _ in range(200):
-            if len(fake_k8s["jobs"]) == 3:
+            if len(fake_k8s["claims"]) == 3:
                 break
             threading.Event().wait(0.05)
-        assert len(fake_k8s["jobs"]) == 3, f"expected 3 Jobs in flight, got {len(fake_k8s['jobs'])}"
+        assert len(fake_k8s["claims"]) == 3, f"expected 3 claims in flight, got {len(fake_k8s['claims'])}"
         gate.set()
         for t in threads:
             t.join(20)
@@ -783,16 +915,30 @@ class TestInClusterConfig:
 
 
 class TestPolling:
-    def test_waits_while_the_job_is_running(self, fake_k8s, monkeypatch):
-        states = iter([("running", ""), ("running", ""), ("succeeded", "")])
-        monkeypatch.setattr(kube, "job_state", lambda task_id: next(states))
+    def test_waits_while_the_sandbox_is_pending(self, fake_k8s, monkeypatch):
+        states = iter([("pending", ""), ("pending", ""), ("ready", "fd00::7")])
+        monkeypatch.setattr(kube, "claim_state", lambda task_id: next(states))
         assert tasks._run_to_completion("abc123abc123", a_grant())["report"] == "ok"
+        assert fake_k8s["executions"][0]["pod_ip"] == "fd00::7"
 
-    def test_gives_up_at_the_deadline(self, fake_k8s, monkeypatch):
+    def test_gives_up_when_no_sandbox_is_ready_by_the_deadline(self, fake_k8s, monkeypatch):
         monkeypatch.setattr(kube, "TASK_DEADLINE_S", -1)
-        monkeypatch.setattr(kube, "job_state", lambda task_id: ("running", ""))
+        monkeypatch.setattr(kube, "claim_state", lambda task_id: ("pending", ""))
+        result = tasks._run_to_completion("abc123abc123", a_grant())
+        assert "no sandbox became ready" in result["errors"]["dispatch"]
+
+    def test_no_time_left_to_run_is_reported(self, fake_k8s, monkeypatch):
+        """Ready, but with under a second of the deadline left: not worth starting."""
+        monkeypatch.setattr(kube, "TASK_DEADLINE_S", 1)
+
+        def ready_late(task_id):
+            time.sleep(0.2)
+            return "ready", "fd00::42"
+
+        monkeypatch.setattr(kube, "claim_state", ready_late)
         result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "did not finish" in result["errors"]["dispatch"]
+        assert fake_k8s["executions"] == []
 
     def test_running_job_reports_running(self, fake_k8s):
         fake_k8s["job_status"] = {"active": 1}
@@ -819,7 +965,7 @@ class TestPolling:
         def boom(task_id):
             raise kube.ApiError("etcdserver: request timed out")
 
-        monkeypatch.setattr(kube, "job_state", boom)
+        monkeypatch.setattr(kube, "claim_state", boom)
         result = tasks._run_to_completion("abc123abc123", a_grant())
         assert "timed out" in result["errors"]["dispatch"]
 

@@ -24,6 +24,7 @@ from helpers import DEFAULT_TIMEOUT, assert_deployment_ready, filter_deployments
 pytestmark = [pytest.mark.live]
 
 NAMESPACE = "ai-sandbox"
+DISPATCHER = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"
 IRSA_KEY = "eks.amazonaws.com/role-arn"
 PROXY_PORT = 8080
 
@@ -283,6 +284,75 @@ class TestTaskAdmissionPolicy:
         )
 
 
+class TestClaimAdmissionPolicy:
+    """What the dispatcher may put in a SandboxClaim, evaluated by the API server. Probed
+    AS the dispatcher, because the policy only matches its writes; `create` rather than
+    `apply`, because the dispatcher has no patch permission on claims."""
+
+    POLICY = "agent-sandbox-task-claims"
+
+    def _dry_run_as_dispatcher(self, name: str, **spec_overrides: object) -> subprocess.CompletedProcess:
+        spec: dict = {
+            "warmPoolRef": {"name": "sandbox-task"},
+            "lifecycle": {"shutdownTime": "2099-01-01T00:00:00Z", "shutdownPolicy": "Delete"},
+        }
+        spec.update(spec_overrides)
+        spec = {k: v for k, v in spec.items() if v is not None}
+        manifest = yaml.safe_dump(
+            {
+                "apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+                "kind": "SandboxClaim",
+                "metadata": {"name": name, "namespace": NAMESPACE},
+                "spec": spec,
+            }
+        )
+        return subprocess.run(
+            [
+                "kubectl",
+                "-n",
+                NAMESPACE,
+                "create",
+                "--dry-run=server",
+                "--request-timeout=60s",
+                f"--as={DISPATCHER}",
+                "-f",
+                "-",
+            ],
+            input=manifest,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DEFAULT_TIMEOUT,
+        )
+
+    def test_policy_is_deployed_and_type_checks(self) -> None:
+        policy = run_kubectl(["get", "validatingadmissionpolicy", self.POLICY])
+        assert policy["spec"]["failurePolicy"] == "Fail"
+        status = policy.get("status", {})
+        assert status.get("observedGeneration") == policy["metadata"]["generation"]
+        warnings = status.get("typeChecking", {}).get("expressionWarnings") or []
+        assert not warnings, f"CEL type-check warnings on {self.POLICY}: {warnings}"
+
+    def test_the_claim_the_dispatcher_sends_is_admitted(self) -> None:
+        result = self._dry_run_as_dispatcher("admission-probe-claim-good")
+        assert result.returncode == 0, f"a compliant claim was rejected: {result.stderr.strip()}"
+
+    @pytest.mark.parametrize(
+        ("case", "overrides"),
+        [
+            ("another pool", {"warmPoolRef": {"name": "admission-probe"}}),
+            ("baked-in env", {"env": [{"name": "SANDBOX_REPO", "value": "pytorch/pytorch"}]}),
+            ("no expiry", {"lifecycle": None}),
+        ],
+    )
+    def test_the_policy_denies_what_it_says_it_denies(self, case: str, overrides: dict) -> None:
+        result = self._dry_run_as_dispatcher("admission-probe-claim-" + case.lower().replace(" ", "-"), **overrides)
+        assert result.returncode != 0, f"a dispatcher claim with {case} was ADMITTED — the policy is not enforcing."
+        assert self.POLICY in result.stderr, (
+            f"a dispatcher claim with {case} was rejected, but not by this policy: {result.stderr.strip()}"
+        )
+
+
 class TestSigv4Proxy:
     """The proxy is what makes the sandbox credential-free: it holds the IRSA role
     and signs on the agent's behalf."""
@@ -513,6 +583,17 @@ class TestDispatcherRBAC:
         pod_verbs = {v for rule in role["rules"] if "pods" in rule.get("resources", []) for v in rule["verbs"]}
         assert pod_verbs <= {"get", "list", "watch"}, f"pods must be read-only for the dispatcher; got {pod_verbs}."
 
+    def test_dispatcher_can_create_claims_here_and_nowhere_else(self) -> None:
+        claims = "sandboxclaims.extensions.agents.x-k8s.io"
+        assert self._can_i("create", claims, DISPATCHER, NAMESPACE) == "yes"
+        assert self._can_i("create", claims, DISPATCHER, "default") == "no"
+
+    def test_dispatcher_cannot_write_a_pod_spec(self) -> None:
+        """A claim names the template; a Sandbox or a SandboxTemplate would carry a pod
+        spec, so neither is the dispatcher's to write."""
+        for resource in ("sandboxes.agents.x-k8s.io", "sandboxtemplates.extensions.agents.x-k8s.io", "pods"):
+            assert self._can_i("create", resource, DISPATCHER, NAMESPACE) == "no", resource
+
     def test_dispatcher_can_create_jobs_here(self) -> None:
         subject = f"system:serviceaccount:{NAMESPACE}:sandbox-dispatcher"
         assert self._can_i("create", "jobs", subject, NAMESPACE) == "yes"
@@ -532,6 +613,7 @@ class TestDispatcherRBAC:
         all — otherwise the untrusted side can launch its own pods."""
         subject = f"system:serviceaccount:{NAMESPACE}:sandbox-agent"
         assert self._can_i("create", "jobs", subject, NAMESPACE) == "no"
+        assert self._can_i("create", "sandboxclaims.extensions.agents.x-k8s.io", subject, NAMESPACE) == "no"
 
 
 class TestAgentSandboxServiceAccounts:
@@ -617,15 +699,36 @@ class TestAgentSandboxNetworkPolicies:
 
     def test_dispatcher_egress_has_no_internet_path(self) -> None:
         """The dispatcher is the component with RBAC, so it is the one that must not be
-        able to reach the internet — only DNS and the API server."""
+        able to reach the internet — only DNS, the API server, and task pods' sandboxd."""
         np = run_kubectl(["get", "networkpolicy", "sandbox-dispatcher-egress"], namespace=NAMESPACE)
         rules = np["spec"].get("egress", [])
         ports = {(p.get("protocol", "TCP"), p["port"]) for rule in rules for p in rule.get("ports", [])}
-        assert ports == {("UDP", 53), ("TCP", 53), ("TCP", 443)}, (
-            f"dispatcher egress must be DNS plus the API server; got {sorted(ports)}."
+        assert ports == {("UDP", 53), ("TCP", 53), ("TCP", 443), ("TCP", 9090)}, (
+            f"dispatcher egress must be DNS, the API server and sandboxd; got {sorted(ports)}."
         )
         cidrs = {t["ipBlock"]["cidr"] for rule in rules for t in rule.get("to", []) if "ipBlock" in t}
         assert cidrs, "dispatcher egress must name the API server address."
         assert not {c for c in cidrs if c in ("0.0.0.0/0", "::/0")}, (
             f"dispatcher egress must not include a default route — that is an exfiltration path; got {cidrs}."
+        )
+        sandboxd_rule = next(r for r in rules if any(p["port"] == 9090 for p in r.get("ports", [])))
+        assert sandboxd_rule["to"] == [{"podSelector": {"matchLabels": {"app": "sandbox-task"}}}]
+
+    def test_only_the_dispatcher_can_reach_sandboxd(self) -> None:
+        """sandboxd runs whatever it is sent; this is what keeps one task pod from
+        running code in another."""
+        np = run_kubectl(["get", "networkpolicy", "sandbox-task-ingress"], namespace=NAMESPACE)
+        assert np["spec"]["podSelector"] == {"matchLabels": {"app": "sandbox-task"}}
+        assert np["spec"]["ingress"] == [
+            {
+                "from": [{"podSelector": {"matchLabels": {"app": "sandbox-dispatcher"}}}],
+                "ports": [{"protocol": "TCP", "port": 9090}],
+            }
+        ]
+
+    def test_dispatcher_mounts_the_sandboxd_token(self, all_deployments: dict) -> None:
+        dep = _deployment(all_deployments, "sandbox-dispatcher")
+        volumes = dep["spec"]["template"]["spec"].get("volumes", [])
+        assert any(v.get("secret", {}).get("secretName") == "sandboxd-token" for v in volumes), (
+            "the dispatcher must mount secret/sandboxd-token to call task pods' sandboxd"
         )

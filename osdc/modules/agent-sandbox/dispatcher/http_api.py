@@ -177,6 +177,12 @@ class Handler(BaseHTTPRequestHandler):
         for key in ("manifest", "repo", "ref", "base", "task", "model"):
             if key in spec and not isinstance(spec[key], str):
                 raise ValueError(f"'{key}' must be a string")
+            # JSON's \ud800 escape decodes to a lone surrogate, which has no UTF-8 form —
+            # and the task's inputs reach sandboxd as UTF-8. Refused before a slot is taken.
+            try:
+                spec.get(key, "").encode()
+            except UnicodeEncodeError:
+                raise ValueError(f"'{key}' must be valid Unicode text") from None
         if spec.get("ref") and not plain_ref(spec["ref"]):
             raise ValueError("'ref' must be a branch, tag or full commit sha, not a refspec")
         if spec.get("base") and not SHA_RE.fullmatch(spec["base"]):

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """One sandbox task, then exit. The entrypoint of every task pod.
 
-The dispatcher creates one Job per request and passes the spec as env vars; this
-prints the result as a single line of JSON on stdout, which the dispatcher reads back
-out of the pod's log. Nothing here listens on a socket and nothing is shared between
-tasks — a fresh pod per request IS the isolation reset.
+The dispatcher passes the spec as env vars — starting this through the task pod's sandboxd
+— and this prints the result as a single line of JSON on stdout, which sandboxd returns to
+the dispatcher. Nothing is shared between tasks: a fresh pod per request IS the isolation
+reset.
 
 Exit status is 0 whenever a result was produced, including a result whose `errors`
 describe a failed clone or a refused Bedrock call: those are answers, not crashes.
