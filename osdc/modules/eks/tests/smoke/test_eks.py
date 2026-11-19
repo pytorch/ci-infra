@@ -155,7 +155,14 @@ class TestEKSIPv6Config:
     in dual-stack/IPv4 mode. Service CIDR is auto-assigned by EKS from the
     RFC 4193 locally-assigned ULA range (fd00::/8); the /48 ID is random per
     cluster, so only the ULA-range invariant is asserted.
+
+    These invariants only hold for ipv6 clusters; ipv4 clusters skip them.
     """
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_not_ipv6(self, cluster_config):
+        if cluster_config["cluster"].get("ip_family", "ipv6") != "ipv6":
+            pytest.skip("cluster is not IPv6-only")
 
     def test_ip_family_is_ipv6(self, eks_cluster_info, cluster_config):
         cluster_name = cluster_config["cluster"]["cluster_name"]

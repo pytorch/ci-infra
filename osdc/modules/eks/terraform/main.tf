@@ -75,6 +75,7 @@ module "eks" {
   aws_region      = var.aws_region
   cluster_name    = var.cluster_name
   cluster_version = var.eks_version
+  ip_family       = var.ip_family
   vpc_id          = module.vpc.vpc_id
   subnet_ids      = module.vpc.private_subnet_ids
   enable_irsa     = true

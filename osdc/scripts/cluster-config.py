@@ -67,6 +67,7 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         "base_node_max_unavailable_percentage": base.get("base_node_max_unavailable_percentage", 33),
         "base_node_ami_version": base.get("base_node_ami_version", defaults.get("base_node_ami_version", "v*")),
         "eks_version": base.get("eks_version", defaults.get("eks_version", "1.35")),
+        "ip_family": base.get("ip_family", defaults.get("ip_family", "ipv6")),
         "coredns_replicas": coredns_replicas,
     }
     # Optional fields — only emit if explicitly set

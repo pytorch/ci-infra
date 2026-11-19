@@ -82,12 +82,12 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.cluster_endpoint_public_access_cidrs
   }
 
-  # IPv6-only pod networking. Service CIDR is auto-assigned by EKS to a ULA
-  # in fd00:ec2::/108 — not customizable. Pod IPs come from a /80 IPv6 prefix
-  # per node via VPC CNI prefix delegation. ipFamily is immutable after
-  # cluster creation.
+  # Pod networking IP family. ipv6 (default): Service CIDR is auto-assigned by
+  # EKS to a ULA in fd00:ec2::/108 — not customizable. Pod IPs come from a /80
+  # IPv6 prefix per node via VPC CNI prefix delegation. ipFamily is immutable
+  # after cluster creation, so pick it up front.
   kubernetes_network_config {
-    ip_family = "ipv6"
+    ip_family = var.ip_family
   }
 
   # Encrypt Kubernetes secrets at rest using KMS envelope encryption
@@ -192,13 +192,13 @@ resource "aws_eks_addon" "vpc_cni" {
   # legacy ENABLE_IPv6 / ENABLE_IPv4 env vars are not in the addon ConfigurationValues
   # JSON schema (verified against v1.21.1-eksbuild.3); passing them fails with
   # InvalidParameterException at addon-create time.
-  configuration_values = jsonencode({
+  configuration_values = var.ip_family == "ipv6" ? jsonencode({
     env = {
       ENABLE_V4_EGRESS         = "true"
       ENABLE_PREFIX_DELEGATION = "true"
       WARM_PREFIX_TARGET       = "1"
     }
-  })
+  }) : jsonencode({})
 
   tags = var.tags
 }
@@ -422,7 +422,7 @@ resource "aws_launch_template" "base" {
     cluster_name          = aws_eks_cluster.this.name
     cluster_endpoint      = aws_eks_cluster.this.endpoint
     cluster_ca_data       = aws_eks_cluster.this.certificate_authority[0].data
-    service_cidr          = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr
+    service_cidr          = var.ip_family == "ipv6" ? aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr : aws_eks_cluster.this.kubernetes_network_config[0].service_ipv4_cidr
     pre_nodeadm_script    = file("${path.root}/../../../base/scripts/bootstrap/eks-base-pre-nodeadm-az-label.sh")
     post_bootstrap_script = file("${path.root}/../../../base/scripts/bootstrap/eks-base-bootstrap.sh")
   }))
@@ -462,7 +462,7 @@ resource "aws_launch_template" "base" {
 
   lifecycle {
     precondition {
-      condition     = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr != ""
+      condition     = var.ip_family != "ipv6" || aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr != ""
       error_message = "EKS cluster service_ipv6_cidr is empty — cluster IPv6 networking not yet initialized. Re-run apply."
     }
   }

@@ -14,6 +14,17 @@ variable "cluster_version" {
   default     = "1.35"
 }
 
+variable "ip_family" {
+  description = "IP family for pod networking: 'ipv4' or 'ipv6'. Immutable after cluster creation."
+  type        = string
+  default     = "ipv6"
+
+  validation {
+    condition     = contains(["ipv4", "ipv6"], var.ip_family)
+    error_message = "ip_family must be 'ipv4' or 'ipv6'."
+  }
+}
+
 variable "vpc_id" {
   description = "VPC ID where EKS cluster will be deployed"
   type        = string

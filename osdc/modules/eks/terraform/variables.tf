@@ -64,6 +64,17 @@ variable "eks_version" {
   default     = "1.35"
 }
 
+variable "ip_family" {
+  description = "EKS pod networking IP family: 'ipv4' or 'ipv6'. Default ipv6 preserves existing OSDC behavior."
+  type        = string
+  default     = "ipv6"
+
+  validation {
+    condition     = contains(["ipv4", "ipv6"], var.ip_family)
+    error_message = "ip_family must be 'ipv4' or 'ipv6'."
+  }
+}
+
 variable "authentication_mode" {
   description = "EKS cluster authentication mode (API, API_AND_CONFIG_MAP, or CONFIG_MAP)"
   type        = string
