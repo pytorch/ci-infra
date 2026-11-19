@@ -198,7 +198,7 @@ resource "aws_eks_addon" "vpc_cni" {
       ENABLE_PREFIX_DELEGATION = "true"
       WARM_PREFIX_TARGET       = "1"
     }
-  }) : jsonencode(
+    }) : jsonencode(
     var.enable_windows_node_group ? {
       enableWindowsIpam = "true"
     } : {}
