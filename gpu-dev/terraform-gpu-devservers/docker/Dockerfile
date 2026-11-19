@@ -88,7 +88,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Clone and build NCCL tests with MPI support for multi-node benchmarking
-RUN apt-get update && apt-get install -y --no-install-recommends libnccl-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libnccl-dev=2.31.2-1+cuda13.4 libnccl2=2.31.2-1+cuda13.4 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN cd /opt && \
     git clone https://github.com/NVIDIA/nccl-tests.git && \
