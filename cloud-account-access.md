@@ -81,3 +81,19 @@ Recommended: Export the AWS_PROFILE when using the CLI `export AWS_PROFILE=pytor
 
 Once configured you will be able to use the AWS CLI with access tokens. If your
 access token requires a refresh. Simply run `aws sso login`.
+
+## Access Nebius Console
+
+Nebius AI Cloud uses LFID single sign-on through a SAML federation.
+
+1. Go to https://console.nebius.com
+2. Click "Get started with SSO".
+3. Enter the federation ID `federation-e00v21xedg6ajd3ynz`.
+4. Log in with your LFID.
+
+A Nebius user is created automatically on first login, but it has no
+permissions. Ask LF staff ([@mtarsel](https://github.com/mtarsel) and
+[@zxiiro](https://github.com/zxiiro)) for access.
+
+LFID logins are separate Nebius users from Google logins, even when the email
+address is the same.
