@@ -88,7 +88,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Clone and build NCCL tests with MPI support for multi-node benchmarking
-RUN apt-get update && apt-get install -y --no-install-recommends libnccl-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libnccl-dev=2.31.2-1+cuda13.4 libnccl2=2.31.2-1+cuda13.4 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN cd /opt && \
     git clone https://github.com/NVIDIA/nccl-tests.git && \
@@ -271,6 +272,15 @@ RUN sed -i 's/session    optional     pam_motd.so/#&/g' /etc/pam.d/sshd 2>/dev/n
     sed -i 's/session    optional     pam_motd.so  motd=/#&/g' /etc/pam.d/sshd 2>/dev/null || true && \
     rm -rf /etc/update-motd.d/00-header /etc/update-motd.d/10-help-text /etc/update-motd.d/80-esm /etc/update-motd.d/95-hwe-eol 2>/dev/null || true && \
     chmod -x /usr/sbin/update-motd 2>/dev/null || true
+
+# Upgrade base-image libs (the base is a fixed Ubuntu snapshot).
+# --error-on=any fails the build instead of silently keeping the old versions.
+RUN apt-get update --error-on=any && \
+    apt-get install -y --no-install-recommends --only-upgrade \
+        libbrotli1 \
+        libgif7 \
+        libcups2t64 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Clean up
 RUN apt-get clean && \
