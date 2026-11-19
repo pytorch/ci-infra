@@ -78,7 +78,7 @@ Internal recipes (prefixed `_`, called from other recipes; documented here becau
 1. **Terraform** — VPC, EKS, Harbor S3 bucket + IAM role + S3 access keys (all produced by `modules/eks/terraform`, parameterized, no per-env dirs)
 2. **Mirror images** — Harbor bootstrap images to ECR (Harbor can't cache itself)
 3. **Base k8s** — StorageClass, NVIDIA plugin, performance tuning (`kubectl apply -k`)
-4. **node-taint-remover** — Generates the `node-taint-remover-lib` ConfigMap in `kube-system` from `lib/taint_remover.py` (generated at apply time to prevent drift). Mounted into DaemonSets (cache-enforcer, registry-mirror-config, node-performance-tuning) so they can remove their own startup taint after init.
+4. **node-taint-remover** — Generates the `node-taint-remover-lib` ConfigMap in `kube-system` from `lib/taint_remover.py` (generated at apply time to prevent drift). Mounted into DaemonSets (registry-mirror-config, node-performance-tuning) so they can remove their own startup taint after init.
 5. **ENIConfigs** — One AZ-named ENIConfig CR per AZ, rendered from `private_subnets_by_az` (base terraform output). **Inert by design under IPv6-only EKS — VPC CNI Custom Networking is unsupported in IPv6 mode.** Retained on the deploy path as the rollback fallback for IPv4 + Custom Networking. Has its own `deploy.sh` because it must read the terraform output at apply time.
 6. **Harbor** — Pull-through cache (caches docker.io, ghcr.io, nvcr.io, registry.k8s.io, quay.io, public.ecr.aws). `_deploy-harbor` reads `harbor_role_arn`, `harbor_s3_bucket`, `harbor_s3_access_key_id`, `harbor_s3_secret_access_key` from base outputs.
 7. **Node compactor** — Taints underutilized Karpenter nodes for consolidation (if enabled)
@@ -235,10 +235,6 @@ For one-time migrations (e.g. switching to a larger instance family), follow the
 
 Monitoring deploy order is strict: (1) namespace + DCGM DaemonSet via kustomization, (2) kube-prometheus-stack Helm (installs CRDs + exporters), (3) `monitors/` applied AFTER CRDs exist, (4) Alloy conditionally. Applying ServiceMonitor/PodMonitor resources before kube-prometheus-stack installs the CRDs will fail.
 
-### Cache-Enforcer Dependency
-
-cache-enforcer depends on Harbor (base) and pypi-cache module. Without pypi-cache deployed, pip installs in runner jobs fail entirely (traffic blocked but no cache). Deploy pypi-cache before or alongside cache-enforcer.
-
 ### clusters.yaml Config Keys Reference
 
 `clusters.yaml` itself is the source of truth — the section below is a curated subset highlighting load-bearing or non-obvious keys. For the full schema (every `defaults:` and every per-cluster override), read `clusters.yaml` directly.
@@ -334,22 +330,10 @@ different family or a different preference order.
 - `alloy_chart_version` — Alloy Helm chart version (shared by monitoring + logging Alloy DaemonSets).
 - `keda.chart_version` — KEDA operator Helm chart version (used by the `keda` module; consumed by buildkit autoscaling).
 - `zombie_cleanup.{enabled,pending_max_age_hours,running_max_age_hours,busy_max_age_hours,dry_run}` — orphan-pod GC tuning.
-- `pypi_cache.{instance_type,cuda_versions,python_versions,target_architectures,target_manylinux}` — PyPI wheel cache matrix (see `osdc-pypi-cache` for slug semantics; `cuda_versions` and `python_versions` are mandatory for this module).
 
 ### ARC Module — No Terraform
 
 Unlike most modules, `modules/arc/` has no terraform phase — it is pure k8s/helm. Don't look for terraform state or try `just tf-*` recipes for ARC.
-
-### Pypi-Cache — Two Terraform Roots
-
-The pypi-cache module has TWO terraform roots; only one runs as part of `just deploy`:
-
-- `modules/pypi-cache/terraform/main.tf` — per-cluster IRSA role, IAM policies, etc. **Auto-applied by `just deploy-module pypi-cache`** (the standard `deploy-module` flow detects `terraform/main.tf` and runs `tofu init && tofu apply` on it).
-- `modules/pypi-cache/terraform/wheel-cache-bucket/` — standalone tofu root for the shared S3 bucket (`pytorch-pypi-wheel-cache`). This is a one-time, account-wide resource, **NOT part of `just deploy`**. Run `tofu init && tofu apply` manually in this sub-directory if the bucket needs to be created or updated.
-
-### Pypi-Cache — Required clusters.yaml Keys
-
-`cuda_versions` and `python_versions` are NOT module defaults. They must be configured in `clusters.yaml` under `defaults.pypi_cache` or per-cluster `clusters.<id>.pypi_cache`. Omitting them produces zero CUDA slugs and zero deployments. `cuda_slug()` normalizes versions to major.minor only: `"12.8.1"` → `cu128` (matches PyTorch convention).
 
 ## CI Workflows
 

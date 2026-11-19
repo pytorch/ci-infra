@@ -26,7 +26,7 @@ CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 # --- Read hf_cache config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" hf_cache.namespace hf-cache)
 RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.69.1")
-# amazonlinux:2023 has python3 and pulls reliably at warmup (matches cache-enforcer).
+# amazonlinux:2023 has python3 and pulls reliably at warmup.
 TAINT_REMOVER_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.taint_remover_image \
   "public.ecr.aws/amazonlinux/amazonlinux:2023")
 VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")

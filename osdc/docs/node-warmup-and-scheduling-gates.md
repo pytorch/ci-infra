@@ -83,7 +83,6 @@ Current registry:
 
 | Taint Key | Module gate | Removed by |
 |-----------|-------------|------------|
-| `node-init.osdc.io/cache-enforcer` | `cache-enforcer` | `cache-enforcer` DaemonSet |
 | `node-init.osdc.io/registry-mirror` | base (`None`) | `registry-mirror-config` DaemonSet |
 | `node-init.osdc.io/perf-tuning` | base (`None`) | `node-performance-tuning` DaemonSet |
 | `node-init.osdc.io/algif-mitigation` | base (`None`) | `algif-mitigation` DaemonSet |
@@ -149,7 +148,7 @@ Writes `/etc/modprobe.d/disable-algif.conf` (`install algif_aead /bin/false`) an
 
 Runs on ALL nodes (no nodeSelector, tolerates everything). Idempotent via `/var/lib/algif-mitigation/.configured` marker.
 
-**TODO — REMOVE this DaemonSet** once all nodes are running an AL2023 AMI with kernel 6.12.85+. Watch https://explore.alas.aws.amazon.com/CVE-2026-31431.html and the AMI pinnings tagged with the same TODO marker (`clusters.yaml`, `modules/nodepools/scripts/python/generate_nodepools.py`, `modules/buildkit/scripts/python/generate_buildkit.py`, `modules/pypi-cache/kubernetes/ec2nodeclass.yaml.tpl`).
+**TODO — REMOVE this DaemonSet** once all nodes are running an AL2023 AMI with kernel 6.12.85+. Watch https://explore.alas.aws.amazon.com/CVE-2026-31431.html and the AMI pinnings tagged with the same TODO marker (`clusters.yaml`, `modules/nodepools/scripts/python/generate_nodepools.py`, `modules/buildkit/scripts/python/generate_buildkit.py`).
 
 ### DirtyFrag Mitigation (TEMPORARY — CVE-2026-43284 + CVE-2026-43500)
 
@@ -169,7 +168,6 @@ Sibling DaemonSet to `algif-mitigation`, same shape (privileged `nsenter` into P
 | `nvidia.com/gpu=true` | Permanent | `NoSchedule` | GPU NodePools only — applied by both the standard `generate_nodepools.py` (g4dn, g5, g6, p4d) and the specialized H100 (`modules/nodepools-h100`) and B200 (`modules/nodepools-b200`) generators. The `topology_manager_policy: single-numa-node` (scope `pod`) override is a per-def opt-in (set in the fleet YAML) and is used by p4d in the standard generator AND by H100/B200 in the specialized generators; other GPU pools inherit the runner default (`best-effort`/`container`). | Never (scheduling constraint) |
 | `node-compactor.osdc.io/consolidating=true` | Runtime (dynamic) | `NoSchedule` | Applied by node-compactor | node-compactor controller (protected by `min_node_age`: 900s) |
 | `CriticalAddonsOnly=true` | Permanent | `NoSchedule` | Base infrastructure nodes (EKS-managed) | Never |
-| `node-init.osdc.io/cache-enforcer=true` | Startup | `NoSchedule` | Karpenter NodePools on clusters that enable the `cache-enforcer` module | `cache-enforcer` DaemonSet via taint-remover at end-of-init |
 | `node-init.osdc.io/registry-mirror=true` | Startup | `NoSchedule` | All Karpenter NodePools | `registry-mirror-config` DaemonSet via taint-remover at end-of-init |
 | `node-init.osdc.io/perf-tuning=true` | Startup | `NoSchedule` | All Karpenter NodePools | `node-performance-tuning` DaemonSet via taint-remover at end-of-init |
 | `node-init.osdc.io/algif-mitigation=true` | Startup | `NoSchedule` | All Karpenter NodePools (until AL2023 kernel 6.12.85+ is rolled out, then this entry and the DaemonSet are deleted in lockstep) | `algif-mitigation` DaemonSet via taint-remover at end-of-init |

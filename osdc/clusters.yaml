@@ -122,27 +122,6 @@ defaults:
     running_max_age_hours: 24
     busy_max_age_hours: 48
     dry_run: false
-  pypi_cache:
-    instance_type: r5d.12xlarge
-    cuda_versions:
-      - "12.6.3"
-      - "12.8.1"
-      - "13.0.2"
-    # NOTE: python_versions is not consumed by manifest generation yet.
-    # Reserved for future self-learning builder that will compile wheels
-    # for each (cuda_version, python_version) combination.
-    python_versions:
-      - "3.10"
-      - "3.11"
-      - "3.12"
-      - "3.13"
-      - "3.13t"
-      - "3.14"
-      - "3.14t"
-    target_architectures:
-      - "x86_64"
-      - "aarch64"
-    target_manylinux: "2_28"
   hf_cache:
     # Shared HF model cache (modules/hf-cache); enable per cluster via the modules
     # list. Each cluster gets its own bucket pytorch-hf-model-cache-<cluster_id>.
@@ -228,8 +207,6 @@ clusters:
         amd64_max: 12
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
-    pypi_cache:
-      replicas: 1
     agent_sandbox:
       # Bedrock model the agent invokes. Must be a cross-region inference profile
       # ID (`us.` prefix), not a bare foundation-model ID: every Anthropic model
@@ -334,8 +311,6 @@ clusters:
         amd64_max: 12
         arm64_min: 2  # both warm pods fit the 4xlarge the primary pool provisions anyway
         arm64_max: 12
-    pypi_cache:
-      replicas: 1
     agent_sandbox:
       # Same model as ue1: a cross-region inference profile ID (`us.` prefix), not a
       # bare foundation-model ID — every Anthropic model is INFERENCE_PROFILE-only and
@@ -467,8 +442,6 @@ clusters:
       # max_runners are sized assuming this count.
       capacity_reservation_ids:
         - cr-0b15c0b3163f09d26
-    pypi_cache:
-      replicas: 10
     modules:
       - karpenter
       - arc

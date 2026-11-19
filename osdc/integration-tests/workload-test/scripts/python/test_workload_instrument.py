@@ -19,7 +19,6 @@ from workload_instrument import (
     filter_non_arc_jobs,
     generate_determinator_script,
     generate_determinator_stub,
-    inject_pypi_cache_step,
     is_arc_label,
     replace_runner_prefix,
     rewrite_cross_repo_refs,
@@ -1017,99 +1016,3 @@ class TestFilterNonArcJobsIntegration:
         assert "removed-job:" not in result
         assert "needs:" not in result
         assert "dependent:" in result
-
-
-# ── inject_pypi_cache_step ─────────────────────────────────────────
-
-
-class TestInjectPypiCacheStep:
-    ACTION_REF = "pytorch/test-infra/.github/actions/setup-pypi-cache@main"
-
-    def test_basic_injection(self):
-        content = textwrap.dedent("""\
-            jobs:
-              build:
-                runs-on: mt-l-x86
-                steps:
-                  - uses: actions/checkout@v4
-                  - run: echo build
-        """)
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        assert "- name: Setup PyPI cache" in result
-        assert f"uses: {self.ACTION_REF}" in result
-        assert "build-environment:" in result
-
-    def test_idempotent_skips_when_present(self):
-        content = textwrap.dedent("""\
-            jobs:
-              build:
-                runs-on: mt-l-x86
-                steps:
-                  - name: Setup PyPI cache
-                    uses: pytorch/test-infra/.github/actions/setup-pypi-cache@main
-                    with:
-                      cuda-version: "12.8.1"
-                  - run: echo build
-        """)
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        assert result == content
-
-    def test_idempotent_different_ref(self):
-        """Skips injection if setup-pypi-cache already referenced (any ref)."""
-        content = "steps:\n  - uses: org/repo/.github/actions/setup-pypi-cache@v2\n"
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        assert result == content
-
-    def test_multiple_jobs(self):
-        content = textwrap.dedent("""\
-            jobs:
-              lint:
-                runs-on: mt-l-x86
-                steps:
-                  - run: echo lint
-              build:
-                runs-on: mt-l-x86
-                steps:
-                  - run: echo build
-        """)
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        assert result.count("Setup PyPI cache") == 2
-
-    def test_no_steps_key(self):
-        content = textwrap.dedent("""\
-            jobs:
-              call-reusable:
-                uses: org/repo/.github/workflows/x.yml@main
-        """)
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        assert "Setup PyPI cache" not in result
-        assert result == content
-
-    def test_step_indent_preserved(self):
-        """Injected step uses correct indent relative to ``steps:``."""
-        content = "    steps:\n      - run: echo hi\n"
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        lines = result.split("\n")
-        cache_line = next(l for l in lines if "Setup PyPI cache" in l)
-        # steps: is at indent 4, step items should be at indent 6
-        assert cache_line.startswith("      - name:")
-
-    def test_build_environment_in_output(self):
-        content = "steps:\n  - run: echo hi\n"
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        assert "build-environment: ${{ inputs.build-environment" in result
-
-    def test_injected_before_existing_steps(self):
-        """The cache step appears before any existing steps."""
-        content = textwrap.dedent("""\
-            jobs:
-              build:
-                steps:
-                  - uses: actions/checkout@v4
-                  - run: pip install -r requirements.txt
-        """)
-        result = inject_pypi_cache_step(content, self.ACTION_REF)
-        lines = result.split("\n")
-        cache_idx = next(i for i, l in enumerate(lines) if "Setup PyPI cache" in l)
-        checkout_idx = next(i for i, l in enumerate(lines) if "actions/checkout" in l)
-        assert cache_idx < checkout_idx

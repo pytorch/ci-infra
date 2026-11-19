@@ -36,21 +36,15 @@ SCRATCH_DIR_NAME = ".scratch"
 
 TAG_REQUIREMENTS: dict[str, list[str]] = {
     "ARC_RUNNERS": ["arc-runners"],
-    "PYPI_CACHE": ["arc-runners", "pypi-cache"],
     "HF_CACHE": ["arc-runners", "hf-cache"],
     "HF_CACHE_OIDC": ["arc-runners", "hf-cache"],
     "GPU_T4": ["arc-runners", "nodepools"],
     "OOM_KILL": ["arc-runners", "nodepools"],
     "BUILDKIT": ["arc-runners", "buildkit"],
-    "CACHE_ENFORCER": ["arc-runners", "cache-enforcer"],
     "RELEASE": ["arc-runners"],
     # The sandbox job runs on a normal runner and calls the sandbox Service over
     # the network, so it needs both arc-runners and the agent-sandbox module.
     "AGENT_SANDBOX": ["arc-runners", "agent-sandbox"],
-}
-
-INVERSE_TAG_EXCLUSIONS: dict[str, list[str]] = {
-    "NO_CACHE_ENFORCER": ["cache-enforcer"],
 }
 
 # Blocks stripped on prod clusters. Prod release runner groups are restricted to
@@ -343,8 +337,6 @@ def generate_workflow(
     cluster_id: str,
     cluster_name: str,
     cluster_modules: list[str],
-    pypi_cache_slugs: str = "cpu cu121 cu124",
-    pypi_cache_cuda_version: str = "12.8",
     runner_group: str = "default",
     release_runner_group: str = "release-runners",
     ecr_pull_resolved_tag: str = "",
@@ -360,8 +352,6 @@ def generate_workflow(
     content = content.replace("{{RELEASE_RUNNER_GROUP}}", release_runner_group)
     content = content.replace("{{CLUSTER_ID}}", cluster_id)
     content = content.replace("{{CLUSTER_NAME}}", cluster_name)
-    content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
-    content = content.replace("{{PYPI_CACHE_CUDA_VERSION}}", pypi_cache_cuda_version)
     content = content.replace("{{ECR_PULL_RESOLVED_TAG}}", ecr_pull_resolved_tag)
     content = content.replace("{{ECR_PULL_SHA}}", ecr_pull_sha)
 
@@ -382,10 +372,6 @@ def generate_workflow(
     modules_set = normalize_modules(cluster_modules)
     for tag, required in TAG_REQUIREMENTS.items():
         keep = all(m in modules_set for m in required)
-        content = strip_conditional_block(content, tag, keep=keep)
-
-    for tag, excluded in INVERSE_TAG_EXCLUSIONS.items():
-        keep = not any(m in modules_set for m in excluded)
         content = strip_conditional_block(content, tag, keep=keep)
 
     # Region gate (after module gating, so a block already removed with its parent
