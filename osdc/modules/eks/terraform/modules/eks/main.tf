@@ -198,7 +198,11 @@ resource "aws_eks_addon" "vpc_cni" {
       ENABLE_PREFIX_DELEGATION = "true"
       WARM_PREFIX_TARGET       = "1"
     }
-  }) : jsonencode({})
+  }) : jsonencode(
+    var.enable_windows_node_group ? {
+      enableWindowsIpam = "true"
+    } : {}
+  )
 
   tags = var.tags
 }
@@ -567,4 +571,91 @@ resource "aws_eks_access_policy_association" "cluster_admin" {
   }
 
   depends_on = [aws_eks_access_entry.cluster_admin]
+}
+
+# --- Windows GPU node group (optional, requires ip_family = "ipv4") ---
+
+# Installs the NVIDIA WDDM 595.97 driver in user data.
+resource "aws_launch_template" "windows" {
+  count = var.enable_windows_node_group ? 1 : 0
+
+  name_prefix = "${var.cluster_name}-windows-"
+
+  user_data = base64encode(<<-EOT
+    <powershell>
+    $ErrorActionPreference = 'Stop'
+    curl.exe -L -o C:\driver59597.exe "https://ec2-windows-nvidia-drivers.s3.us-east-1.amazonaws.com/grid-20.0/595.97_grid_win10_win11_server2022_server2025_64bit_dch_international_aws_swl.exe"
+    Start-Process -FilePath C:\driver59597.exe -ArgumentList '-s','-noreboot' -Wait
+    </powershell>
+  EOT
+  )
+
+  block_device_mappings {
+    device_name = "/dev/sda1"
+
+    ebs {
+      volume_size           = var.windows_volume_size
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
+    }
+  }
+
+  # Windows containers reach IMDSv2 from inside the container, which needs a
+  # hop limit of at least 2 (host + container = 2 hops).
+  metadata_options {
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(
+      var.tags,
+      {
+        Name = "${var.cluster_name}-windows-node"
+        Type = "windows-gpu"
+      }
+    )
+  }
+
+  tags = var.tags
+}
+
+resource "aws_eks_node_group" "windows" {
+  count = var.enable_windows_node_group ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.this.name
+  node_group_name = "${var.cluster_name}-windows-gpu"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.subnet_ids
+
+  ami_type       = var.windows_ami_type
+  instance_types = [var.windows_instance_type]
+  capacity_type  = "ON_DEMAND"
+
+  scaling_config {
+    desired_size = var.windows_node_count
+    min_size     = 0
+    max_size     = max(var.windows_node_count, 1)
+  }
+
+  # windows-build matches the TensorWorks directx-device-plugin nodeSelector
+  # (its hardcoded 10.0.20348 must be bumped to 10.0.26100 at deploy time).
+  labels = {
+    "windows-build" = "10.0.26100"
+  }
+
+  launch_template {
+    id      = aws_launch_template.windows[0].id
+    version = aws_launch_template.windows[0].latest_version
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.cluster_name}-windows-gpu"
+      Type = "windows-gpu"
+    }
+  )
 }

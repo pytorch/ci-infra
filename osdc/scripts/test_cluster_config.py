@@ -275,6 +275,32 @@ class TestTfvars:
         out = capsys.readouterr().out.strip()
         assert '-var="ip_family=ipv4"' in out
 
+    def test_windows_node_group_enabled(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "windows": {
+                "enabled": True,
+                "node_count": 1,
+                "instance_type": "g4dn.xlarge",
+                "ami_type": "WINDOWS_FULL_2025_x86_64",
+                "volume_size": 200,
+            },
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="enable_windows_node_group=true"' in out
+        assert '-var="windows_node_count=1"' in out
+        assert '-var="windows_instance_type=g4dn.xlarge"' in out
+        assert '-var="windows_ami_type=WINDOWS_FULL_2025_x86_64"' in out
+        assert '-var="windows_volume_size=200"' in out
+
+    def test_windows_node_group_absent_by_default(self, capsys):
+        cluster_cfg = {"cluster_name": "c", "region": "r"}
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert "windows" not in out
+
     def test_cost_knobs_absent_by_default(self, capsys):
         """Clusters that do not set the cost knobs emit no -var for them (terraform defaults apply)."""
         cluster_cfg = {"cluster_name": "c", "region": "r", "base": {"base_node_count": 3}}

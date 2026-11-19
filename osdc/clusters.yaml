@@ -689,4 +689,10 @@ clusters:
         database:
           cpu: "250m"
           memory: "512Mi"
+    windows:
+      enabled: true
+      node_count: 1
+      instance_type: g4dn.xlarge
+      ami_type: WINDOWS_FULL_2025_x86_64
+      volume_size: 200
     modules: []
