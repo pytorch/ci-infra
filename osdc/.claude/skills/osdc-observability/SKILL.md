@@ -45,7 +45,6 @@ What kube-prometheus-stack provides: CRDs (`monitoring.coreos.com`), Prometheus 
 | ServiceMonitor | keda | keda | KEDA operator metrics (`keda_*` keep-list; `*_bucket` dropped) |
 | ServiceMonitor | node-compactor | kube-system | Node compactor metrics |
 | ServiceMonitor | pushgateway | monitoring | Prometheus Pushgateway metrics |
-| ServiceMonitor | pypi-cache | pypi-cache | PyPI cache nginx + pypiserver metrics |
 | PodMonitor | arc-listeners | arc-systems | ARC listener pods metrics (interval `3m` — the only sub-60s exception; all other monitors run at 60s to halve Grafana DPM billing) |
 | PodMonitor | coredns | kube-system | CoreDNS resolver metrics |
 | PodMonitor | nodelocaldns | kube-system | NodeLocal DNSCache — TWO endpoints per pod: `:9253` (`coredns_*` plugin metrics from the Corefile `prometheus` directive) AND `:9353` (`coredns_nodecache_*` setup-error counters emitted by the binary itself, NOT a CoreDNS plugin). Adding only `:9253` would silently miss `coredns_nodecache_setup_errors_total` — the alert metric. |

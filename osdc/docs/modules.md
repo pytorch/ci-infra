@@ -21,7 +21,7 @@ $2 = cluster-name    # e.g. "meta-staging-aws-ue1"
 $3 = region           # e.g. "us-east-1"
 ```
 
-A module can use any combination of these — none of them is strictly required individually. The minimum is whatever produces a working phase: a kubernetes-only module needs only `kubernetes/kustomization.yaml` (e.g. `cache-enforcer`); a script-only module needs only `deploy.sh`; a module with all three runs all three phases in order.
+A module can use any combination of these — none of them is strictly required individually. The minimum is whatever produces a working phase: a kubernetes-only module needs only `kubernetes/kustomization.yaml`; a script-only module needs only `deploy.sh`; a module with all three runs all three phases in order.
 
 The `deploy-module` recipe also exports three environment variables that every real module relies on:
 ```bash
@@ -255,21 +255,6 @@ Grafana Alloy in metrics mode, scraping cluster + module endpoints and remote-wr
 - **helm/**: Alloy values for the metrics pipeline
 - **kubernetes/**: namespace, DCGM exporter DaemonSet + custom-metrics ConfigMap (`dcgm-exporter/`), PrometheusRule alert CRDs (`alerts/` — ARC, GPU, infra, network-pressure, node-compactor, nodelocaldns, harbor-cache-recovery, zombie-cleanup), and ServiceMonitor / PodMonitor manifests (`monitors/`)
 - **deploy.sh**: Installs `kube-prometheus-stack` (CRDs, node-exporter, kube-state-metrics, Prometheus Operator — Prometheus/Grafana/AlertManager are disabled), Prometheus Pushgateway, the `monitors/` kustomize (ServiceMonitors / PodMonitors / `alerts/` PrometheusRules) after the CRDs land, and — gated on the `grafana-cloud-credentials` secret — Grafana Alloy as the metrics push pipeline to Grafana Cloud
-
-### pypi-cache
-
-Per-CUDA-slug nginx + pypiserver fanout backed by a shared EFS wheelhouse fed by an external wheel-build pipeline via S3. Used by runners to install PyTorch wheels without hitting public PyPI.
-
-- **terraform/**: S3 wheel-cache bucket + IRSA roles (has its own `backend.tf`)
-- **kubernetes/**: namespace, ServiceAccount, EFS StorageClass + PVC, NetworkPolicy
-- **scripts/**: pod resource computation, manifest generation, cache-enforcer SNI matching
-- **docker/**: nginx + njs merge handler image
-- **generated/**: per-CUDA-slug Deployments + Services
-- **deploy.sh**: applies kustomize, deploys NodePools, generates and applies per-slug Deployments
-
-### cache-enforcer
-
-DaemonSet that pins runners' DNS / SNI traffic at PyPI and similar hostnames to the in-cluster pypi-cache service. Pure kubernetes module — has only `kubernetes/kustomization.yaml` (configmap + daemonset) and `tests/`, no `deploy.sh`, no terraform.
 
 ### zombie-cleanup
 

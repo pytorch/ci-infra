@@ -353,33 +353,6 @@ def generate_determinator_script(target_prefix: str) -> str:
     return _DETERMINATOR_SCRIPT.replace("TARGET_PREFIX_PLACEHOLDER", target_prefix)
 
 
-# ── PyPI cache injection ─────────────────────────────────────────────
-
-
-def inject_pypi_cache_step(content: str, action_ref: str) -> str:
-    """Inject a ``setup-pypi-cache`` step as the first step in every job.
-
-    Finds each ``steps:`` key in the workflow and inserts the action
-    immediately after it, before any existing steps.  Idempotent — skips
-    files that already reference the action.
-    """
-    if "setup-pypi-cache" in content:
-        return content
-
-    lines = content.split("\n")
-    result: list[str] = []
-    for line in lines:
-        result.append(line)
-        if line.strip() == "steps:":
-            indent = len(line) - len(line.lstrip())
-            si = " " * (indent + 2)  # step-item indent
-            result.append(f"{si}- name: Setup PyPI cache")
-            result.append(f"{si}  uses: {action_ref}")
-            result.append(f"{si}  with:")
-            result.append(f"{si}    build-environment: ${{{{ inputs.build-environment || inputs.build_environment || '' }}}}")
-    return "\n".join(result)
-
-
 # ── Helpers for instrument_workflows ──────────────────────────────────
 
 

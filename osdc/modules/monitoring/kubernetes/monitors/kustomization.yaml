@@ -15,7 +15,6 @@ resources:
   - servicemonitors/keda.yaml
   - servicemonitors/node-compactor.yaml
   - servicemonitors/pushgateway.yaml
-  - servicemonitors/pypi-cache.yaml
   # PodMonitors
   - podmonitors/arc-listeners.yaml
   - podmonitors/coredns.yaml

@@ -35,7 +35,6 @@ INSTANCE_TYPE_TAINT_KEY = "instance-type"
 _IGNORED_TAINT_KEYS = frozenset(
     {
         # OSDC startup taints (removed by node-taint-remover init containers)
-        "node-init.osdc.io/cache-enforcer",
         "node-init.osdc.io/registry-mirror",
         "node-init.osdc.io/perf-tuning",
         "node-init.osdc.io/algif-mitigation",

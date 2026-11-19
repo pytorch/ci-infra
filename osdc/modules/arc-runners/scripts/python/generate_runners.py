@@ -273,7 +273,6 @@ def generate_runner(
     cluster_config,
     output_dir,
     module_name,
-    pypi_cache_enabled=True,
     hf_cache_enabled=False,
     available_modules=None,
     cluster_cfg=None,
@@ -281,15 +280,11 @@ def generate_runner(
 ):
     """Generate a single runner config from its definition.
 
-    pypi_cache_enabled controls whether the `# BEGIN_PYPI_CACHE` / `# END_PYPI_CACHE`
-    block in the template is preserved (True) or stripped (False). Strip when the
-    cluster does not deploy the pypi-cache module — the env vars would otherwise
-    point at a Service that doesn't exist on this cluster.
-
-    hf_cache_enabled does the same for the `# BEGIN_HF_CACHE` / `# END_HF_CACHE`
-    block (HF_HOME env + the read-only /mnt/hf_cache hostPath mount). Strip when the
-    cluster does not deploy the hf-cache module — the hostPath would otherwise be
-    empty and HF_HUB_OFFLINE=1 would make every model load fail.
+    hf_cache_enabled controls whether the `# BEGIN_HF_CACHE` / `# END_HF_CACHE`
+    block (HF_HOME env + the read-only /mnt/hf_cache hostPath mount) is preserved
+    (True) or stripped (False). Strip when the cluster does not deploy the hf-cache
+    module — the hostPath would otherwise be empty and HF_HUB_OFFLINE=1 would make
+    every model load fail.
 
     available_modules is the set of modules the cluster deploys. A resolved
     scheduler_name that does not name an available module is silently dropped,
@@ -539,7 +534,6 @@ def generate_runner(
 
     # Replace all template placeholders
     output_content = template_content
-    output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
     output_content = strip_conditional_block(output_content, "HF_CACHE", keep=hf_cache_enabled)
     listener_cpu, listener_memory, listener_gomemlimit = listener_resources(cluster_config)
 
@@ -845,10 +839,6 @@ def main():
         log_error(f"No definition files found in {defs_dir}")
         return 1
 
-    # pypi-cache module is cluster-scoped: when absent, strip the pypi-cache env
-    # vars from the workflow pod template so jobs don't try to reach a Service
-    # that doesn't exist on this cluster.
-    pypi_cache_enabled = "pypi-cache" in (cluster_cfg.get("modules") or [])
     available_modules = set(cluster_cfg.get("modules") or [])
 
     # hf-cache module is cluster-scoped: when absent, strip the HF_CACHE env vars
@@ -864,7 +854,6 @@ def main():
             cluster_config,
             output_dir,
             module_name,
-            pypi_cache_enabled,
             hf_cache_enabled,
             available_modules,
             cluster_cfg=cluster_cfg,
@@ -877,7 +866,6 @@ def main():
                 cluster_config,
                 output_dir,
                 module_name,
-                pypi_cache_enabled,
                 hf_cache_enabled,
                 available_modules,
                 cluster_cfg=cluster_cfg,

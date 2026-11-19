@@ -85,7 +85,6 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 | ServiceMonitor | buildkit | buildkit | BuildKit daemon metrics |
 | ServiceMonitor | buildkit-haproxy | buildkit | BuildKit HAProxy LB metrics |
 | ServiceMonitor | pushgateway | monitoring | Prometheus Pushgateway (push-based metrics from short-lived jobs) |
-| ServiceMonitor | pypi-cache | pypi-cache | pypi-cache nginx metrics (`nginx_up`, requests, active connections) |
 | PodMonitor | coredns | kube-system | CoreDNS request rate, latency, cache hit/miss, errors |
 | PodMonitor | nodelocaldns | kube-system | NodeLocal DNSCache — two endpoints: `:9253` (CoreDNS plugin metrics, `coredns_*`) and `:9353` (binary-emitted `coredns_nodecache_*` setup/error counters) |
 | PodMonitor | arc-listeners | arc-systems | ARC listener pods metrics |
@@ -139,7 +138,6 @@ Per-source `keep` whitelists or targeted `drop` rules — most filtering lives h
 |--------|--------|
 | `apiserver` ServiceMonitor | `keep`: `apiserver_request_total\|apiserver_request_terminations_total` only — request rate and termination counts only; latency, inflight, and etcd metrics are dropped |
 | `coredns` PodMonitor | `drop`: `go_.*`, `process_.*`, `coredns_dns_request_duration_seconds_bucket\|coredns_forward_request_duration_seconds_bucket` |
-| `pypi-cache` ServiceMonitor | `keep`: `nginx_up\|nginx_http_requests_total\|nginx_connections_active` only |
 | node-exporter (built-in) | `keep`: `node_memory_MemAvailable_bytes\|node_memory_MemTotal_bytes\|node_nf_conntrack_entries\|node_nf_conntrack_entries_limit` only — drops everything else including all CPU, disk I/O, filesystem, network, and load metrics. Conntrack metrics are kept because they power the `ipv6-network-pressure` alerts (pod-to-IPv4 egress via VPC CNI SNAT is conntrack-heavy under IPv6-only EKS). |
 | `buildkit` ServiceMonitor | `drop`: `go_.*`, `process_.*`, `promhttp_.*\|target_info`, `.*_bucket` — drop-list pattern (not keep-list); buckets are dropped wholesale, only `_sum`/`_count` survive for latency tracking |
 | DCGM ServiceMonitor | label drops: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` |

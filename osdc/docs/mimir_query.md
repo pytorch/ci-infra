@@ -128,7 +128,6 @@ The table below lists the **ServiceMonitor / PodMonitor name** alongside the **a
 | `buildkit-haproxy` | `buildkitd-lb-metrics` | BuildKit LB metrics | (See ServiceMonitor for filter) |
 | `node-compactor` | `node-compactor` | Node consolidation/compactor metrics | No filter |
 | `pushgateway` | `pushgateway` | Prometheus Pushgateway (ad-hoc job metrics) | No filter; `honorLabels: true` — pushed metrics' `job`/`instance` labels are preserved instead of overwritten by scrape target |
-| `pypi-cache` | (one job per Service per CUDA slug — e.g. `pypi-cache-cpu`, `pypi-cache-cu126`, `pypi-cache-cu128`, `pypi-cache-cu130` per `clusters.yaml` `cuda_versions`) | PyPI cache nginx metrics | Only `nginx_up`, `nginx_http_requests_total`, `nginx_connections_active` |
 | `dcgm-exporter` | `dcgm-exporter` | NVIDIA GPU metrics (only on GPU nodes) | All `DCGM_FI_*` metrics flow through (no metric drops); label drops only: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` |
 
 In addition, the `kube-prometheus-stack-operator` job exists but Alloy's `cost_control` drops every `prometheus_operator_*` metric (and `go_*`/`process_*`/`promhttp_*`), so only the `up` metric is queryable in practice.
@@ -315,19 +314,6 @@ sum by (pod, errortype) (coredns_nodecache_setup_errors_total{cluster="meta-prod
 
 # Number of NLD pods reporting metrics (should equal node count)
 count(up{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns"} == 1)
-```
-
-### PyPI Cache
-
-```promql
-# nginx availability per pypi-cache instance
-nginx_up{cluster="meta-prod-aws-ue2"}
-
-# Request rate
-rate(nginx_http_requests_total{cluster="meta-prod-aws-ue2"}[5m])
-
-# Active connections
-nginx_connections_active{cluster="meta-prod-aws-ue2"}
 ```
 
 ### GPU (DCGM)

@@ -16,7 +16,6 @@ Operator-facing runbook for destroying and recreating an existing OSDC cluster. 
 **Accepted data losses** (audit and design preservation steps per change if unacceptable):
 
 - Harbor S3 bucket (`<cluster_name>-harbor-registry`) — re-caches lazily over weeks.
-- EFS pypi-cache wheelhouse — rebuilds from upstream S3 over days.
 - Any in-cluster state not preserved by terraform (runtime-created PVCs / secrets / ConfigMaps).
 
 ### Pre-flight checklist
@@ -113,15 +112,13 @@ NO_PROXY="$NO_PROXY,.amazonaws.com" no_proxy="$no_proxy,.amazonaws.com" \
     done
 ```
 
-EFS pypi-cache destroys cleanly even when populated; no equivalent step needed.
-
 ### 5. Tofu destroy
 
 ```bash
 ./scripts/destroy-cluster.sh ${CLUSTER}
 ```
 
-Encodes the dependency order (leaf modules → workloads → compute → pypi-cache → base), picks per-module vs base var sets, gates the base destroy behind a confirmation prompt. Idempotent — re-run if it fails partway. Override prompts with `OSDC_CONFIRM=yes` and `OSDC_CONFIRM_BASE=destroy`.
+Encodes the dependency order (leaf modules → workloads → compute → base), picks per-module vs base var sets, gates the base destroy behind a confirmation prompt. Idempotent — re-run if it fails partway. Override prompts with `OSDC_CONFIRM=yes` and `OSDC_CONFIRM_BASE=destroy`.
 
 Expected hangs: EKS control plane delete (~10 min), NAT GW drain (~5 min). If `aws_eks_addon.vpc_cni` stalls because the API server is half-gone, re-run.
 
@@ -248,7 +245,6 @@ All must pass before declaring cutover complete and starting the soak.
 | Cluster up | `kubectl get nodes -o wide` | All `Ready`; count matches `base_node_count` |
 | Pod egress | `kubectl run -it --rm --image=curlimages/curl curl-test -- curl -sI https://github.com/` | HTTP 200 |
 | Harbor proxy | Pull `<harbor>/dockerhub-proxy/library/alpine:latest` | Image pulls (cold cache) |
-| pypi-cache | `pip install --index-url http://pypi-cache.pypi-cache.svc/simple/cuda-12.6.3/ requests` | Wheel fetched |
 | Distributed (prod only) | NCCL / `torch.distributed` 2-node on H100 or B200 | Job completes; no socket errors |
 | Smoke | `just smoke ${CLUSTER}` | Exit 0 |
 | Change-specific | Operator adds checks specific to the change | Per-change |

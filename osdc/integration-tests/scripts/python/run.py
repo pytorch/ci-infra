@@ -21,14 +21,11 @@ from pathlib import Path
 
 import yaml
 
-# Add pypi-cache module to path for cuda_slug import (single source of truth)
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "pypi-cache" / "scripts" / "python"))
 # Add repo-root scripts/python for the shared release-runner-group derivation.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
 # Add arc-runners module scripts for the shared org-key derivation (multi-org targeting).
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "arc-runners" / "scripts" / "python"))
 from fleet_naming import derive_release_runner_group  # noqa: E402
-from generate_manifests import cuda_slug  # noqa: E402
 from generate_runners import org_key_of  # noqa: E402
 from resolve_pytorch_image import resolve_ci_docker_hash
 
@@ -341,14 +338,6 @@ def main():
     release_runner_group = derive_release_runner_group(cluster_runner_group)
     cluster_modules = cfg["cluster"].get("modules", [])
 
-    # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version
-    cuda_versions = resolve(cfg, "pypi_cache.cuda_versions", [])
-    pypi_cache_slugs = " ".join(["cpu"] + [cuda_slug(str(v)) for v in cuda_versions])
-    # First CUDA version for integration test action verification (major.minor only)
-    raw_ver = str(cuda_versions[0]) if cuda_versions else "12.8"
-    parts = raw_ver.split(".")
-    pypi_cache_cuda_version = f"{parts[0]}.{parts[1]}"
-
     # Effective skip flags: skip by default, --run-X opts in, --skip-X overrides
     skip_smoke = not args.run_smoke or args.skip_smoke
     skip_compactor = not args.run_compactor or args.skip_compactor
@@ -361,7 +350,6 @@ def main():
     log.info("  Runner group: '%s'", runner_group)
     log.info("  Release runner group: '%s'", release_runner_group)
     log.info("  Cluster modules: %s", ", ".join(cluster_modules) if cluster_modules else "(none)")
-    log.info("  PyPI cache slugs: %s", pypi_cache_slugs)
     log.info("  Smoke tests: %s", "skip" if skip_smoke else "run")
     log.info("  Compactor tests: %s", "skip" if skip_compactor else "run")
     log.info("  Branch: %s", branch)
@@ -418,8 +406,6 @@ def main():
             cluster_modules,
             runner_group=runner_group,
             release_runner_group=release_runner_group,
-            pypi_cache_slugs=pypi_cache_slugs,
-            pypi_cache_cuda_version=pypi_cache_cuda_version,
             ecr_pull_resolved_tag=ecr_pull_resolved_tag,
             ecr_pull_sha=ecr_pull_sha,
             region=region,

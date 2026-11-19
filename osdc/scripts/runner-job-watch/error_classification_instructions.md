@@ -115,18 +115,9 @@ output:
   - Upstream PyPI / pythonhosted / download.pytorch.org refusals, throttling,
     or connection errors (HTTP 429, 403, 5xx, `Connection refused`,
     `Connection reset`, TLS handshake failures, DNS failures targeting
-    `pypi.org`, `files.pythonhosted.org`, `download.pytorch.org`). Two
-    deployment shapes exist and both are **infra_issue**:
-      - **Cache present** (most OSDC runners): pip is pointed at the
-        in-cluster `pypi-cache-{slug}` proxy via
-        `PIP_INDEX_URL=http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/`,
-        which itself falls back to upstream PyPI. The failure can be
-        runner→cache (cache pod unreachable, DNS for `pypi-cache.svc...`
-        failing, cache returning 5xx) OR cache→upstream (the proxy's
-        `@pypi_fallback` couldn't reach `pypi.org`/`files.pythonhosted.org`).
-      - **No cache** (some configurations): the runner reaches PyPI directly,
-        log shows the public hostname in the failing URL.
-    Read the failing URL/host in the log to tell which path was hit.
+    `pypi.org`, `files.pythonhosted.org`, `download.pytorch.org`). The
+    runner reaches PyPI directly, so the log shows the public hostname in
+    the failing URL.
   - GHA artifact upload/download failures due to GHA service issues
   - RPC errors, timeouts, etc
 
@@ -211,7 +202,6 @@ get a grasp of what is infra, and what is not. Specifically:
 - ./skills/osdc-nodelocaldns/SKILL.md
 - ./skills/osdc-observability/SKILL.md
 - ./skills/osdc-project-structure/SKILL.md
-- ./skills/osdc-pypi-cache/SKILL.md
 - ./skills/osdc-runners-nodepools/SKILL.md
 - ./skills/osdc-tooling-and-quality/SKILL.md
 

@@ -23,15 +23,14 @@ set -euo pipefail
 # running and hold their capacity reservation with nothing left to reap them).
 #
 # What this destroys:
-#   - tofu-managed modules: karpenter, pypi-cache  (state keys
+#   - tofu-managed modules: karpenter  (state keys
 #     <cluster>/<module>/terraform.tfstate)
 #   - base / eks: VPC, EKS control plane, Harbor S3, IAM, KMS
 #     (state key <cluster>/base/terraform.tfstate)
 #
 # What this does NOT destroy:
-#   - k8s-only modules (arc, arc-runners*, buildkit, cache-enforcer,
-#     harbor-cache-recovery, logging, monitoring, nodepools*,
-#     zombie-cleanup) — these have no terraform state; the resources
+#   - k8s-only modules (arc, arc-runners*, buildkit, harbor-cache-recovery,
+#     logging, monitoring, nodepools*, zombie-cleanup) — these have no terraform state; the resources
 #     die with the EKS cluster.
 #   - Tofu state bucket and DynamoDB lock table (shared, intentionally
 #     preserved across recreations).
