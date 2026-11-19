@@ -1,0 +1,24 @@
+# One-shot Windows container CUDA smoke test (not applied by kustomization).
+#
+# Requests one directx.microsoft.com/display device from the WDDM plugin and
+# runs the CUDA deviceQuery sample inside a process-isolated Windows container.
+# Succeeds only if the container can actually reach the host GPU.
+#
+# Run manually: kubectl apply -f base/kubernetes/tests/windows-cuda-smoke-test.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: windows-cuda-smoke-test
+spec:
+  template:
+    spec:
+      containers:
+        - name: cuda-devicequery
+          image: "index.docker.io/tensorworks/example-cuda-devicequery:0.0.1"
+          resources:
+            limits:
+              directx.microsoft.com/display: 1
+      nodeSelector:
+        kubernetes.io/os: windows
+      restartPolicy: Never
+  backoffLimit: 0

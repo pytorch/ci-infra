@@ -10,6 +10,7 @@ resources:
   - storageclass-gp3.yaml
   - node-performance-tuning.yaml
   - nvidia-device-plugin.yaml
+  - directx-device-plugin-wddm.yaml
   - harbor-namespace.yaml
   - registry-mirror-config.yaml
   - algif-mitigation.yaml

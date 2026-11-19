@@ -1,0 +1,42 @@
+# TensorWorks DirectX device plugin (WDDM) for Windows GPU nodes.
+#
+# Registers directx.microsoft.com/display (WDDM display devices) so Windows
+# containers can share the host GPU via process isolation. Only the WDDM
+# variant is used: the MCDM (compute-only) plugin cannot expose the GPU to
+# process-isolated containers (validated in the Windows CI POC).
+#
+# nodeSelector is pinned to windows-build 10.0.26100 (Server 2025). The
+# upstream default is 10.0.20348 (Server 2022); bump it whenever the Windows
+# node OS build changes.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: device-plugin-wddm
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: device-plugin-wddm
+  template:
+    metadata:
+      labels:
+        app: device-plugin-wddm
+    spec:
+      nodeSelector:
+        kubernetes.io/os: windows
+        kubernetes.io/arch: amd64
+        node.kubernetes.io/windows-build: "10.0.26100"
+      securityContext:
+        windowsOptions:
+          hostProcess: true
+          runAsUserName: "NT AUTHORITY\\SYSTEM"
+      hostNetwork: true
+      containers:
+        - name: device-plugin-wddm
+          image: "index.docker.io/tensorworks/wddm-device-plugin:0.0.1"
+          imagePullPolicy: Always
+          # Allow 4 containers to mount each display device simultaneously,
+          # so multiple CI runner pods can share one GPU.
+          env:
+            - name: WDDM_DEVICE_PLUGIN_MULTITENANCY
+              value: "4"
