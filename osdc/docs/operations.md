@@ -81,8 +81,6 @@ just deploy-module meta-staging-aws-ue1 arc
 just deploy-module meta-staging-aws-ue1 nodepools
 just deploy-module meta-staging-aws-ue1 arc-runners
 just deploy-module meta-staging-aws-ue1 buildkit
-just deploy-module meta-staging-aws-ue1 pypi-cache
-just deploy-module meta-staging-aws-ue1 cache-enforcer
 just deploy-module meta-staging-aws-ue1 zombie-cleanup
 just deploy-module meta-staging-aws-ue1 harbor-cache-recovery
 just deploy-module meta-staging-aws-ue1 monitoring

@@ -47,7 +47,7 @@ data:
     # publishes no AAAA (verified 2026-09-29: `dig AAAA github.com` is empty) and this
     # cluster's CoreDNS carries no dns64 plugin, so an `ipv4=off` here resolves nothing
     # and 502s every fetch. The A answer egresses over the VPC CNI's IPv4 path, which is
-    # how task pods already clone public repos. Matches pypi-cache's nginx resolver.
+    # how task pods already clone public repos.
     resolver ${GIT_PROXY_RESOLVER} valid=30s;
 
     map $uri $repo_allowed {

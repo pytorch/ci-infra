@@ -224,7 +224,7 @@ class TestPodMatchesNode(unittest.TestCase):
 
     def test_ignored_startup_taint(self):
         """Pod with no tolerations still matches node carrying OSDC startup taint."""
-        taint = make_taint(key="node-init.osdc.io/cache-enforcer", value="true", effect="NoSchedule")
+        taint = make_taint(key="node-init.osdc.io/registry-mirror", value="true", effect="NoSchedule")
         pod = make_pod(tolerations=None)
         node = make_node_state(node_taints=[taint])
         self.assertTrue(_pod_matches_node(pod, node))
@@ -360,7 +360,7 @@ class TestPodMatchesNodeMultipleIgnoredTaintsCheckPending(unittest.TestCase):
         cfg = make_config()
         compactor_taint = make_taint(key=cfg.taint_key, value="true", effect="NoSchedule")
         karpenter_taint = make_taint(key="karpenter.sh/unregistered", value="true", effect="NoExecute")
-        startup_taint = make_taint(key="node-init.osdc.io/cache-enforcer", value="true", effect="NoSchedule")
+        startup_taint = make_taint(key="node-init.osdc.io/registry-mirror", value="true", effect="NoSchedule")
         ns = make_node_state(
             name="node-a",
             is_tainted=True,

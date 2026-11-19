@@ -56,13 +56,13 @@ spec:
                     values: __MULTI_GPU_COUNTS__
 
       # Schedule before the node-init.osdc.io/* taints clear, so the mount precedes
-      # runner pods. operator:Exists avoids a deadlock from missing one (cf. cache-enforcer).
+      # runner pods. operator:Exists avoids a deadlock from missing one.
       tolerations:
         - operator: Exists
 
       # Make the host /mnt/hf_cache an rshared mount point before rclone binds it: a
       # plain hostPath dir gives Bidirectional no host peer, so the FUSE never reaches
-      # job pods (they see an empty dir). nsenter-into-host: cf. cache-enforcer.
+      # job pods (they see an empty dir). nsenter-into-host.
       initContainers:
         - name: prepare-host-mount
           image: __TAINT_REMOVER_IMAGE__

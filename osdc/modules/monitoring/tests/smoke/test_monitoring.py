@@ -31,7 +31,6 @@ EXPECTED_SERVICE_MONITORS: dict[str, str | None] = {
     "karpenter": "karpenter",
     "keda": "keda",
     "node-compactor": None,
-    "pypi-cache": "pypi-cache",
     "dcgm-exporter": None,
 }
 
@@ -313,8 +312,6 @@ SCRAPE_TARGETS: dict[str, tuple[str, str | None]] = {
     # harbor: skipped — Harbor exporter Service name varies by chart version
     # dcgm-exporter: skipped — only runs on GPU nodes which may not exist
     # arc-listeners: skipped — ephemeral pods, too flaky
-    # pypi-cache: skipped — multiple Services per CUDA slug (pypi-cache-cpu, pypi-cache-cu121, etc.),
-    #   job label is unpredictable. ServiceMonitor existence is verified in TestServiceMonitors.
 }
 
 # kube-prometheus-stack built-in targets (always present when monitoring is enabled).

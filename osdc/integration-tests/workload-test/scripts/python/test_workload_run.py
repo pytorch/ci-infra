@@ -1030,7 +1030,7 @@ class TestMain:
             with pytest.raises(SystemExit):
                 main()
 
-        mock_instrument.assert_called_once_with(canary, "cbr-", pypi_cache_enabled=False)
+        mock_instrument.assert_called_once_with(canary, "cbr-")
 
     @patch("workload_run.close_pr")
     @patch("workload_run.print_workload_report")
@@ -1267,7 +1267,7 @@ class TestMain:
                 main()
 
         # instrument_workflows should receive "" as prefix
-        mock_instrument.assert_called_once_with(Path("/tmp/canary"), "", pypi_cache_enabled=False)
+        mock_instrument.assert_called_once_with(Path("/tmp/canary"), "")
 
 
 # ── Constants ───────────────────────────────────────────────────────────

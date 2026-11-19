@@ -6,7 +6,7 @@ This file is the canonical project guidance for any coding agent (Claude, Codex,
 
 ## What This Is
 
-Modular Kubernetes infrastructure platform on AWS EKS. The `modules/eks/` module provisions the cluster (VPC, EKS, Harbor S3/IAM via tofu); `base/` layers cluster-wide k8s resources on top (Harbor Helm chart, NVIDIA device plugin, image-cache-janitor, node tuning, runner-base image). Optional `modules/` (ARC, runners, BuildKit, nodepools, pypi-cache, monitoring, logging, etc.) deploy on top. One codebase drives multiple clusters across regions via `clusters.yaml`.
+Modular Kubernetes infrastructure platform on AWS EKS. The `modules/eks/` module provisions the cluster (VPC, EKS, Harbor S3/IAM via tofu); `base/` layers cluster-wide k8s resources on top (Harbor Helm chart, NVIDIA device plugin, image-cache-janitor, node tuning, runner-base image). Optional `modules/` (ARC, runners, BuildKit, nodepools, monitoring, logging, etc.) deploy on top. One codebase drives multiple clusters across regions via `clusters.yaml`.
 
 Working directory: `osdc/`. Run all commands from here.
 
@@ -56,7 +56,6 @@ Skills live under `.claude/skills/`. Each one is a `SKILL.md` file with deep not
 | [`.claude/skills/osdc-observability/SKILL.md`](.claude/skills/osdc-observability/SKILL.md) | Touching monitoring, logging, Alloy. Querying logs or metrics. |
 | [`.claude/skills/osdc-cli-debugging/SKILL.md`](.claude/skills/osdc-cli-debugging/SKILL.md) | Debugging the cluster. Running `kubectl`, `aws`, `helm`, `tofu`. |
 | [`.claude/skills/osdc-harbor/SKILL.md`](.claude/skills/osdc-harbor/SKILL.md) | Editing Harbor or container registry config. |
-| [`.claude/skills/osdc-pypi-cache/SKILL.md`](.claude/skills/osdc-pypi-cache/SKILL.md) | Editing pypi-cache. Debugging pip install failures on runners. |
 | [`.claude/skills/osdc-nodelocaldns/SKILL.md`](.claude/skills/osdc-nodelocaldns/SKILL.md) | Editing NodeLocal DNSCache. Debugging DNS on runner nodes. |
 
 ## Docs Index
@@ -71,7 +70,7 @@ Reference documentation in `docs/`:
 | `docs/observability.md` | Three-Alloy observability architecture — monitoring + logging pipelines to Grafana Cloud |
 | `docs/observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |
 | `docs/operations.md` | Operational prerequisites — AWS CLI, mise, working directory setup for cluster management |
-| `docs/ipv6-cluster-recreation.md` | Operator runbook for destroying and recreating an OSDC cluster as IPv6-only (accepted data losses: Harbor S3, EFS pypi-cache) |
+| `docs/ipv6-cluster-recreation.md` | Operator runbook for destroying and recreating an OSDC cluster as IPv6-only (accepted data loss: Harbor S3) |
 | `docs/s3-gateway-endpoint.md` | Why every VPC needs an S3 gateway endpoint — NAT data-processing analysis, the Harbor redirect interaction, and the inline-route Terraform gotcha |
 | `docs/loki_query.md` | CLI queries against Grafana Cloud Loki when kubectl logs is unavailable |
 | `docs/mimir_query.md` | CLI queries against Grafana Cloud Mimir (Prometheus metrics, no in-cluster Prometheus) |
@@ -81,7 +80,6 @@ Reference documentation in `docs/`:
 | `docs/node-warmup-and-scheduling-gates.md` | Full node initialization sequence — taints, DaemonSets, init containers before job scheduling |
 | `docs/cross-region-ecr-pulls.md` | Private ECR pull-through via Harbor — why off-region clusters miss the S3 gateway endpoint, and the design that routes those pulls through the local cache |
 | `docs/arc-fork-build-deploy.md` | ARC fork (jeanschmidt/actions-runner-controller) build/release workflow and chart publishing |
-| `docs/pypi-package-cache.md` | PyPI wheel cache architecture, slug naming, S3 layout, runner integration |
 | `docs/h100-fabric-handles-imex-channels.md` | Enabling CUDA fabric handles (`CU_MEM_HANDLE_TYPE_FABRIC`) on H100 runners — IMEX channel creation, the gated fabric runner, and verification |
 | `docs/dcgm-exporter-memory-tuning.md` | Why dcgm-exporter OOMs on high-vCPU GPU nodes (Go 1.24 GOMAXPROCS defaults to host vCPU count) and the GOMAXPROCS=2 fix |
 | `docs/nvidia-driver-ahead-of-aws.md` | Where the GPU driver comes from (stock EKS NVIDIA AMI, R580), why CUDA 13.4 wants R615, and the options for moving ahead of AWS's schedule |
