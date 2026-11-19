@@ -19,7 +19,7 @@ description: >
 The module deploys per-cluster:
 
 1. **`pypi-cache-{slug}` Deployments** — one per CUDA slug (`cpu`, `cu126`, `cu128`, `cu130`).
-   Each pod runs 3 containers: `nginx` (proxy + cache, `docker.io/nginxinc/nginx-unprivileged:1.27-alpine`),
+   Each pod runs 3 containers: `nginx` (proxy + cache, `docker.io/nginx/nginx-unprivileged:1.31.9-alpine`),
    `pypiserver` (`pypiserver/pypiserver:v2.4.1`, local wheel index), and
    `nginx-exporter` (`docker.io/nginx/nginx-prometheus-exporter:1.4.1` on `:9113/metrics`).
    Pods run as `serviceAccountName: pypi-cache` with `runAsNonRoot: true, runAsUser: 65534`,

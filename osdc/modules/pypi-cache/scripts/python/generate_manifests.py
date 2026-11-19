@@ -50,7 +50,7 @@ DEFAULTS = {
     "server_port": 8080,
     "internal_port": 8081,
     "image": "pypiserver/pypiserver:v2.4.1",
-    "nginx_image": "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
+    "nginx_image": "docker.io/nginx/nginx-unprivileged:1.31.9-alpine",
     "storage_request": "1Ti",
     "replicas": 2,
     "workers": 24,

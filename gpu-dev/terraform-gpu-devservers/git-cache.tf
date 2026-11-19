@@ -136,7 +136,7 @@ resource "kubernetes_deployment" "git_cache" {
         # HTTP server: serves pre-packaged tarballs (much faster than git-daemon)
         container {
           name              = "http-server"
-          image             = "nginx:alpine"
+          image             = "nginx:1.31.9-alpine"
           image_pull_policy = "IfNotPresent"
 
           command = ["/bin/sh", "-c"]

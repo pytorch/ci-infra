@@ -42,7 +42,7 @@ A separate Deployment + ClusterIP Service is generated for each entry in
 
 Each pod runs three containers:
 
-- **nginx** (`docker.io/nginxinc/nginx-unprivileged:1.27-alpine`) on port 8080 —
+- **nginx** (`docker.io/nginx/nginx-unprivileged:1.31.9-alpine`) on port 8080 —
   the only port exposed via Service. Runs as caching reverse proxy and njs index
   merger.
 - **pypiserver** (`pypiserver/pypiserver:v2.4.1`) on localhost port 8081 with
@@ -441,7 +441,7 @@ slow pypiserver does not flap readiness.
 The `docker/` directory contains a Dockerfile that declares
 `ENTRYPOINT ["python3", "/scripts/orchestrator.py"]` — but `orchestrator.py`
 does not exist anywhere in the repo, and the deployed images are upstream
-`pypiserver/pypiserver:v2.4.1` and `nginxinc/nginx-unprivileged:1.27-alpine`.
+`pypiserver/pypiserver:v2.4.1` and `nginx/nginx-unprivileged:1.31.9-alpine`.
 The Dockerfile is a vestige of an earlier architecture and is not built or
 referenced by the deploy path.
 

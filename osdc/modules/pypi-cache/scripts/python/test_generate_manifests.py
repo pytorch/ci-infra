@@ -290,7 +290,7 @@ class TestLoadConfig:
         assert config["internal_port"] == 8081
         assert config["server_port"] == 8080
         assert config["workers"] == 24
-        assert config["nginx_image"] == "docker.io/nginxinc/nginx-unprivileged:1.27-alpine"
+        assert config["nginx_image"] == "docker.io/nginx/nginx-unprivileged:1.31.9-alpine"
         assert config["nginx"]["cpu"] == 4
         assert config["nginx"]["memory_gi"] == 64
         assert config["nginx"]["cache_size"] == "30Gi"
@@ -432,7 +432,7 @@ class TestGenerateDeployments:
         docs = self._parse_docs(result)
         for doc in docs:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
-            assert nginx["image"] == "docker.io/nginxinc/nginx-unprivileged:1.27-alpine"
+            assert nginx["image"] == "docker.io/nginx/nginx-unprivileged:1.31.9-alpine"
 
     def test_nginx_container_port(self):
         """nginx container listens on port 8080 (named 'http')."""
