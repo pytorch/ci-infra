@@ -33,7 +33,9 @@ spec:
       hostNetwork: true
       containers:
         - name: device-plugin-wddm
-          image: "index.docker.io/tensorworks/wddm-device-plugin:0.0.1"
+          # class:// workaround fork (Server 2025 HCS DeviceInstanceID regression).
+          # Built from shuyingbanbo/Kubernetes-Windows-GPU-Device-Plugin@class-guid-workaround.
+          image: "576436418915.dkr.ecr.us-east-1.amazonaws.com/wddm-device-plugin:0.0.1-classfix2"
           imagePullPolicy: Always
           # Allow 4 containers to mount each display device simultaneously,
           # so multiple CI runner pods can share one GPU.

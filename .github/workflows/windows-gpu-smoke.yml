@@ -1,0 +1,42 @@
+name: Windows GPU smoke test
+
+# Runs a fixed CUDA deviceQuery smoke test against the windows-gpu-test EKS
+# cluster to verify Windows containers can reach the GPU (process-isolated CUDA).
+#
+# Manual trigger for now — the cluster (and its ~$400/month GPU node) must be
+# running, so this is not wired into PR/merge queues.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  windows-gpu-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # OIDC role in the windows-poc account (576436418915) that grants
+          # eks:DescribeCluster + kubectl access to windows-gpu-test.
+          role-to-assume: arn:aws:iam::${{ secrets.WINDOWS_POC_AWS_ACC_ID }}:role/${{ secrets.WINDOWS_POC_AWS_ROLE }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name windows-gpu-test --region us-east-1
+
+      - name: Deploy device plugin (idempotent)
+        run: kubectl apply -f osdc/base/kubernetes/directx-device-plugin-wddm.yaml
+
+      - name: Run CUDA smoke test
+        run: |
+          kubectl delete job windows-cuda-smoke-test --ignore-not-found
+          kubectl apply -f osdc/base/kubernetes/tests/windows-cuda-smoke-test.yaml
+          kubectl wait --for=condition=complete job/windows-cuda-smoke-test --timeout=300s
+          kubectl logs job/windows-cuda-smoke-test | tee /dev/stderr | grep -q "Result = PASS"
