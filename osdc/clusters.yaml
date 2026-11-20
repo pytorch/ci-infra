@@ -657,9 +657,6 @@ clusters:
 
   windows-gpu-test:
     # Windows POC cluster: IPv4 (Windows containers/CNI don't support IPv6-only).
-    # Minimal Linux base node hosts Harbor + system components; the Windows GPU
-    # node group lands in a follow-up (needs Windows AMI + WDDM driver bootstrap
-    # in modules/eks).
     region: us-east-1
     cluster_name: windows-gpu-test
     state_bucket: lf-osdc-tfstate-win-gpu-test
