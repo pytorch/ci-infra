@@ -1,0 +1,83 @@
+name: CD - Release new version
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+      # The k8s package's prebuild cross-compiles the in-pod RPC server to
+      # static musl binaries and embeds them, so the release build needs the
+      # Rust toolchain and musl targets just like the CI build does.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/k8s/rpc-server
+      - name: Install dependencies
+        run: npm install
+
+      - name: Bootstrap the packages
+        run: npm run bootstrap
+
+      - name: Build packages
+        run: npm run build-all
+
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        id: releaseVersion
+        with:
+          result-encoding: string
+          script: |
+            const fs = require('fs');
+            return require('./package.json').version
+
+      - name: Zip up releases
+        run: |
+          zip -r -j actions-runner-hooks-docker-${{ steps.releaseVersion.outputs.result }}.zip packages/docker/dist
+          zip -r -j actions-runner-hooks-k8s-${{ steps.releaseVersion.outputs.result }}.zip packages/k8s/dist
+
+      - name: Calculate SHA
+        id: sha
+        shell: bash
+        run: |
+          sha_docker=$(sha256sum actions-runner-hooks-docker-${{ steps.releaseVersion.outputs.result }}.zip | awk '{print $1}')
+          echo "Docker SHA: $sha_docker"
+          echo "docker-sha=$sha_docker" >> $GITHUB_OUTPUT
+          sha_k8s=$(sha256sum actions-runner-hooks-k8s-${{ steps.releaseVersion.outputs.result }}.zip | awk '{print $1}')
+          echo "K8s SHA: $sha_k8s"
+          echo "k8s-sha=$sha_k8s" >> $GITHUB_OUTPUT
+
+      - name: Create release notes
+        id: releaseNotes
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('fs');
+            var releaseNotes = fs.readFileSync('${{ github.workspace }}/releaseNotes.md', 'utf8').replace(/<HOOK_VERSION>/g, '${{ steps.releaseVersion.outputs.result }}')
+            releaseNotes = releaseNotes.replace(/<DOCKER_SHA>/g, '${{ steps.sha.outputs.docker-sha }}')
+            releaseNotes = releaseNotes.replace(/<K8S_SHA>/g, '${{ steps.sha.outputs.k8s-sha }}')
+            console.log(releaseNotes)
+            fs.writeFileSync('${{ github.workspace }}/finalReleaseNotes.md', releaseNotes);
+
+      - name: Create ${{ steps.releaseVersion.outputs.result }} Hook Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v${{ steps.releaseVersion.outputs.result }} \
+            --title "v${{ steps.releaseVersion.outputs.result }}" \
+            --repo ${{ github.repository }} \
+            --notes-file ${{ github.workspace }}/finalReleaseNotes.md \
+            --latest \
+            ${{ github.workspace }}/actions-runner-hooks-k8s-${{ steps.releaseVersion.outputs.result }}.zip \
+            ${{ github.workspace }}/actions-runner-hooks-docker-${{ steps.releaseVersion.outputs.result }}.zip

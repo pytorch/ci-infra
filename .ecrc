@@ -1,6 +1,7 @@
 {
   "Exclude": [
     "osdc/",
-    "gpu-dev/"
+    "gpu-dev/",
+    "runner-container-hooks/"
   ]
 }
