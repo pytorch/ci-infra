@@ -1,7 +1,7 @@
 # ARC runner definition: l-x86aavx512-46-160
 # Instance type: m8a.12xlarge (pool: m8a-12xl)
-# Replaces l-x86aavx512-125-463 for inductor-perf-test-nightly-x86-zen.
-# Those jobs do not scale to 125 cores. 46 vCPU / 160 GiB is one pod on this
+# Replaces mt-l-x86aavx512-125-463. That AMD runner is the only label this
+# change retires. Those jobs do not scale to 125 cores. 46 vCPU / 160 GiB is one pod on this
 # 48 vCPU / 192 GiB node after kubelet and ENI max-pod reservation (758 pods).
 runner:
   name: l-x86aavx512-46-160

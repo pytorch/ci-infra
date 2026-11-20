@@ -1,6 +1,6 @@
 # ARC runner definition: l-x86aavx512-8-64
 # Instance type: r8a.8xlarge (pool: r8a-8xl)
-# Replaces l-x86iamx-8-64 for the inductor CPU jobs that move off Intel AMX.
+# Runs in parallel with l-x86iamx-8-64. It does not replace that AMX runner.
 # Not named l-x86iavx512-8-64: that label is the Genoa r7a.16xlarge runner.
 # Three of these 8 vCPU / 64 GiB pods fit on one 32 vCPU / 256 GiB node.
 runner:

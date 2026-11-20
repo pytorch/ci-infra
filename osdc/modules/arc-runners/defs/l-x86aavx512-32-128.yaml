@@ -1,6 +1,6 @@
 # ARC runner definition: l-x86aavx512-32-128
 # Instance type: m8a.12xlarge (pool: m8a-12xl)
-# Replaces l-x86iamx-32-128 for the inductor jobs that move off Intel AMX.
+# Runs in parallel with l-x86iamx-32-128. It does not replace that AMX runner.
 # One pod fits on the 48 vCPU / 192 GiB node.
 runner:
   name: l-x86aavx512-32-128
