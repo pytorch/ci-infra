@@ -588,15 +588,23 @@ locals {
   )
 }
 
-# Windows GPU node launch template. When windows_ami_id is set, the AMI already
-# has the NVIDIA WDDM 595.97 driver baked in (bake-windows-gpu-ami.sh), so user
-# data is empty and scale-up skips the multi-minute driver download+install.
+# Windows GPU node launch template.
+# - Baked AMI (windows_ami_id set): the AMI already has the NVIDIA WDDM 595.97
+#   driver installed, but with ami_type = "CUSTOM" EKS no longer injects the
+#   bootstrap script, so user data must call Start-EKSBootstrap.ps1 explicitly.
+# - Stock AMI (windows_ami_id empty): EKS injects the bootstrap itself; user data
+#   only installs the driver (the ~700MB download this baked-AMI path avoids).
 resource "aws_launch_template" "windows" {
   count = var.enable_windows_node_group ? 1 : 0
 
   name_prefix = "${var.cluster_name}-windows-"
   image_id    = var.windows_ami_id != "" ? var.windows_ami_id : null
-  user_data   = var.windows_ami_id != "" ? "" : local.windows_driver_user_data
+  user_data = var.windows_ami_id != "" ? base64encode(templatefile("${path.module}/user-data-windows.ps1.tpl", {
+    cluster_name     = aws_eks_cluster.this.name
+    cluster_endpoint = aws_eks_cluster.this.endpoint
+    cluster_ca       = aws_eks_cluster.this.certificate_authority[0].data
+    dns_cluster_ip   = cidrhost(aws_eks_cluster.this.kubernetes_network_config[0].service_ipv4_cidr, 10)
+  })) : local.windows_driver_user_data
 
   block_device_mappings {
     device_name = "/dev/sda1"
