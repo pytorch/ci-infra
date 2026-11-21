@@ -228,6 +228,90 @@ class TestEKSIPv6Config:
 
 
 # ============================================================================
+# VPC Subnets
+# ============================================================================
+
+
+class TestVPCSubnets:
+    """Verify the private subnets match clusters.yaml and EKS stays on the first three AZs.
+
+    base.availability_zones (optional) pins zone IDs and CIDRs; without it the
+    VPC uses the first three AZs the region lists. The EKS cluster and base
+    node group use at most the first three private subnets, because EKS can't
+    move either to new AZs. Later subnets carry Karpenter nodes only.
+    """
+
+    @pytest.fixture(scope="class")
+    def private_subnets(self, eks_cluster_info, cluster_config):
+        region = cluster_config["cluster"].get("region", "us-west-2")
+        vpc_id = eks_cluster_info["cluster"]["resourcesVpcConfig"]["vpcId"]
+        result = run_aws(
+            [
+                "ec2",
+                "describe-subnets",
+                "--region",
+                region,
+                "--filters",
+                f"Name=vpc-id,Values={vpc_id}",
+                "Name=tag:Name,Values=*-private-*",
+            ]
+        )
+        subnets = result.get("Subnets", [])
+        assert subnets, f"No private subnets found in {vpc_id}"
+        return subnets
+
+    def test_private_subnets_match_clusters_yaml(self, private_subnets, resolve_config):
+        configured = resolve_config("base.availability_zones")
+        actual = sorted((s["AvailabilityZoneId"], s["CidrBlock"]) for s in private_subnets)
+        if configured:
+            expected = sorted((az["zone_id"], az["private_cidr"]) for az in configured)
+            assert actual == expected, (
+                f"Private subnets (zone ID, CIDR) {actual} do not match base.availability_zones {expected}. "
+                f"Has the clusters.yaml change been applied?"
+            )
+        else:
+            zone_ids = [zone_id for zone_id, _ in actual]
+            assert 2 <= len(zone_ids) <= 3, f"Expected 2-3 private subnets by default, found {actual}"
+            assert len(set(zone_ids)) == len(zone_ids), f"Two private subnets share an AZ: {actual}"
+
+    def test_cluster_uses_first_three_azs(self, eks_cluster_info, private_subnets, resolve_config):
+        zone_by_subnet = {s["SubnetId"]: s["AvailabilityZoneId"] for s in private_subnets}
+        cluster_subnets = eks_cluster_info["cluster"]["resourcesVpcConfig"]["subnetIds"]
+        unknown = [s for s in cluster_subnets if s not in zone_by_subnet]
+        assert not unknown, f"EKS cluster subnets {unknown} are not private subnets of the cluster VPC"
+
+        configured = resolve_config("base.availability_zones")
+        # Without base.availability_zones every private subnet is a cluster subnet.
+        expected_ids = [az["zone_id"] for az in configured[:3]] if configured else zone_by_subnet.values()
+        expected = sorted(expected_ids)
+        actual = sorted(zone_by_subnet[s] for s in cluster_subnets)
+        assert actual == expected, (
+            f"EKS cluster subnets are in AZs {actual}, expected {expected}. The cluster must stay on "
+            f"the first three AZs; base.availability_zones entries past the third are for Karpenter only."
+        )
+
+    def test_base_node_group_within_cluster_subnets(self, eks_cluster_info, cluster_config):
+        cluster_name = cluster_config["cluster"]["cluster_name"]
+        region = cluster_config["cluster"].get("region", "us-west-2")
+        result = run_aws(
+            [
+                "eks",
+                "describe-nodegroup",
+                "--cluster-name",
+                cluster_name,
+                "--nodegroup-name",
+                f"{cluster_name}-base-nodes",
+                "--region",
+                region,
+            ]
+        )
+        node_group_subnets = set(result["nodegroup"]["subnets"])
+        cluster_subnets = set(eks_cluster_info["cluster"]["resourcesVpcConfig"]["subnetIds"])
+        extra = sorted(node_group_subnets - cluster_subnets)
+        assert not extra, f"Base node group uses subnets {extra} that are not EKS cluster subnets"
+
+
+# ============================================================================
 # VPC Endpoints
 # ============================================================================
 
@@ -348,7 +432,7 @@ class TestECRImages:
 
 
 class TestCoreDNSTopology:
-    """Verify CoreDNS replicaCount, topology spread, autoscaling, and PDB.
+    """Verify CoreDNS replicaCount, base-node pinning, topology spread, autoscaling, and PDB.
 
     Pinned via aws_eks_addon.coredns configuration_values in
     modules/eks/terraform/modules/eks/main.tf. Replica count is per-cluster
@@ -384,6 +468,14 @@ class TestCoreDNSTopology:
             assert rule.get("labelSelector", {}).get("matchLabels", {}).get("k8s-app") == "kube-dns", (
                 f"CoreDNS zone spread labelSelector mismatch. Constraint: {rule}"
             )
+
+    def test_pinned_to_base_nodes(self):
+        """A hard nodeSelector keeps zones with only Karpenter nodes out of the zone spread."""
+        deploy = run_kubectl(["get", "deployment", "coredns"], namespace="kube-system")
+        selector = deploy.get("spec", {}).get("template", {}).get("spec", {}).get("nodeSelector", {})
+        assert selector.get("role") == "base-infrastructure", (
+            f"CoreDNS Deployment nodeSelector is {selector}, expected role=base-infrastructure"
+        )
 
     def test_hostname_topology_spread_is_soft(self, resolve_config):
         """Soft hostname spread (ScheduleAnyway) keeps replicas off the same node when possible."""

@@ -258,6 +258,22 @@ cache-enforcer depends on Harbor (base) and pypi-cache module. Without pypi-cach
   ```
   Consumed by `scripts/cluster-config.py` into tofu vars. Without this, no IAM role gets cluster-admin via access entries.
 
+**Base: availability zones** (optional, `base.availability_zones`). Without it the VPC uses the first three AZs the region lists, with a /18 private and a /24 public subnet each. With it, the VPC uses exactly these zone IDs and CIDRs:
+```yaml
+base:
+  vpc_cidr: "10.12.0.0/16"
+  availability_zones:
+    - zone_id: use1-az6        # zone IDs, not names: names differ per account
+      private_cidr: "10.12.0.0/18"
+      public_cidr: "10.12.192.0/24"
+    - ...
+```
+- **Append only.** Entries index count-based subnets, NAT gateways, EIPs and route tables. Reordering or removing one replaces those resources.
+- **First three = EKS AZs.** The EKS cluster and base node group use only the first three private subnets. EKS can't move a node group to new subnets, and cluster subnets must stay in their original AZs. Further AZs get Karpenter nodes only, through the `karpenter.sh/discovery` subnet tag.
+- **Moving an existing cluster.** List its current AZs first, with the CIDRs it already has. For a /16 those are `cidrsubnet(vpc, 2, i)` and `cidrsubnet(vpc, 8, 192+i)`.
+- **Each new AZ costs EIPs.** It adds a NAT gateway with 1 + `nat_secondary_eip_count` EIPs (8 by default). Check the account's EIP quota first.
+- **Validation.** `cluster-config.py` checks the keys, duplicate IDs, CIDR containment and overlaps. Tofu checks that each zone ID exists in the region.
+
 **Karpenter:**
 ```yaml
 karpenter:

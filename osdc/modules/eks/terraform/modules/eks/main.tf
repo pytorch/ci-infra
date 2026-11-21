@@ -217,10 +217,17 @@ resource "aws_eks_addon" "coredns" {
   # - Required so CoreDNS pods land on the CriticalAddonsOnly-tainted base nodes.
   #   Setting tolerations REPLACES (does not merge with) the addon default —
   #   the addon's default tolerations include this one, so we preserve compat.
+  # - nodeSelector role=base-infrastructure (hard). Without it the zone spread
+  #   counts every zone with a node, including zones that only have tainted
+  #   Karpenter nodes (taints are ignored by default), as a zone with zero
+  #   CoreDNS pods. Same fix as Harbor (base/helm/harbor/values.yaml).
   configuration_values = jsonencode({
     replicaCount = var.coredns_replicas
     autoScaling = {
       enabled = false
+    }
+    nodeSelector = {
+      role = "base-infrastructure"
     }
     tolerations = [
       {

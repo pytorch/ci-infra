@@ -69,6 +69,14 @@ FAKE_CONFIG = {
 }
 
 
+# base.availability_zones entries for a 10.12.0.0/16 VPC.
+THREE_AZS = [
+    {"zone_id": "use1-az6", "private_cidr": "10.12.0.0/18", "public_cidr": "10.12.192.0/24"},
+    {"zone_id": "use1-az1", "private_cidr": "10.12.64.0/18", "public_cidr": "10.12.193.0/24"},
+    {"zone_id": "use1-az4", "private_cidr": "10.12.208.0/20", "public_cidr": "10.12.195.0/24"},
+]
+
+
 @pytest.fixture
 def fake_clusters_yaml(tmp_path):
     """Write a fake clusters.yaml and return its path."""
@@ -283,6 +291,39 @@ class TestTfvars:
         out = capsys.readouterr().out.strip()
         assert '-var="cluster_log_types="' in out
 
+    def test_availability_zones_absent_by_default(self, capsys):
+        """Without base.availability_zones, tofu keeps its first-three-AZs default."""
+        cluster_config.tfvars("c", {"cluster_name": "c", "region": "r"}, {})
+        out = capsys.readouterr().out.strip()
+        for key in ("availability_zone_ids", "private_subnet_cidrs", "public_subnet_cidrs"):
+            assert key not in out
+
+    def test_availability_zones_emitted_in_order(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "base": {"vpc_cidr": "10.12.0.0/16", "availability_zones": THREE_AZS},
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="availability_zone_ids=use1-az6,use1-az1,use1-az4"' in out
+        assert '-var="private_subnet_cidrs=10.12.0.0/18,10.12.64.0/18,10.12.208.0/20"' in out
+        assert '-var="public_subnet_cidrs=10.12.192.0/24,10.12.193.0/24,10.12.195.0/24"' in out
+
+    def test_malformed_availability_zones_exits_1(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "base": {"vpc_cidr": "10.12.0.0/16", "availability_zones": THREE_AZS[:1]},
+        }
+        with pytest.raises(SystemExit) as exc_info:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "cluster 'c'" in captured.err
+        assert "at least 2 AZs" in captured.err
+
     def test_no_base_key(self, capsys):
         """Cluster with no 'base' key should use defaults for everything."""
         cluster_cfg = {
@@ -292,6 +333,56 @@ class TestTfvars:
         cluster_config.tfvars("minimal", cluster_cfg, {"vpc_cidr": "10.50.0.0/16"})
         out = capsys.readouterr().out.strip()
         assert '-var="vpc_cidr=10.50.0.0/16"' in out
+
+
+# ============================================================================
+# availability_zone_vars() tests
+# ============================================================================
+
+
+class TestAvailabilityZoneVars:
+    """Tests for availability_zone_vars() validation."""
+
+    def test_returns_comma_separated_vars(self):
+        result = cluster_config.availability_zone_vars(THREE_AZS[:2], "10.12.0.0/16")
+        assert result == {
+            "availability_zone_ids": "use1-az6,use1-az1",
+            "private_subnet_cidrs": "10.12.0.0/18,10.12.64.0/18",
+            "public_subnet_cidrs": "10.12.192.0/24,10.12.193.0/24",
+        }
+
+    @pytest.mark.parametrize(
+        ("azs", "message"),
+        [
+            pytest.param("use1-az6", "at least 2 AZs", id="not-a-list"),
+            pytest.param(THREE_AZS[:1], "at least 2 AZs", id="one-az"),
+            pytest.param([*THREE_AZS[:1], "use1-az1"], r"\[1\] must set", id="entry-not-a-dict"),
+            pytest.param(
+                [*THREE_AZS[:1], {"zone_id": "use1-az1", "private_cidr": "10.12.64.0/18"}],
+                r"\[1\] must set zone_id, private_cidr, public_cidr",
+                id="missing-key",
+            ),
+            pytest.param([THREE_AZS[0], {**THREE_AZS[1], "zone_id": "use1-az6"}], "duplicate zone IDs", id="dup-id"),
+            pytest.param(
+                [THREE_AZS[0], {**THREE_AZS[1], "public_cidr": "10.13.0.0/24"}],
+                "use1-az1 public_cidr 10.13.0.0/24 is outside vpc_cidr 10.12.0.0/16",
+                id="outside-vpc",
+            ),
+            pytest.param(
+                [THREE_AZS[0], {**THREE_AZS[1], "private_cidr": "10.12.32.0/20"}],
+                "use1-az1 private_cidr 10.12.32.0/20 overlaps 10.12.0.0/18",
+                id="overlap",
+            ),
+            pytest.param(
+                [THREE_AZS[0], {**THREE_AZS[1], "private_cidr": "10.12.64.1/18"}],
+                "host bits set",
+                id="host-bits",
+            ),
+        ],
+    )
+    def test_rejects_malformed(self, azs, message):
+        with pytest.raises(ValueError, match=message):
+            cluster_config.availability_zone_vars(azs, "10.12.0.0/16")
 
 
 # ============================================================================

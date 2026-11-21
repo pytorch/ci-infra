@@ -17,6 +17,29 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
+# --- Explicit AZ layout (clusters.yaml base.availability_zones) ---
+# Empty = the first three AZs the region lists, with the default subnet CIDRs.
+# Append only: entries index count-based VPC resources, so reordering or
+# removing one replaces subnets, NAT gateways and their EIPs.
+
+variable "availability_zone_ids" {
+  description = "Comma-separated AZ IDs (e.g. use1-az6,use1-az1), in order. The first three are the EKS cluster's AZs."
+  type        = string
+  default     = ""
+}
+
+variable "private_subnet_cidrs" {
+  description = "Comma-separated private subnet CIDRs, one per availability_zone_ids entry."
+  type        = string
+  default     = ""
+}
+
+variable "public_subnet_cidrs" {
+  description = "Comma-separated public subnet CIDRs, one per availability_zone_ids entry."
+  type        = string
+  default     = ""
+}
+
 variable "single_nat_gateway" {
   description = "Use a single NAT gateway (cost saving) vs one per AZ (HA)"
   type        = bool
@@ -96,7 +119,7 @@ variable "cluster_log_types" {
 }
 
 variable "base_node_subnet_count" {
-  description = "Pin the base node group to the first N private subnets (AZs). 0 = all subnets. 1 keeps a single base node and its zonal EBS PVCs (Harbor) in one AZ."
+  description = "Pin the base node group to the first N private subnets (AZs). 0 = all EKS subnets (at most the first three AZs). 1 keeps a single base node and its zonal EBS PVCs (Harbor) in one AZ."
   type        = number
   default     = 0
 

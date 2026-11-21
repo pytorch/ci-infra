@@ -72,6 +72,35 @@ class TestKarpenterAWS:
         except Exception as exc:
             pytest.fail(f"SQS queue '{queue_name}' not found: {exc}")
 
+    def test_private_subnets_tagged_for_discovery(self, cluster_config: dict) -> None:
+        """Every private subnet is a Karpenter subnet, including AZs past the EKS cluster's three."""
+        cluster_name = cluster_config["cluster"]["cluster_name"]
+        region = cluster_config["cluster"]["region"]
+        cluster = run_aws(["eks", "describe-cluster", "--name", cluster_name, "--region", region])
+        vpc_id = cluster["cluster"]["resourcesVpcConfig"]["vpcId"]
+        result = run_aws(
+            [
+                "ec2",
+                "describe-subnets",
+                "--region",
+                region,
+                "--filters",
+                f"Name=vpc-id,Values={vpc_id}",
+                "Name=tag:Name,Values=*-private-*",
+            ]
+        )
+        subnets = result.get("Subnets", [])
+        assert subnets, f"No private subnets found in {vpc_id}"
+        untagged = [
+            f"{s['SubnetId']} ({s['AvailabilityZone']})"
+            for s in subnets
+            if {t["Key"]: t["Value"] for t in s.get("Tags", [])}.get("karpenter.sh/discovery") != cluster_name
+        ]
+        assert not untagged, (
+            f"Private subnets missing karpenter.sh/discovery={cluster_name}: {untagged}. "
+            f"Karpenter won't launch nodes there."
+        )
+
     def test_eventbridge_rules_exist(self, cluster_config: dict) -> None:
         cluster_name = cluster_config["cluster"]["cluster_name"]
         region = cluster_config["cluster"]["region"]
