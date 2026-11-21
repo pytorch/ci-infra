@@ -8,7 +8,7 @@ set -euo pipefail
 # node group must be scaled to 0 first — the quota is 4 vCPU = 1x g4dn.xlarge).
 #
 # Usage:
-#   bake-windows-gpu-ami.sh <base-ami-id> <subnet-id> <security-group-id> <instance-profile-name>
+#   bake-windows-gpu-ami.sh <base-ami-id> <subnet-id> <security-group-id> <instance-profile-name> [root-volume-gb]
 #
 # Output: prints the new AMI ID on the last line.
 
@@ -16,18 +16,23 @@ BASE_AMI="${1:?base-ami-id required}"
 SUBNET_ID="${2:?subnet-id required}"
 SG_ID="${3:?security-group-id required}"
 IAM_PROFILE="${4:?instance-profile-name required}"
+ROOT_VOLUME_GB="${5:-200}"
 REGION="${AWS_REGION:-us-east-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DRIVER_PS1="$SCRIPT_DIR/install-gpu-driver.ps1"
 
 echo "==> launching temp g4dn instance from $BASE_AMI"
+# Size the root volume up front (default 200GB, matching windows_volume_size):
+# the snapshot's filesystem is baked at this size, so the node's C: drive is
+# sized correctly on first boot (a 50GB default leaves ~10GB free and evicts pods).
 INSTANCE_ID=$(aws ec2 run-instances \
   --image-id "$BASE_AMI" \
   --instance-type g4dn.xlarge \
   --subnet-id "$SUBNET_ID" \
   --security-group-ids "$SG_ID" \
   --iam-instance-profile "Name=$IAM_PROFILE" \
+  --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${ROOT_VOLUME_GB},\"VolumeType\":\"gp3\"}}]" \
   --count 1 \
   --query 'Instances[0].InstanceId' --output text)
 echo "    instance: $INSTANCE_ID"
