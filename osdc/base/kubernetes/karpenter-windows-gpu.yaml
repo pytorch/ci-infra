@@ -1,0 +1,87 @@
+# Karpenter Windows GPU NodePool + EC2NodeClass (windows-gpu-test POC).
+#
+# Provisions a g4dn.xlarge from the pre-baked Windows AMI (NVIDIA WDDM 595.97
+# baked in) on demand, and scales to zero when idle via WhenEmpty consolidation.
+# The directx.microsoft.com/display taint is added by the device plugin at
+# runtime, not here.
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: windows-gpu
+spec:
+  role: windows-gpu-test-node-role
+  # Custom AMI (Windows Server 2025 Full + baked driver). amiFamily must be set
+  # explicitly when not using an alias; Karpenter then generates the
+  # Start-EKSBootstrap.ps1 user data itself.
+  amiFamily: Windows2025
+  amiSelectorTerms:
+    - id: ami-0ade98449def5cb38
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: windows-gpu-test
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: windows-gpu-test
+  # The baked AMI's root snapshot is 200GB; without this Karpenter requests a
+  # 50GB root volume and RunInstances fails with InvalidBlockDeviceMapping.
+  blockDeviceMappings:
+    - deviceName: /dev/sda1
+      ebs:
+        volumeSize: 200Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+  metadataOptions:
+    httpTokens: required
+    # Windows containers reach IMDSv2 from inside the container (host + container = 2 hops).
+    httpPutResponseHopLimit: 2
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: windows-gpu
+spec:
+  template:
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: windows-gpu
+      requirements:
+        - key: kubernetes.io/os
+          operator: In
+          values: ["windows"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["g4dn.xlarge"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+  limits:
+    # g4dn vCPU quota is 4 vCPU = 1x g4dn.xlarge in this account.
+    cpu: "4"
+  disruption:
+    # Scale to zero: consolidate the node once it has no non-DaemonSet pods.
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+---
+# Karpenter's scheduler simulates nodes from instance-type data only, so it does
+# not see the directx.microsoft.com/display extended resource registered by the
+# device plugin at runtime. This NodeOverlay appends that capacity to the
+# windows-gpu NodePool during simulation, so a pod requesting the resource
+# actually triggers provisioning. Requires settings.featureGates.nodeOverlay=true.
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: windows-directx
+spec:
+  requirements:
+    - key: karpenter.sh/nodepool
+      operator: In
+      values: ["windows-gpu"]
+  capacity:
+    directx.microsoft.com/display: "1"
