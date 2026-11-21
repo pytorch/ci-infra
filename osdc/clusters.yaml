@@ -688,9 +688,13 @@ clusters:
           memory: "512Mi"
     windows:
       enabled: true
-      node_count: 1
+      # Managed node group parked at 0: Karpenter (see modules below) provisions
+      # Windows GPU nodes on demand from the pre-baked AMI and scales back to 0
+      # when idle. The launch template + ami_id stay as a dormant fallback path.
+      node_count: 0
       instance_type: g4dn.xlarge
       ami_type: WINDOWS_FULL_2022_x86_64
       volume_size: 200
       ami_id: ami-0ade98449def5cb38  # pre-baked (WDDM 595.97, 200GB root) — skips user-data driver install
-    modules: []
+    modules:
+      - karpenter
