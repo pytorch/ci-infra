@@ -105,6 +105,12 @@ variable "windows_volume_size" {
   default     = 200
 }
 
+variable "windows_ami_id" {
+  description = "Custom AMI ID for Windows GPU nodes. Empty = EKS-optimized AMI + user-data driver install."
+  type        = string
+  default     = ""
+}
+
 variable "authentication_mode" {
   description = "EKS cluster authentication mode (API, API_AND_CONFIG_MAP, or CONFIG_MAP)"
   type        = string

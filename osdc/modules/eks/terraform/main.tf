@@ -85,6 +85,7 @@ module "eks" {
   windows_instance_type     = var.windows_instance_type
   windows_ami_type          = var.windows_ami_type
   windows_volume_size       = var.windows_volume_size
+  windows_ami_id            = var.windows_ami_id
 
   cluster_endpoint_private_access = true
   cluster_endpoint_public_access  = true
