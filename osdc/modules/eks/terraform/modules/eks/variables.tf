@@ -49,6 +49,12 @@ variable "windows_ami_type" {
   default     = "WINDOWS_FULL_2025_x86_64"
 }
 
+variable "windows_ami_id" {
+  description = "Custom AMI ID for Windows GPU nodes. Empty = use the EKS-optimized AMI matching windows_ami_type (driver installed in user data). Set to a pre-baked AMI (NVIDIA driver already installed) to skip the user-data driver install and speed up scale-up."
+  type        = string
+  default     = ""
+}
+
 variable "windows_volume_size" {
   description = "Root volume size (GB) for Windows nodes"
   type        = number

@@ -295,6 +295,32 @@ class TestTfvars:
         assert '-var="windows_ami_type=WINDOWS_FULL_2025_x86_64"' in out
         assert '-var="windows_volume_size=200"' in out
 
+    def test_windows_ami_id_emitted_when_set(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "windows": {
+                "enabled": True,
+                "ami_id": "ami-07147e3800db75bf2",
+            },
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="windows_ami_id=ami-07147e3800db75bf2"' in out
+
+    def test_windows_ami_id_absent_when_unset(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "windows": {
+                "enabled": True,
+                "node_count": 1,
+            },
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert "windows_ami_id" not in out
+
     def test_windows_node_group_absent_by_default(self, capsys):
         cluster_cfg = {"cluster_name": "c", "region": "r"}
         cluster_config.tfvars("c", cluster_cfg, {})

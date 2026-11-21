@@ -93,6 +93,8 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         pairs["windows_instance_type"] = windows.get("instance_type", "g4dn.xlarge")
         pairs["windows_ami_type"] = windows.get("ami_type", "WINDOWS_FULL_2025_x86_64")
         pairs["windows_volume_size"] = windows.get("volume_size", 200)
+        if windows.get("ami_id"):
+            pairs["windows_ami_id"] = windows["ami_id"]
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 
