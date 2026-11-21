@@ -692,5 +692,5 @@ clusters:
       instance_type: g4dn.xlarge
       ami_type: WINDOWS_FULL_2025_x86_64
       volume_size: 200
-      ami_id: ami-07147e3800db75bf2  # pre-baked (WDDM 595.97) — skips user-data driver install
+      ami_id: ami-0ade98449def5cb38  # pre-baked (WDDM 595.97, 200GB root) — skips user-data driver install
     modules: []
