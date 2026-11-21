@@ -575,13 +575,10 @@ resource "aws_eks_access_policy_association" "cluster_admin" {
 
 # --- Windows GPU node group (optional, requires ip_family = "ipv4") ---
 
-# Installs the NVIDIA WDDM 595.97 driver in user data.
-resource "aws_launch_template" "windows" {
-  count = var.enable_windows_node_group ? 1 : 0
-
-  name_prefix = "${var.cluster_name}-windows-"
-
-  user_data = base64encode(<<-EOT
+# Stock-AMI fallback user data: install the driver at first boot. The baked-AMI
+# path (windows_ami_id set) skips this entirely — the driver is already in the AMI.
+locals {
+  windows_driver_user_data = base64encode(<<-EOT
     <powershell>
     $ErrorActionPreference = 'Stop'
     curl.exe -L -o C:\driver59597.exe "https://ec2-windows-nvidia-drivers.s3.us-east-1.amazonaws.com/grid-20.0/595.97_grid_win10_win11_server2022_server2025_64bit_dch_international_aws_swl.exe"
@@ -589,6 +586,17 @@ resource "aws_launch_template" "windows" {
     </powershell>
   EOT
   )
+}
+
+# Windows GPU node launch template. When windows_ami_id is set, the AMI already
+# has the NVIDIA WDDM 595.97 driver baked in (bake-windows-gpu-ami.sh), so user
+# data is empty and scale-up skips the multi-minute driver download+install.
+resource "aws_launch_template" "windows" {
+  count = var.enable_windows_node_group ? 1 : 0
+
+  name_prefix = "${var.cluster_name}-windows-"
+  image_id    = var.windows_ami_id != "" ? var.windows_ami_id : null
+  user_data   = var.windows_ami_id != "" ? "" : local.windows_driver_user_data
 
   block_device_mappings {
     device_name = "/dev/sda1"
