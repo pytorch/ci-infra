@@ -17,4 +17,15 @@ Start-Sleep -Seconds 5
 
 Write-Output '=== NVIDIA-SMI ==='
 & 'C:\Windows\System32\nvidia-smi.exe' 2>&1 | Out-String | Write-Output
+
+# Reset EC2Launch run-once state so the baked AMI re-runs user data on first
+# boot. create-image captures whatever state the running instance has; if the
+# original instance already ran its user data, the stale .run-once marker makes
+# EC2Launch skip user data on the new node, so the EKS bootstrap never runs.
+$stateDir = 'C:\ProgramData\Amazon\EC2Launch\state'
+Remove-Item "$stateDir\.run-once" -Force -ErrorAction SilentlyContinue
+Remove-Item "$stateDir\state.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$stateDir\previous-state.json" -Force -ErrorAction SilentlyContinue
+Write-Output '=== EC2LAUNCH STATE RESET ==='
+
 Write-Output '=== GPU DRIVER DONE ==='
