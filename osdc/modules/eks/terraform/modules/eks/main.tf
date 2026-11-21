@@ -638,7 +638,10 @@ resource "aws_eks_node_group" "windows" {
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = var.subnet_ids
 
-  ami_type       = var.windows_ami_type
+  # A custom AMI (windows_ami_id set) requires ami_type = "CUSTOM" — EKS rejects
+  # an image_id in the launch template while ami_type points at an EKS-optimized
+  # AMI. When windows_ami_id is empty, fall back to the EKS-optimized Windows AMI.
+  ami_type       = var.windows_ami_id != "" ? "CUSTOM" : var.windows_ami_type
   instance_types = [var.windows_instance_type]
   capacity_type  = "ON_DEMAND"
 
