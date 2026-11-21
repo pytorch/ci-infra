@@ -187,7 +187,7 @@ spec:
           # so the trade-off is real: a moved upstream tag would be pulled onto a node
           # without the layers cached. Pinning by digest, or building the image into the
           # osdc project the way the task and dispatcher images are, is the follow-up.
-          image: harbor:30002/dockerhub-cache/nginxinc/nginx-unprivileged:1.29-alpine
+          image: harbor:30002/dockerhub-cache/nginx/nginx-unprivileged:1.31.9-alpine
           ports:
             - name: proxy
               containerPort: 8080
