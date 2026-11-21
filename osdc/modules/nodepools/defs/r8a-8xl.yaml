@@ -1,0 +1,24 @@
+# Karpenter NodePool fleet: r8a-8xl
+# AMD EPYC (Turin) — memory-optimized, AVX-512, ~8 GiB/core ratio
+# Sub-nodepool for ideal r8a.8xlarge; fallback UP to larger r8a sizes (descending weight).
+# Three 8-vCPU / 64 GiB runners pack onto one r8a.8xlarge.
+fleet:
+  name: r8a-8xl
+  arch: amd64
+  gpu: false
+  instances:
+    - type: r8a.8xlarge
+      weight: 100  # ideal
+      node_disk_size: 800
+    - type: r8a.12xlarge
+      weight: 85  # fallback
+      node_disk_size: 1200
+    - type: r8a.16xlarge
+      weight: 70  # fallback
+      node_disk_size: 1600
+    - type: r8a.24xlarge
+      weight: 55  # fallback
+      node_disk_size: 2400
+    - type: r8a.48xlarge
+      weight: 40  # fallback
+      node_disk_size: 4800
