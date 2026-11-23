@@ -50,7 +50,7 @@ NLD launches with `-localip fd00::10,${KUBE_DNS_CLUSTER_IP}`. The binary creates
 
 This is also why **no startup taint** is needed for NLD readiness on fresh Karpenter nodes. The 10-30s race where NLD's NOTRACK rules aren't yet programmed resolves itself: pods can still resolve via the unchanged kube-dns ClusterIP.
 
-The DaemonSet mounts `/run/xtables.lock` from the host (hostPath, `FileOrCreate`). This is the standard iptables advisory lock — kube-proxy, aws-node, cache-enforcer, and NLD all coordinate through it so concurrent rule mutations don't trample each other. The mount is what prevents iptables-table deadlocks between NLD and the other privileged DaemonSets writing rules on the same node. The pod also mounts the optional `kube-dns` ConfigMap at `/etc/kube-dns` (upstream NLD convention for stub-domains / upstream config — we don't ship one, but the mount stays in case future config is added) and the `node-local-dns` ConfigMap at `/etc/coredns` (with the `Corefile` key mapped to `Corefile.base`).
+The DaemonSet mounts `/run/xtables.lock` from the host (hostPath, `FileOrCreate`). This is the standard iptables advisory lock — kube-proxy, aws-node, and NLD all coordinate through it so concurrent rule mutations don't trample each other. The mount is what prevents iptables-table deadlocks between NLD and the other privileged DaemonSets writing rules on the same node. The pod also mounts the optional `kube-dns` ConfigMap at `/etc/kube-dns` (upstream NLD convention for stub-domains / upstream config — we don't ship one, but the mount stays in case future config is added) and the `node-local-dns` ConfigMap at `/etc/coredns` (with the `Corefile` key mapped to `Corefile.base`).
 
 ## kube-dns ClusterIP is Dynamic — deploy.sh Substitution Pattern
 
@@ -103,7 +103,7 @@ If you write a query against `nodelocaldns_*` it will silently return nothing.
 
 ### No `preStop` hook
 The original plan called for a preStop iptables flush addressing upstream issue [kubernetes/dns#394](https://github.com/kubernetes/dns/issues/394). Rejected because:
-- Bare `iptables -F` flushes the entire `filter` table, breaking kube-proxy / aws-node / cache-enforcer rules cluster-wide. Catastrophic on rolling restart.
+- Bare `iptables -F` flushes the entire `filter` table, breaking kube-proxy / aws-node rules cluster-wide. Catastrophic on rolling restart.
 - Targeted flush (`iptables -t raw -F NODELOCAL_DNS`) is fragile (chain names depend on NLD version) and the binary already re-asserts rules on startup.
 - `terminationGracePeriodSeconds: 30` (bumped from upstream's 5s) gives enough time for the binary's own SIGTERM cleanup loop. OOM is unlikely given `system-node-critical` priority.
 

@@ -16,7 +16,7 @@ Only the job path:
 | `nodepools-dev` + `arc-runners-dev` | One runner type, `d-mt-l-x86iavx512-2-4` (max 4) |
 | `zombie-cleanup` | Stops a stuck runner pod from holding a node |
 
-Dropped: `buildkit`, `keda`, `hf-cache`, `pypi-cache`, `cache-enforcer`, `agent-sandbox`, `monitoring`, `logging`,
+Dropped: `buildkit`, `keda`, `hf-cache`, `agent-sandbox`, `monitoring`, `logging`,
 `bin-pack-scheduler`, `harbor-cache-recovery`, the H100/B200 modules, warm-pool capacity and the node compactor.
 Add a module back to `modules:` when an experiment needs it.
 

@@ -71,8 +71,7 @@ The shipped recipes (`just kubeconfig`, `just deploy-*`, `scripts/destroy-cluste
 | `buildkit` | BuildKit builder pods |
 | `monitoring` | Alloy metrics + kube-prometheus-stack (default; overridable via `monitoring.namespace` in `clusters.yaml`) |
 | `logging` | Alloy logging + Alloy events (default; overridable via `logging.namespace` in `clusters.yaml`) |
-| `pypi-cache` | PyPI wheel cache pods |
-| `kube-system` | node-compactor, cache-enforcer, NVIDIA device plugin, registry mirror config, algif mitigation, dirtyfrag mitigation, node-performance-tuning, image-cache-janitor, node-local-dns DaemonSet (see `base/kubernetes/` for the full list) |
+| `kube-system` | node-compactor, NVIDIA device plugin, registry mirror config, algif mitigation, dirtyfrag mitigation, node-performance-tuning, image-cache-janitor, node-local-dns DaemonSet (see `base/kubernetes/` for the full list) |
 | `osdc-system` | Deploy-audit ConfigMaps (labeled `app.kubernetes.io/managed-by=osdc-deploy-log`) read by `just deploy-status` and `just deploy-history` |
 
 ## kubectl (Kubernetes)
@@ -89,7 +88,6 @@ kubectl describe pdb harbor-core -n harbor-system    # see selector matches and 
 kubectl get pods -n buildkit                         # BuildKit builder pods
 kubectl get pods -n monitoring                       # Alloy metrics + kube-prometheus-stack pods
 kubectl get pods -n logging                          # Alloy log collector pods
-kubectl get pods -n pypi-cache                       # PyPI wheel cache pods
 kubectl get ds -n logging                            # Logging DaemonSet (should match node count)
 kubectl get nodepools                                # Karpenter NodePools
 kubectl get nodeclaims                               # Karpenter NodeClaims (what Karpenter has provisioned)

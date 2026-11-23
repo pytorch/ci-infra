@@ -167,8 +167,7 @@ baked into the EKS NVIDIA AMI, which is the awkward part. Heaviest of the three.
 ## Open questions
 
 - Do we actually need R615 features, or is minor-version compatibility enough?
-  This decides whether any of this is worth doing. Nothing has demanded 13.4 yet,
-  and `pypi-cache` still tops out at `cu130`.
+  This decides whether any of this is worth doing. Nothing has demanded 13.4 yet.
 - If we build a custom AMI, what keeps it current on kernel CVEs?
 - ~~Does AWS have a public position on when EKS AMIs move off R580?~~ Partial
   answer: upstream has landed *build* support for 595

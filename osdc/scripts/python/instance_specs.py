@@ -109,7 +109,7 @@ INSTANCE_SPECS: dict[str, dict] = {
     "p4d.24xlarge": {"vcpu": 96, "memory_gib": 1152, "memory_mi": 1090765, "gpu": 8, "arch": "amd64"},
     "p5.48xlarge": {"vcpu": 192, "memory_gib": 2048, "memory_mi": 1939865, "gpu": 8, "arch": "amd64"},
     "p6-b200.48xlarge": {"vcpu": 192, "memory_gib": 2048, "memory_mi": 1939865, "gpu": 8, "arch": "amd64"},
-    # pypi-cache instances
+    # Memory-optimized instances
     "r7i.2xlarge": {"vcpu": 8, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
     "r7i.12xlarge": {"vcpu": 48, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
     "r5d.12xlarge": {"vcpu": 48, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64", "nvme_gib": 1800},
@@ -220,8 +220,8 @@ ENI_MAX_PODS: dict[str, int] = {
     "p4d.24xlarge": 250,
     "p5.48xlarge": 198,
     "p6-b200.48xlarge": 198,
-    # pypi-cache instance types
-    "r7i.2xlarge": 56,  # deviates from eni_max_pods(4, 15) = 58; pre-existing, sizes pypi-cache
+    # Memory-optimized instance types
+    "r7i.2xlarge": 56,  # deviates from eni_max_pods(4, 15) = 58; pre-existing
     "r7i.12xlarge": eni_max_pods(8, 30),
     "r5d.12xlarge": eni_max_pods(8, 30),
     # BuildKit instance types

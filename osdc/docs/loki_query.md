@@ -77,7 +77,7 @@ Three log sources flow into the same Loki tenant: **pod logs**, **system journal
 | `cluster` | all | `meta-prod-aws-ue2` | Cluster name from clusters.yaml (external label on the writer) |
 | `namespace` | pod logs | `arc-runners`, `kube-system`, `harbor-system` | Kubernetes namespace |
 | `container` | pod logs | `runner`, `coredns`, `kube-proxy` | Container name |
-| `app` | pod logs | `karpenter`, `harbor`, `pypi-cache` | From `app.kubernetes.io/name` pod label only — pods labeled only with `k8s-app` (EKS-managed CoreDNS, kube-proxy, NodeLocal DNS) do NOT have this label; filter by `container=` instead |
+| `app` | pod logs | `karpenter`, `harbor` | From `app.kubernetes.io/name` pod label only — pods labeled only with `k8s-app` (EKS-managed CoreDNS, kube-proxy, NodeLocal DNS) do NOT have this label; filter by `container=` instead |
 | `level` | pod + journal logs | `error`, `warn`, `info`, `fatal` | Normalized log level (lowercase). `debug` lines are dropped at ingestion (DEBUG/TRACE text-drop in pod pipeline, priority-7 drop in journal pipeline) so `level="debug"` returns few or no results |
 | `unit` | journal logs | `kubelet.service`, `containerd.service`, `kernel`, `nvidia-fabricmanager.service`, `nvidia-persistenced.service` | Systemd unit |
 | `kind` | k8s events | `Pod`, `Node`, `Deployment` | Event involved-object kind |

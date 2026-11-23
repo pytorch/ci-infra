@@ -435,26 +435,6 @@ data:
       containers:
         - name: "$job"
           env:
-            # BEGIN_PYPI_CACHE
-            - name: PIP_INDEX_URL
-              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
-            - name: PIP_TRUSTED_HOST
-              value: "pypi-cache-cpu.pypi-cache.svc.cluster.local"
-            - name: PIP_EXTRA_INDEX_URL
-              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
-            - name: UV_DEFAULT_INDEX
-              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
-            - name: UV_INSECURE_HOST
-              value: "pypi-cache-cpu.pypi-cache.svc.cluster.local:8080"
-            - name: UV_INDEX
-              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
-            - name: UV_INDEX_STRATEGY
-              value: "unsafe-best-match"
-            - name: PYPI_CACHE_SIMPLE_URL
-              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
-            - name: PYPI_CACHE_WHL_URL
-              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
-            # END_PYPI_CACHE
             # BEGIN_HF_CACHE
             # Only HF_HOME is set — HF_HUB_CACHE derives as $HF_HOME/hub.
             # HF_CACHE_S3_* = the ci-refresh-hf-cache OIDC write target.

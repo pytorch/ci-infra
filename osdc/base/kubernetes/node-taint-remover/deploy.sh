@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # Generates `node-taint-remover-lib` ConfigMap in kube-system from
 # lib/taint_remover.py. This ConfigMap is mounted into other DaemonSets
-# (cache-enforcer, registry-mirror-config, node-performance-tuning) so
+# (registry-mirror-config, node-performance-tuning) so
 # they can remove their own startup taint after init completes.
 #
 # The .py file lives in the repo for IDE/test ergonomics; the ConfigMap

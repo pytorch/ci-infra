@@ -45,8 +45,6 @@ Current modules:
 | `nodepools-dev` | Minimal NodePools for the cost-minimal dev cluster (small `c7i-runner` pool + the workflow fleets of the dev runners) — replaces `nodepools`; see `docs/dev-cluster.md` |
 | `arc-runners-dev` | Small ARC runner set for the dev cluster — delegates to upstream arc-runners deploy with dev definitions |
 | `buildkit` | Container build service — dual-arch BuildKit Deployments with HAProxy LB on dedicated nodes |
-| `pypi-cache` | Per-CUDA-slug nginx + pypiserver fanout backed by shared EFS wheelhouse, fed by an external wheel-build pipeline via S3 |
-| `cache-enforcer` | DaemonSet that installs iptables rules on runner nodes to block direct outbound access to external registries/PyPI, forcing traffic through internal caches |
 | `zombie-cleanup` | CronJob that reaps stuck/zombie ARC runner pods (configurable max age for pending/running; runners actively running a job are protected until a longer busy hard-cap) |
 | `harbor-cache-recovery` | CronJob that detects ImagePullBackOff from Harbor proxy cache corruption and purges stale cache entries |
 | `logging` | Log collection pipeline — Grafana Alloy DaemonSet (pod logs + journal) + Events Deployment → Grafana Cloud Loki |
@@ -72,8 +70,6 @@ clusters:
       - nodepools
       - arc-runners
       - buildkit
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring

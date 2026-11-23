@@ -41,7 +41,7 @@ from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # n
 # job on it: https://github.com/awslabs/amazon-eks-ami/issues/2845
 # v20260923 (kernel 6.12.103-129.197, same NVIDIA 580.178.04 driver) does not.
 # Go back to tracking latest once AWS ships a release with the fix. Keep in
-# step with buildkit/generate_buildkit.py and pypi-cache/ec2nodeclass.yaml.tpl.
+# step with buildkit/generate_buildkit.py.
 AL2023_AMI_VERSION = "v20260923"
 
 # List of startup taint entries. Each entry is a dict with:
@@ -49,33 +49,19 @@ AL2023_AMI_VERSION = "v20260923"
 #   - ``module`` (str | None) — module-name gate:
 #         str:  emit only when this name is in NODEPOOLS_ENABLED_MODULES (per-cluster module)
 #         None: always emit (base component, always deployed on every cluster)
-#   - ``applies_when`` (callable | absent) — optional predicate that receives the
-#         full ``nodepool_def`` dict; emission is skipped when it returns False.
-#         Use this when the owning DaemonSet's affinity/selector excludes some
-#         nodepools — emitting the taint there would strand the node forever.
 #
-# A taint is emitted on a NodePool only when BOTH:
-#   1. its ``module`` gate is satisfied (None, or name appears in NODEPOOLS_ENABLED_MODULES), AND
-#   2. its optional ``applies_when(nodepool_def)`` returns True.
+# A taint is emitted on a NodePool only when its ``module`` gate is satisfied
+# (None, or name appears in NODEPOOLS_ENABLED_MODULES). Its owning DaemonSet
+# must run on every nodepool that gets the taint, or the node is stranded.
 #
 # This guards against stuck taints: a startup taint must only be added when
 # there is a corresponding DaemonSet on the cluster and node that will remove
 # it at end-of-init.
 STARTUP_TAINTS: list[dict] = [
     {
-        "module": "cache-enforcer",
-        "key": "node-init.osdc.io/cache-enforcer",
-        "value": "true",
-        "effect": "NoSchedule",
-        # cache-enforcer DS has `osdc.io/runner-class DoesNotExist` nodeAffinity,
-        # so it never schedules on release-runner nodepools. Skip the taint for
-        # those — otherwise the node would be tainted with nothing to clear it.
-        "applies_when": lambda d: d.get("extra_labels", {}).get("osdc.io/runner-class") != "release",
-    },
-    {
         # Gates runner pods until the rclone FUSE is mounted (a pod that starts
-        # first binds the empty dir and never sees the cache). No applies_when: the
-        # mount DS runs on, and clears it from, every workload-type=github-runner node.
+        # first binds the empty dir and never sees the cache). The mount DS runs
+        # on, and clears it from, every workload-type=github-runner node.
         "module": "hf-cache",
         "key": "node-init.osdc.io/hf-cache",
         "value": "true",
@@ -380,19 +366,14 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     )
 
     # ----- Module-aware startup taints -----
-    # Emit a startupTaint only when:
-    #   1. its module gate is satisfied (None, or in NODEPOOLS_ENABLED_MODULES), AND
-    #   2. its optional applies_when(nodepool_def) predicate returns True.
-    # This prevents stuck taints on clusters/nodepools where no DaemonSet exists
+    # Emit a startupTaint only when its module gate is satisfied (None, or in
+    # NODEPOOLS_ENABLED_MODULES). This prevents stuck taints on clusters/nodepools where no DaemonSet exists
     # to remove the taint at end-of-init.
     enabled_modules = set(os.environ.get("NODEPOOLS_ENABLED_MODULES", "").split())
     startup_taint_lines = []
     for t in STARTUP_TAINTS:
         module = t.get("module")
         if module is not None and module not in enabled_modules:
-            continue
-        predicate = t.get("applies_when")
-        if predicate is not None and not predicate(nodepool_def):
             continue
         startup_taint_lines.append(
             f'        - key: {t["key"]}\n          value: "{t["value"]}"\n          effect: {t["effect"]}\n'

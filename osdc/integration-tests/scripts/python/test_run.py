@@ -126,12 +126,6 @@ def workflow_template(tmp_path):
         "      - name: Verify container is running\n"
         "        run: echo PASS\n"
         "  # END_ARC_RUNNERS\n"
-        "  # BEGIN_PYPI_CACHE\n"
-        "  pypi-job:\n"
-        "    steps:\n"
-        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
-        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
-        "  # END_PYPI_CACHE\n"
         "  # BEGIN_GPU_T4\n"
         "  gpu-t4-job:\n"
         '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}t4-runner"] }\n'
@@ -154,20 +148,6 @@ def workflow_template(tmp_path):
         "  buildkit-job:\n"
         "    uses: ./.github/workflows/build-image.yaml\n"
         "  # END_BUILDKIT\n"
-        "  # BEGIN_CACHE_ENFORCER\n"
-        "  cache-enforcer-job:\n"
-        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}enforcer-runner"] }\n'
-        "    steps:\n"
-        "      - run: echo enforcer\n"
-        "  # END_CACHE_ENFORCER\n"
-        "  # BEGIN_ARC_RUNNERS\n"
-        "  # BEGIN_NO_CACHE_ENFORCER\n"
-        "  no-cache-enforcer-job:\n"
-        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}upstream-runner"] }\n'
-        "    steps:\n"
-        "      - run: echo upstream\n"
-        "  # END_NO_CACHE_ENFORCER\n"
-        "  # END_ARC_RUNNERS\n"
         "  # BEGIN_RELEASE\n"
         "  release-job:\n"
         '    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-runner"] }\n'
@@ -187,12 +167,10 @@ def workflow_template(tmp_path):
 
 ALL_MODULES = [
     "arc-runners",
-    "pypi-cache",
     "nodepools",
     "buildkit",
     "arc-runners-b200",
     "nodepools-b200",
-    "cache-enforcer",
 ]
 
 
@@ -364,10 +342,8 @@ class TestGenerateWorkflow:
         )
         for job in (
             "arc-job",
-            "pypi-job",
             "gpu-t4-job",
             "buildkit-job",
-            "cache-enforcer-job",
             "release-job",
         ):
             assert job in result, f"missing {job}"
@@ -382,9 +358,7 @@ class TestGenerateWorkflow:
             "meta-prod-aws-ue2",
             cluster_modules=[
                 "arc-runners",
-                "pypi-cache",
                 "nodepools",
-                "cache-enforcer",
                 "arc-runners-b200",
                 "nodepools-b200",
             ],
@@ -393,48 +367,6 @@ class TestGenerateWorkflow:
         assert "BEGIN_BUILDKIT" not in result
         assert "END_BUILDKIT" not in result
         assert "arc-job" in result
-        assert "cache-enforcer-job" in result
-
-    def test_cache_enforcer_stripped(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=[m for m in ALL_MODULES if m != "cache-enforcer"],
-        )
-        assert "  cache-enforcer-job:" not in result
-        assert "BEGIN_CACHE_ENFORCER" not in result
-        assert "END_CACHE_ENFORCER" not in result
-        assert "arc-job" in result
-
-    def test_no_cache_enforcer_kept_when_cache_enforcer_absent(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=[m for m in ALL_MODULES if m != "cache-enforcer"],
-        )
-        assert "no-cache-enforcer-job" in result
-        assert "BEGIN_NO_CACHE_ENFORCER" not in result
-        assert "END_NO_CACHE_ENFORCER" not in result
-
-    def test_no_cache_enforcer_stripped_when_no_arc_runners(self, workflow_template):
-        # H100-only cluster (e.g. meta-prod-aws-uw1): no base arc-runners module
-        # and no cache-enforcer. The upstream pip test needs a CPU arc-runner, so
-        # the ARC_RUNNERS gate must strip it — otherwise it queues forever on a
-        # runner label that never exists on this cluster.
-        result = generate_workflow(
-            workflow_template,
-            "mt",
-            "meta-prod-aws-uw1",
-            "meta-prod-aws-uw1",
-            cluster_modules=["arc-runners-h100", "nodepools-h100"],
-        )
-        assert "no-cache-enforcer-job" not in result
-        assert "BEGIN_NO_CACHE_ENFORCER" not in result
-        assert "arc-job" not in result
 
     def test_opt_variants_keep_arc_runner_jobs(self, workflow_template):
         # meta-prod-aws-ue1 runs the -opt shim modules. arc-runners-opt / nodepools-opt
@@ -456,21 +388,6 @@ class TestGenerateWorkflow:
         assert "BEGIN_GPU_T4" not in result
         assert "BEGIN_BUILDKIT" not in result
         assert "BEGIN_RELEASE" not in result
-        assert "pypi-job" not in result
-        assert "  cache-enforcer-job:" not in result
-
-    def test_no_cache_enforcer_stripped_when_cache_enforcer_present(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=ALL_MODULES,
-        )
-        assert "no-cache-enforcer-job" not in result
-        assert "BEGIN_NO_CACHE_ENFORCER" not in result
-        assert "END_NO_CACHE_ENFORCER" not in result
-        assert "cache-enforcer-job" in result
 
     def test_gpu_t4_requires_arc_runners_and_nodepools(self, workflow_template):
         result = generate_workflow(
@@ -485,18 +402,6 @@ class TestGenerateWorkflow:
         assert "arc-job" in result
         # meta-prod-aws-ue2 is prod → release-runner tests stripped.
         assert "release-job" not in result
-
-    def test_pypi_cache_requires_pypi_cache_module(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=["arc-runners"],
-        )
-        assert "pypi-job" not in result
-        assert "BEGIN_PYPI_CACHE" not in result
-        assert "arc-job" in result
 
     def test_release_kept_with_arc_runners(self, workflow_template):
         # Non-prod cluster with arc-runners keeps the release-runner tests.
@@ -548,50 +453,6 @@ class TestGenerateWorkflow:
         )
         assert "release-job" in result
         assert "BEGIN_RELEASE" not in result
-
-    def test_pypi_slugs_substituted(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=ALL_MODULES,
-            pypi_cache_slugs="cpu cu121 cu124",
-        )
-        assert "echo cpu cu121 cu124" in result
-        assert "{{PYPI_CACHE_SLUGS}}" not in result
-
-    def test_pypi_slugs_default(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=ALL_MODULES,
-        )
-        assert "echo cpu cu121 cu124" in result
-
-    def test_pypi_cuda_version_substituted(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=ALL_MODULES,
-            pypi_cache_cuda_version="13.0",
-        )
-        assert "echo 13.0" in result
-        assert "{{PYPI_CACHE_CUDA_VERSION}}" not in result
-
-    def test_pypi_cuda_version_default(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=ALL_MODULES,
-        )
-        assert "echo 12.8" in result
 
     def test_runner_group_default_substituted(self, workflow_template):
         result = generate_workflow(
@@ -694,7 +555,7 @@ class TestGenerateWorkflow:
             prefix="mt-",
             cluster_id="x",
             cluster_name="x",
-            cluster_modules=["arc-runners", "pypi-cache", "nodepools", "buildkit", "cache-enforcer"],
+            cluster_modules=["arc-runners", "nodepools", "buildkit"],
             ecr_pull_resolved_tag="testtag",
             ecr_pull_sha="testsha",
         )
@@ -724,7 +585,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "meta-prod-aws-ue2",
             "meta-prod-aws-ue2",
-            cluster_modules=["cache-enforcer"],
+            cluster_modules=["monitoring"],
         )
         assert "no-op:" in result
         assert "ubuntu-latest" in result
@@ -738,7 +599,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "meta-prod-aws-ue2",
             "meta-prod-aws-ue2",
-            cluster_modules=["arc-runners-h100", "cache-enforcer"],
+            cluster_modules=["arc-runners-h100", "monitoring"],
         )
         assert "no-op:" in result
         assert "arc-job" not in result
@@ -751,7 +612,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "meta-prod-aws-ue2",
             "meta-prod-aws-ue2",
-            cluster_modules=["arc-runners-b200", "cache-enforcer"],
+            cluster_modules=["arc-runners-b200", "monitoring"],
         )
         assert "no-op:" in result
         assert "arc-job" not in result
@@ -762,7 +623,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "meta-prod-aws-ue2",
             "meta-prod-aws-ue2",
-            cluster_modules=["cache-enforcer"],
+            cluster_modules=["monitoring"],
         )
         assert "name: cbr integration test" in result
         assert "on: push" in result
@@ -773,7 +634,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "meta-prod-aws-ue2",
             "meta-prod-aws-ue2",
-            cluster_modules=["cache-enforcer"],
+            cluster_modules=["monitoring"],
         )
         lines = result.split("\n")
         jobs_idx = next(i for i, line in enumerate(lines) if line.rstrip() == "jobs:")

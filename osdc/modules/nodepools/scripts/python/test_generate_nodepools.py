@@ -1985,7 +1985,7 @@ class TestModuleStartupTaints:
     def test_no_startup_taints_when_registry_empty(self, monkeypatch):
         """With the empty registry, no startupTaints block ever appears."""
         monkeypatch.setattr(generate_nodepools, "STARTUP_TAINTS", [])
-        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer arc-runners nodepools")
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "hf-cache arc-runners nodepools")
         output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
         assert "startupTaints" not in output
         assert "startupTaints" not in self._np_doc(output)["spec"]["template"]["spec"]
@@ -2056,7 +2056,7 @@ class TestModuleStartupTaints:
         """The real hf-cache entry: emitted on runner nodepools iff hf-cache is enabled.
 
         The hf-cache-mount DaemonSet runs on every workload-type=github-runner
-        node and tolerates all taints, so the taint has no applies_when guard.
+        node and tolerates all taints, so every runner nodepool can carry the taint.
         """
         monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "hf-cache arc-runners nodepools")
         np = self._np_doc(generate_nodepool_yaml(_make_nodepool_def(), "nodepools"))
@@ -2114,9 +2114,9 @@ class TestValidateStartupTaintsRegistry:
         monkeypatch.setattr(
             generate_nodepools,
             "STARTUP_TAINTS",
-            [{"module": "cache-enforcer", "key": "k", "value": "v", "effect": "NoSchedule"}],
+            [{"module": "hf-cache", "key": "k", "value": "v", "effect": "NoSchedule"}],
         )
-        modules_root = self._make_modules_root(tmp_path, ["cache-enforcer", "nodepools"])
+        modules_root = self._make_modules_root(tmp_path, ["hf-cache", "nodepools"])
         generate_nodepools._validate_startup_taints_registry(modules_root)
 
     def test_module_none_entries_skip_validation(self, tmp_path, monkeypatch):
@@ -2133,10 +2133,10 @@ class TestValidateStartupTaintsRegistry:
         monkeypatch.setattr(
             generate_nodepools,
             "STARTUP_TAINTS",
-            [{"module": "cache-enforcre", "key": "k", "value": "v", "effect": "NoSchedule"}],
+            [{"module": "hf-cahce", "key": "k", "value": "v", "effect": "NoSchedule"}],
         )
-        modules_root = self._make_modules_root(tmp_path, ["cache-enforcer", "nodepools"])
-        with pytest.raises(ValueError, match="cache-enforcre"):
+        modules_root = self._make_modules_root(tmp_path, ["hf-cache", "nodepools"])
+        with pytest.raises(ValueError, match="hf-cahce"):
             generate_nodepools._validate_startup_taints_registry(modules_root)
 
 
@@ -2145,13 +2145,6 @@ class TestRealStartupTaintsRegistry:
 
     def _entries_for_key(self, key: str) -> list[dict]:
         return [t for t in generate_nodepools.STARTUP_TAINTS if t.get("key") == key]
-
-    def test_real_registry_contains_cache_enforcer_taint(self):
-        entries = self._entries_for_key("node-init.osdc.io/cache-enforcer")
-        assert len(entries) == 1
-        assert entries[0]["module"] == "cache-enforcer"
-        assert entries[0]["value"] == "true"
-        assert entries[0]["effect"] == "NoSchedule"
 
     def test_real_registry_contains_registry_mirror_taint(self):
         entries = self._entries_for_key("node-init.osdc.io/registry-mirror")
@@ -2182,48 +2175,12 @@ class TestRealStartupTaintsRegistry:
         assert entries[0]["effect"] == "NoSchedule"
 
     def test_real_registry_renders_taints_in_nodepool(self, monkeypatch):
-        """End-to-end: with cache-enforcer enabled, all base + cache-enforcer taint keys appear."""
-        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer")
-        output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
-        np = parse_all_yaml(output)[0]
-        keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
-        assert "node-init.osdc.io/cache-enforcer" in keys
-        assert "node-init.osdc.io/registry-mirror" in keys
-        assert "node-init.osdc.io/perf-tuning" in keys
-        assert "node-init.osdc.io/algif-mitigation" in keys
-        assert "node-init.osdc.io/dirtyfrag-mitigation" in keys
-
-    def test_real_registry_skips_cache_enforcer_when_module_disabled(self, monkeypatch):
-        """With cache-enforcer disabled, only the base taints (module=None) appear."""
+        """End-to-end: all base taint keys appear."""
         monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "")
         output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
         np = parse_all_yaml(output)[0]
         keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
-        assert "node-init.osdc.io/cache-enforcer" not in keys
         assert "node-init.osdc.io/registry-mirror" in keys
         assert "node-init.osdc.io/perf-tuning" in keys
         assert "node-init.osdc.io/algif-mitigation" in keys
         assert "node-init.osdc.io/dirtyfrag-mitigation" in keys
-
-    def test_real_registry_skips_cache_enforcer_on_release_runner_nodepool(self, monkeypatch):
-        """cache-enforcer DS excludes release runners by nodeAffinity — its taint must also be skipped there."""
-        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer")
-        release_def = _make_nodepool_def(extra_labels={"osdc.io/runner-class": "release"})
-        output = generate_nodepool_yaml(release_def, "nodepools")
-        np = parse_all_yaml(output)[0]
-        keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
-        # cache-enforcer DS won't schedule here (osdc.io/runner-class DoesNotExist),
-        # so emitting the taint would strand the node.
-        assert "node-init.osdc.io/cache-enforcer" not in keys
-        # Base taints still emitted.
-        assert "node-init.osdc.io/registry-mirror" in keys
-        assert "node-init.osdc.io/perf-tuning" in keys
-
-    def test_real_registry_emits_cache_enforcer_on_non_release_nodepool(self, monkeypatch):
-        """Non-release nodepool with cache-enforcer enabled gets the taint as expected."""
-        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer")
-        non_release_def = _make_nodepool_def(extra_labels={"osdc.io/runner-class": "main"})
-        output = generate_nodepool_yaml(non_release_def, "nodepools")
-        np = parse_all_yaml(output)[0]
-        keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
-        assert "node-init.osdc.io/cache-enforcer" in keys

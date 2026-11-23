@@ -28,7 +28,7 @@ When changing runner definitions (`modules/arc-runners/defs/`, `modules/arc-runn
 
 **Verification**: After any runner/nodepool change, run `just analyze-utilization` to confirm packing efficiency and `just test` to verify all scripts agree on the new values.
 
-**DaemonSet impact**: When changing runner/job pod resources or adding new instance types, account for per-node DaemonSet overhead. The BuildKit pod-sizing algorithm subtracts a fixed 300m CPU / 440Mi memory budget (`DAEMONSET_OVERHEAD_CPU_M` / `DAEMONSET_OVERHEAD_MEM_MI` in `modules/buildkit/scripts/python/generate_buildkit.py`) before dividing per-node capacity. Cluster-wide base DaemonSets that fit inside this budget (manifests under `base/kubernetes/`): `registry-mirror-config`, `node-performance-tuning`, `algif-mitigation`, `dirtyfrag-mitigation`, `image-cache-janitor`, `nvidia-device-plugin`, plus DCGM on GPU nodes. `nodelocaldns` (25m CPU / 100Mi memory) is under `base/kubernetes/nodelocaldns/` and deployed via its own deploy.sh. Per-module DaemonSets include `cache-enforcer` (module) and `runner-hooks-warmer` (declared in `modules/arc/kubernetes/hooks-warmer.yaml`, runs in the `arc-runners` namespace, but pinned to `node-fleet=c7i-runner` via nodeSelector). Helm/EKS-addon overhead (kube-prometheus-stack node-exporter, Alloy logging, kube-proxy, vpc-cni, ebs-csi-node) is enumerated in `scripts/python/daemonset_overhead.py` (`HELM_DAEMONSETS` + `EKS_ADDON_DAEMONSETS`). The live computed total is available via `uv run scripts/python/daemonset_overhead.py`. New cluster-wide DaemonSets MUST tolerate the standard taints listed in the EKS Node Taints section below.
+**DaemonSet impact**: When changing runner/job pod resources or adding new instance types, account for per-node DaemonSet overhead. The BuildKit pod-sizing algorithm subtracts a fixed 300m CPU / 440Mi memory budget (`DAEMONSET_OVERHEAD_CPU_M` / `DAEMONSET_OVERHEAD_MEM_MI` in `modules/buildkit/scripts/python/generate_buildkit.py`) before dividing per-node capacity. Cluster-wide base DaemonSets that fit inside this budget (manifests under `base/kubernetes/`): `registry-mirror-config`, `node-performance-tuning`, `algif-mitigation`, `dirtyfrag-mitigation`, `image-cache-janitor`, `nvidia-device-plugin`, plus DCGM on GPU nodes. `nodelocaldns` (25m CPU / 100Mi memory) is under `base/kubernetes/nodelocaldns/` and deployed via its own deploy.sh. Per-module DaemonSets include `runner-hooks-warmer` (declared in `modules/arc/kubernetes/hooks-warmer.yaml`, runs in the `arc-runners` namespace, but pinned to `node-fleet=c7i-runner` via nodeSelector). Helm/EKS-addon overhead (kube-prometheus-stack node-exporter, Alloy logging, kube-proxy, vpc-cni, ebs-csi-node) is enumerated in `scripts/python/daemonset_overhead.py` (`HELM_DAEMONSETS` + `EKS_ADDON_DAEMONSETS`). The live computed total is available via `uv run scripts/python/daemonset_overhead.py`. New cluster-wide DaemonSets MUST tolerate the standard taints listed in the EKS Node Taints section below.
 
 ## GitHub Actions Workflow Constraints
 
@@ -64,7 +64,6 @@ BuildKit NodePools are the exception: they emit only `workload/buildkit-<arch>`,
 - `node-init.osdc.io/perf-tuning=true:NoSchedule` — emitted on every cluster; cleared by `node-performance-tuning`
 - `node-init.osdc.io/algif-mitigation=true:NoSchedule` — emitted on every cluster (TEMPORARY, removed in lockstep with the DaemonSet once AL2023 kernel 6.12.85+ is rolled out); cleared by `algif-mitigation`
 - `node-init.osdc.io/dirtyfrag-mitigation=true:NoSchedule` — emitted on every cluster (TEMPORARY, removed in lockstep with the DaemonSet once AL2023 kernel 6.1.170+ or 6.12.83+ is rolled out); cleared by `dirtyfrag-mitigation`
-- `node-init.osdc.io/cache-enforcer=true:NoSchedule` — emitted only on clusters with `cache-enforcer` in `NODEPOOLS_ENABLED_MODULES` AND on nodepool defs that pass the per-def `applies_when` predicate. The predicate (`generate_nodepools.py:62-65`) skips release-runner pools (`extra_labels.osdc.io/runner-class == "release"`) because the cache-enforcer DaemonSet has matching `DoesNotExist` nodeAffinity and never schedules there — emitting the taint would deadlock those nodes. Cleared by `cache-enforcer`.
 
 `STARTUP_TAINTS` registry is validated at generator startup (`generate_nodepools.py:_validate_startup_taints_registry`) — each entry's `module` field must match a sibling directory under `modules/`, catching typos before they ship.
 
@@ -143,12 +142,12 @@ Generated EC2NodeClass `userData` is multipart MIME. The `application/node.eks.a
 
 ### EC2NodeClass metadataOptions — IPv6 IMDS
 
-Generated EC2NodeClass templates set `spec.metadataOptions.httpProtocolIPv6: enabled`. Under IPv6-only EKS the instance metadata service (IMDS) is reachable at `[fd00:ec2::254]` instead of the IPv4 link-local `169.254.169.254`. Workloads, kubelet, and AWS SDKs that talk to IMDS must do so over IPv6; enabling `httpProtocolIPv6` is what makes the IMDS endpoint listen on the IPv6 link-local address. Applied to: every nodepool generator output (`modules/nodepools/scripts/python/generate_nodepools.py`) and the pypi-cache nodepool template (`modules/pypi-cache/kubernetes/ec2nodeclass.yaml.tpl`).
+Generated EC2NodeClass templates set `spec.metadataOptions.httpProtocolIPv6: enabled`. Under IPv6-only EKS the instance metadata service (IMDS) is reachable at `[fd00:ec2::254]` instead of the IPv4 link-local `169.254.169.254`. Workloads, kubelet, and AWS SDKs that talk to IMDS must do so over IPv6; enabling `httpProtocolIPv6` is what makes the IMDS endpoint listen on the IPv6 link-local address. Applied to: every nodepool generator output (`modules/nodepools/scripts/python/generate_nodepools.py`).
 
 GPU pools (H100, B200) optionally append a `text/x-shellscript` MIME part via the per-def `user_data_script` field — used today for one-shot containerd registry mirror config that must be in place before any image pull. Prefer DaemonSets where possible; reserve `user_data_script` for boot-critical setup only.
 
 **TEMPORARY mitigations** — two kernel-mod blacklist DaemonSets with identical shape and the same lifecycle:
-- `base/kubernetes/algif-mitigation.yaml` — modprobe blacklist for CVE-2026-31431 ("Copy Fail" algif_aead LPE). Remove once nodes are on a kernel 6.12.85+ AL2023 AMI. AMI pinnings tagged with `TODO(CVE-2026-31431)` markers are the trigger points: `clusters.yaml`, `modules/nodepools/scripts/python/generate_nodepools.py`, `modules/buildkit/scripts/python/generate_buildkit.py`, `modules/pypi-cache/kubernetes/ec2nodeclass.yaml.tpl`. Watch https://explore.alas.aws.amazon.com/CVE-2026-31431.html.
+- `base/kubernetes/algif-mitigation.yaml` — modprobe blacklist for CVE-2026-31431 ("Copy Fail" algif_aead LPE). Remove once nodes are on a kernel 6.12.85+ AL2023 AMI. AMI pinnings tagged with `TODO(CVE-2026-31431)` markers are the trigger points: `clusters.yaml`, `modules/nodepools/scripts/python/generate_nodepools.py`, `modules/buildkit/scripts/python/generate_buildkit.py`. Watch https://explore.alas.aws.amazon.com/CVE-2026-31431.html.
 - `base/kubernetes/dirtyfrag-mitigation.yaml` — modprobe blacklist for CVE-2026-43284 + CVE-2026-43500 ("DirtyFrag" page-cache write LPEs in xfrm-ESP / RxRPC). Also drops the page cache to evict any DirtyFrag-poisoned pages. Same TEMPORARY lifecycle as algif-mitigation.
 
 ### NodePool Def File Schema
@@ -227,22 +226,6 @@ Validation: `max_runners` must be a positive int OR a dict containing a `default
 - `pause_runners: true` at the cluster level forces `max_runners=0` and `hud_failure_base_capacity=0` on every scale set — cluster-wide drain switch.
 - Region-exclusion auto-zeroing: if a runner's `instance_type` is in the cluster's `excluded_instance_types` (derived from the backing nodepool/fleet's `exclude_regions`; no current def sets one), `max_runners`, `proactive_capacity`, and `hud_failure_base_capacity` are forced to 0 so GitHub does not route jobs that would pend forever.
 - `arc-runners.runner_group: <name>` at the cluster level pins every scale set's GitHub runner group, unless the cluster's `github_config_url` is repo-scoped — repo-scoped URLs force `default` regardless. Per-cluster groups: `meta-prod-aws-ue1` -> `meta-prod-aws-ue1`, `lf-prod-aws-ue1`/`ue2` -> `lf-prod-aws-ue1`/`ue2`, staging -> `meta-staging-aws-ue1`/`ue1`. `arc-cbr-production` (us-east-2) does NOT set `runner_group` and runners land in `default`.
-
-### Cache-Enforcer (DaemonSet)
-
-Uses `xt_string` kernel module to match domain names in TLS ClientHello SNI (port 443) and HTTP Host header (port 80). Rules in CACHE_ENFORCER iptables chain, jumped from OUTPUT and FORWARD. REJECT with tcp-reset (fast "Connection refused").
-
-**Blocked registries** (forced through Harbor at harbor:30002): docker.io, registry-1.docker.io, auth.docker.io, production.cloudflare.docker.com, ghcr.io, nvcr.io, quay.io, registry.k8s.io
-
-**Blocked PyPI** (REJECTed at iptables OUTPUT/FORWARD — the runner pod's pip env vars redirect to pypi-cache instead): pypi.org, files.pythonhosted.org. `download.pytorch.org` is NOT in `PYPI_DOMAINS` — workflows can still reach it directly. Runner pod `PIP_INDEX_URL` / `UV_DEFAULT_INDEX` env vars point at `http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/` (Service DNS, not localhost).
-
-**NOT blocked**: public.ecr.aws (no rate limits)
-
-To add/remove blocked domains: edit `REGISTRY_DOMAINS` or `PYPI_DOMAINS` in `modules/cache-enforcer/kubernetes/configmap.yaml`, then `just deploy-module <cluster> cache-enforcer`.
-
-**Limitation**: TLS Encrypted Client Hello (ECH) encrypts SNI, bypassing xt_string matching. No blocked domains currently use ECH. Migration path: Cilium CNI with toFQDNs DNS-based policies.
-
-**Dependency**: cache-enforcer depends on Harbor (base) and pypi-cache module. Without pypi-cache deployed, pip installs fail entirely (traffic blocked but no cache to serve it).
 
 ### Node Compactor — Karpenter Integration
 
