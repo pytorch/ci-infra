@@ -197,7 +197,7 @@ listenerTemplate:
           - name: CAPACITY_AWARE_NODE_FLEET
             value: "{{NODE_FLEET}}"
           - name: CAPACITY_AWARE_RUNNER_NODE_FLEET
-            value: "c7i-runner"
+            value: "{{RUNNER_POD_NODE_FLEET}}"
           - name: CAPACITY_AWARE_RUNNER_CLASS
             value: "{{RUNNER_CLASS}}"
           - name: CAPACITY_AWARE_HUD_API_URL
@@ -228,20 +228,23 @@ template:
     # preemption ladder to behave deterministically.
     priorityClassName: arc-runner
 
-    # Pin runner pods to the dedicated c7i-runner pool (separate from the
-    # workflow pool defined by {{NODE_FLEET}} on the ConfigMap below). This
-    # topology split is what makes preemption victim selection deterministic.
-    # Runner-class isolation (osdc.io/runner-class) is a workflow-pool
-    # concern only; c7i-runner nodes carry no runner-class label.
+    # Pin runner pods to the dedicated runner-pod pool of the job's architecture:
+    # c7i-runner for x86 runners, arm64-runner for arm64 ones. GitHub reports the
+    # runner agent's architecture as runner.arch / RUNNER_ARCH, so matching it
+    # keeps those true for the job. The pool is separate from the workflow pool
+    # defined by {{NODE_FLEET}} on the ConfigMap below; this topology split is
+    # what makes preemption victim selection deterministic. Runner-class
+    # isolation (osdc.io/runner-class) is a workflow-pool concern only;
+    # runner-pod pool nodes carry no runner-class label.
     nodeSelector:
       workload-type: github-runner
-      node-fleet: "c7i-runner"
+      node-fleet: "{{RUNNER_POD_NODE_FLEET}}"
 
     # Tolerate node-fleet + instance-type taints.
     tolerations:
       - key: node-fleet
         operator: Equal
-        value: "c7i-runner"
+        value: "{{RUNNER_POD_NODE_FLEET}}"
         effect: NoSchedule
       - key: instance-type
         operator: Exists

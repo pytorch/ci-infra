@@ -31,7 +31,7 @@ from generate_runners import (
 # ============================================================================
 
 # MINIMAL_TEMPLATE mirrors the real runner.yaml.tpl's structural shape: the
-# runner pod is pinned to the dedicated c7i-runner pool (literal, not templated)
+# runner pod is pinned to the runner-pod pool of its arch ({{RUNNER_POD_NODE_FLEET}})
 # and carries no GPU/runner-class wiring; all GPU and runner-class substitutions
 # land on the workflow pod (ConfigMap) only. Tests below verify the substitution
 # mechanism (placeholders -> values) on the workflow side. Structural invariants
@@ -65,11 +65,11 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
             image: {{RUNNER_IMAGE}}
         nodeSelector:
           workload-type: github-runner
-          node-fleet: "c7i-runner"
+          node-fleet: "{{RUNNER_POD_NODE_FLEET}}"
         tolerations:
           - key: node-fleet
             operator: Equal
-            value: "c7i-runner"
+            value: "{{RUNNER_POD_NODE_FLEET}}"
             effect: NoSchedule
           - key: instance-type
             operator: Exists
@@ -149,7 +149,7 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
 # Path to the real runner.yaml.tpl shipped with the module. Tests in
 # TestRealTemplate render against this file (not MINIMAL_TEMPLATE) so they
 # defend invariants that exist only in the real template — runner pod pinned
-# to c7i-runner, priorityClassName values, GPU references confined to the
+# to the runner-pod pool of its arch, priorityClassName values, GPU references confined to the
 # workflow side, etc.
 REAL_TEMPLATE_PATH = Path(__file__).parent.parent.parent / "templates" / "runner.yaml.tpl"
 
@@ -625,7 +625,7 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all(output_file.read_text()))
         assert len(docs) == 2
 
-        # Helm values doc — top-level substitutions and the literal c7i-runner pin
+        # Helm values doc — top-level substitutions and the x86 runner-pod pool pin
         helm = docs[0]
         assert helm["githubConfigUrl"] == "https://github.com/test-org"
         assert helm["githubConfigSecret"] == "gh-secret"
@@ -710,7 +710,7 @@ class TestGenerateRunner:
         assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "2Gi"}
 
     def test_cpu_runner_has_dshm_mount(self, tmp_path):
-        def_file = make_def_file(tmp_path, "cpu-runner", "c5.xlarge", 4, 16)
+        def_file = make_def_file(tmp_path, "cpu-runner", "c7a.2xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -1394,6 +1394,43 @@ class TestGenerateRunner:
         assert "bad-fleet-reserved" in combined
         assert "reserved" in combined
 
+    def test_invalid_node_fleet_reserved_arm64_runner(self, tmp_path, capsys):
+        """node_fleet must not be 'arm64-runner' (reserved for the arm64 runner-pod pool)."""
+        def_file = make_def_file(tmp_path, "bad-arm-fleet", "m7g.12xlarge", 4, 16, node_fleet="arm64-runner")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        combined = "".join(capsys.readouterr())
+        assert "reserved" in combined
+
+    @pytest.mark.parametrize(
+        ("instance_type", "expected_pool"),
+        [("c7i.12xlarge", "c7i-runner"), ("g5.8xlarge", "c7i-runner"), ("m7g.12xlarge", "arm64-runner")],
+    )
+    def test_runner_pod_pool_follows_instance_arch(self, tmp_path, instance_type, expected_pool):
+        """The runner pod, its toleration and the runner placeholders follow the def's arch."""
+        def_file = make_def_file(tmp_path, "arch-runner", instance_type, 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is True
+        helm = next(yaml.safe_load_all((output_dir / "arch-runner.yaml").read_text()))
+        spec = helm["template"]["spec"]
+        assert spec["nodeSelector"]["node-fleet"] == expected_pool
+        assert [t["value"] for t in spec["tolerations"] if t["key"] == "node-fleet"] == [expected_pool]
+
+    def test_instance_type_missing_from_specs_rejected(self, tmp_path, capsys):
+        """A def whose instance type has no INSTANCE_SPECS entry can't pick a runner-pod pool."""
+        def_file = make_def_file(tmp_path, "unknown-instance", "zz9.huge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        combined = "".join(capsys.readouterr())
+        assert "zz9.huge" in combined
+        assert "INSTANCE_SPECS" in combined
+
     def test_max_burst_capacity_zero_allowed(self, tmp_path):
         """max_burst_capacity: 0 is valid (means uncapped / disabled)."""
         def_file = make_def_file(tmp_path, "zero-burst", "c7i.24xlarge", 4, 16, max_burst_capacity=0)
@@ -1840,7 +1877,7 @@ class TestGenerateRunner:
 # against representative runner defs (CPU, GPU, ARM, release) and assert the
 # invariants that recent rounds of changes locked in:
 #   - Runner pod uses priorityClassName: arc-runner and is pinned to the
-#     dedicated c7i-runner pool (literal string, not the templated fleet).
+#     runner-pod pool of its arch (c7i-runner or arm64-runner), not the def's fleet.
 #   - Runner pod has no GPU/runner-class wiring.
 #   - Workflow pod uses priorityClassName: arc-workflow and selects nodes by
 #     the def's node_fleet (g4dn, c7i, m8g, r7a, ...).
@@ -1863,6 +1900,7 @@ RUNNER_VARIANTS = [
             "gpu": 0,
             "disk_size": 150,
             "expected_workflow_fleet": "c7i",
+            "expected_runner_pod_fleet": "c7i-runner",
         },
         id="cpu",
     ),
@@ -1875,6 +1913,7 @@ RUNNER_VARIANTS = [
             "gpu": 1,
             "disk_size": 150,
             "expected_workflow_fleet": "g4dn",
+            "expected_runner_pod_fleet": "c7i-runner",
         },
         id="gpu",
     ),
@@ -1887,6 +1926,7 @@ RUNNER_VARIANTS = [
             "gpu": 0,
             "disk_size": 256,
             "expected_workflow_fleet": "m8g",
+            "expected_runner_pod_fleet": "arm64-runner",
         },
         id="arm",
     ),
@@ -1901,6 +1941,7 @@ RUNNER_VARIANTS = [
             "runner_group": "release-runners",
             "runner_class": "release",
             "expected_workflow_fleet": "r7a",
+            "expected_runner_pod_fleet": "c7i-runner",
         },
         id="release",
     ),
@@ -1914,6 +1955,7 @@ RUNNER_VARIANTS = [
             "disk_size": 600,
             "node_fleet": "g5-48xlarge",
             "expected_workflow_fleet": "g5-48xlarge",
+            "expected_runner_pod_fleet": "c7i-runner",
         },
         id="override",
     ),
@@ -2030,10 +2072,10 @@ class TestRealTemplate:
         assert helm["template"]["spec"]["priorityClassName"] == "arc-runner"
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
-    def test_runner_pod_pinned_to_c7i_runner_fleet(self, real_template, tmp_path, variant):
-        """Runner pod nodeSelector must use the literal c7i-runner pool, not the def's fleet."""
+    def test_runner_pod_pinned_to_runner_pod_fleet_of_its_arch(self, real_template, tmp_path, variant):
+        """Runner pod nodeSelector must use the runner-pod pool of the def's arch, not the def's fleet."""
         helm, _, _ = _render_real(real_template, tmp_path, variant)
-        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "c7i-runner"
+        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == variant["expected_runner_pod_fleet"]
 
     def test_workflow_pod_scheduler_name_from_def(self, real_template, tmp_path):
         """Workflow pod gets schedulerName when the runner def sets scheduler_name."""
@@ -2301,13 +2343,13 @@ class TestRealTemplate:
         assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
-    def test_runner_pod_tolerates_c7i_runner_node_fleet(self, real_template, tmp_path, variant):
-        """Runner pod tolerations must include node-fleet=c7i-runner."""
+    def test_runner_pod_tolerates_its_runner_pod_fleet(self, real_template, tmp_path, variant):
+        """Runner pod tolerations must include node-fleet=<runner-pod pool of the def's arch>."""
         helm, _, _ = _render_real(real_template, tmp_path, variant)
         tolerations = helm["template"]["spec"]["tolerations"]
         node_fleet_tols = [t for t in tolerations if t.get("key") == "node-fleet"]
         assert len(node_fleet_tols) == 1, f"expected exactly one node-fleet toleration, got {node_fleet_tols!r}"
-        assert node_fleet_tols[0]["value"] == "c7i-runner"
+        assert node_fleet_tols[0]["value"] == variant["expected_runner_pod_fleet"]
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_has_no_wait_for_node_taints_env(self, real_template, tmp_path, variant):
@@ -2372,21 +2414,20 @@ class TestRealTemplate:
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_listener_env_has_capacity_aware_runner_node_fleet(self, real_template, tmp_path, variant):
-        """Listener container must declare CAPACITY_AWARE_RUNNER_NODE_FLEET=c7i-runner.
+        """Listener container must declare CAPACITY_AWARE_RUNNER_NODE_FLEET=<runner-pod pool of the def's arch>.
 
         The fork's capacity monitor uses this to place placeholder-runner pods on the
-        dedicated runner pool (cluster-wide constant, same value for every scale set).
-        Without this env var, the listener fails to start when capacity-aware mode is
-        enabled (Validate() errors out).
+        same runner-pod pool the real runner pods use. Without this env var, the
+        listener fails to start when capacity-aware mode is enabled (Validate() errors out).
         """
         helm, _, _ = _render_real(real_template, tmp_path, variant)
         listener = next(c for c in helm["listenerTemplate"]["spec"]["containers"] if c["name"] == "listener")
         listener_env = {e["name"]: e.get("value") for e in listener["env"]}
-        assert listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"] == "c7i-runner"
+        assert listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"] == variant["expected_runner_pod_fleet"]
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_listener_env_runner_node_fleet_distinct_from_workflow_node_fleet(self, real_template, tmp_path, variant):
-        """CAPACITY_AWARE_RUNNER_NODE_FLEET (runner pool, constant) must be distinct from
+        """CAPACITY_AWARE_RUNNER_NODE_FLEET (runner-pod pool, per arch) must be distinct from
         CAPACITY_AWARE_NODE_FLEET (per-def workflow fleet). Both must be present.
         """
         helm, _, _ = _render_real(real_template, tmp_path, variant)
@@ -2394,8 +2435,8 @@ class TestRealTemplate:
         listener_env = {e["name"]: e.get("value") for e in listener["env"]}
         # Workflow fleet derives from the def's instance type
         assert listener_env["CAPACITY_AWARE_NODE_FLEET"] == variant["expected_workflow_fleet"]
-        # Runner fleet is the cluster-wide constant
-        assert listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"] == "c7i-runner"
+        # Runner-pod pool follows the def's arch
+        assert listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"] == variant["expected_runner_pod_fleet"]
         # Sanity: the two env vars must coexist as separate entries
         assert listener_env["CAPACITY_AWARE_NODE_FLEET"] != listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"]
 

@@ -14,7 +14,8 @@ import re
 # c7i-runner (x86) and arm64-runner (Graviton) are the dedicated runner-pod
 # control-plane pools; allowing a workflow pod to tolerate one would let user code
 # preempt the orchestrator and break the priority-class ladder.
-RESERVED_NODE_FLEET_NAMES = frozenset({"c7i-runner", "arm64-runner"})
+RUNNER_POD_NODE_FLEETS = {"amd64": "c7i-runner", "arm64": "arm64-runner"}
+RESERVED_NODE_FLEET_NAMES = frozenset(RUNNER_POD_NODE_FLEETS.values())
 
 # K8s DNS-1123 label: lowercase alphanumeric and dashes, start/end alphanumeric,
 # 1-63 chars. Matches the constraints applied at apply time by the API server.
@@ -65,3 +66,19 @@ def derive_fleet_name(instance_type, override=None):
             raise ValueError(f"node_fleet override invalid ({err}): got {override!r}")
         return override
     return instance_type.split(".")[0]
+
+
+def derive_runner_pod_node_fleet(arch):
+    """Runner-pod pool for a runner whose workflow pods run on ``arch``.
+
+    The runner pod hosts the runner agent, and GitHub reports the agent's
+    architecture as ``runner.arch`` / ``RUNNER_ARCH``. Putting it on a pool of
+    the job's architecture keeps those values true for the job. Raises
+    ``ValueError`` for an architecture with no runner-pod pool.
+    """
+    try:
+        return RUNNER_POD_NODE_FLEETS[arch]
+    except KeyError:
+        raise ValueError(
+            f"no runner-pod pool for arch {arch!r}; expected one of {sorted(RUNNER_POD_NODE_FLEETS)}"
+        ) from None
