@@ -2056,7 +2056,7 @@ class TestModuleStartupTaints:
         """The real hf-cache entry: emitted on runner nodepools iff hf-cache is enabled.
 
         The hf-cache-mount DaemonSet runs on every workload-type=github-runner
-        node and tolerates all taints, so the taint has no applies_when guard.
+        node and tolerates all taints, so every runner nodepool can carry the taint.
         """
         monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "hf-cache arc-runners nodepools")
         np = self._np_doc(generate_nodepool_yaml(_make_nodepool_def(), "nodepools"))

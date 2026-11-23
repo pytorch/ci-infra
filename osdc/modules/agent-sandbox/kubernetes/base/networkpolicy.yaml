@@ -2,7 +2,7 @@
 #
 # IMPORTANT (prototype limitation): under IPv6-only AWS VPC CNI, NetworkPolicy is
 # NOT a hard egress boundary — it does not apply to the IPv4-egress interface
-# (the same gap that made node-level iptables in cache-enforcer unreliable). This
+# (the same gap that made node-level iptables filtering unreliable). This
 # is best-effort defense-in-depth ONLY. A boundary that would hold — a dedicated sandbox
 # subnet with no NAT/IGW route, plus Security-Groups-for-Pods — does not exist yet. Do
 # not treat these policies as the thing that guarantees the agent cannot exfiltrate.

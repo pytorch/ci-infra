@@ -484,7 +484,7 @@ token for the dispatcher; the task pod holds no credential at all.
 ## Limitations (prototype — read before trusting it)
 
 - **Egress is NOT hard-enforced.** Under IPv6-only AWS VPC-CNI, `NetworkPolicy`
-  doesn't cover IPv4 egress (the same gap that made cache-enforcer's node iptables
+  doesn't cover IPv4 egress (the same gap that made node-level iptables filtering
   unreliable), so the proxies are the *credential* boundary, not a network one: a
   compromised agent still has no token to steal, but can still reach the internet.
   A boundary that would hold — a dedicated sandbox subnet with no NAT/IGW route +

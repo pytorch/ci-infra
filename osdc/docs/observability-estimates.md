@@ -5,7 +5,7 @@ Per-unit cost estimates for metrics cardinality and log volume. For architecture
 > **Stale estimates warning**: The numerical cardinality estimates in the "Estimated Metrics Load for meta-prod-aws-ue2" section below are stale for multiple reasons and should not be relied on without re-validation:
 > - **Per-source whitelists landed after the original calculation.** node-exporter is now ~4 series per node (was estimated at 200–400) and cAdvisor is restricted to control-plane namespaces (was estimated at 30–50 cluster-wide).
 > - **The kubelet ServiceMonitor is currently disabled** on IPv6-only EKS (`modules/monitoring/helm/values.yaml` `kubelet.enabled: false`). Both cAdvisor and `kubelet_*` series produce **zero** today. The per-source descriptions below describe the planned post-IPv6 state, not current behavior. See `observability.md` "Disabled scrapers (IPv6 migration)".
-> - **`meta-prod-aws-ue2` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 24 (`replicas_per_arch: 12` × 2 archs, though KEDA makes the live count a range), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
+> - **`meta-prod-aws-ue2` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 24 (`replicas_per_arch: 12` × 2 archs, though KEDA makes the live count a range). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
 > - **Scale-set count is 50**, not 40 (42 upstream + 4 B200 + 4 H100).
 > - **`gha_capacity_*` family count is 16**, not 15.
 >
@@ -66,7 +66,6 @@ These metrics come from centralized Deployments or StatefulSets. Series counts b
 | **BuildKit HAProxy** | Whitelisted to 4 metrics only: `haproxy_server_status`, `haproxy_server_current_sessions`, `haproxy_server_connection_errors_total`, `haproxy_backend_current_sessions`. No bytes in/out, rates, or queue depth. | small fixed set per replica |
 | **node-compactor** | Compaction cycle counts, nodes tainted/untainted, utilization, burst events | ~10-20 total (single replica) |
 | **Pushgateway** | Hosts metrics pushed by CronJobs (zombie-cleanup, etc.). `honorLabels: true`. Volume depends on which jobs push and how many label combinations they emit. | varies (push-based, job-dependent) |
-| **pypi-cache nginx** | Whitelisted to `nginx_up`, `nginx_http_requests_total`, `nginx_connections_active` per nginx-exporter sidecar (one per pod — 4 deployments × N replicas per cluster). | small fixed set per pod |
 
 ### Scaling Formula (Metrics)
 
@@ -138,7 +137,6 @@ Every Karpenter-managed node runs DaemonSets that produce logs. This is the per-
 | **aws-node (VPC-CNI)** | Pod log | 1-5 | EKS-managed DaemonSet — runs on every node. JSON, level extracted. |
 | **GPU: nvidia-fabricmanager** (journal) | System | 1-5 | GPU nodes only |
 | **GPU: nvidia-persistenced** (journal) | System | 0-2 | GPU nodes only |
-| **cache-enforcer** | Pod log | 1-5 | DaemonSet on `meta-prod-aws-ue2` (`modules/cache-enforcer/kubernetes/daemonset.yaml`) |
 | **image-cache-janitor** | Pod log | 1-5 | DaemonSet in base — runs on every node (`base/kubernetes/image-cache-janitor/daemonset.yaml`) |
 | **nodelocaldns** | Pod log | <1 | DaemonSet in base — runs on every node (`base/kubernetes/nodelocaldns/`). CoreDNS plugin reports + "Setup OK" messages only; near-silent at steady state |
 
@@ -244,7 +242,6 @@ From `clusters.yaml` defaults plus `meta-prod-aws-ue2` overrides:
 | CoreDNS | 6 | `defaults.coredns.replicas: 6` (`meta-prod-aws-ue2` has no override) |
 | kube-state-metrics | 1 | single replica |
 | Prometheus Operator | 1 | single replica |
-| pypi-cache nginx | 40 | 4 deployments per CUDA slug (`cpu`, `cu126`, `cu128`, `cu130`) × `meta-prod-aws-ue2.pypi_cache.replicas: 10` |
 
 ### Cluster-wide fixed overhead (C_fixed)
 
@@ -261,8 +258,7 @@ Using midpoint of per-replica ranges from the [cluster-wide reference table](#cl
 | BuildKit daemon | ~9 | 10 | ~90 |
 | BuildKit HAProxy | ~23 | 1 | ~23 |
 | node-compactor | ~15 | 1 | ~15 |
-| pypi-cache nginx (per-pod) | ~5 | 40 | ~200 |
-| **Total C_fixed** | | | **~1,517** |
+| **Total C_fixed** | | | **~1,317** |
 
 ### Peak cardinality calculation
 
@@ -276,7 +272,7 @@ Total series ≈ C_fixed
              + N_base_nodes × 1515
              + N_scale_sets × 85
 
-           ≈ 1,622                              (refreshed C_fixed)
+           ≈ 1,422                              (refreshed C_fixed)
              + 7,367 × 40               =    294,680   (stale: per-pod cAdvisor currently 0 — kubelet SM disabled)
              + 680 × 715                =    486,200   (stale: per-node node-exporter now ~4; cAdvisor currently 0)
              + 1,433 × 715 + 25 × 2,989 =  1,099,320   (stale: per-node node-exporter now ~4; cAdvisor currently 0; H100 GPUs not counted)

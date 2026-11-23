@@ -567,6 +567,13 @@ remove-module cluster module:
     elif [[ -d "$OSDC_UPSTREAM/modules/$MODULE" ]]; then
         MODULE_DIR="$OSDC_UPSTREAM/modules/$MODULE"
     fi
+    # A missing module dir would silently skip the tofu destroy and still report
+    # success, orphaning whatever its terraform root created.
+    if [[ -z "$MODULE_DIR" ]]; then
+        echo "ERROR: no modules/$MODULE directory, so its terraform root cannot be destroyed." >&2
+        echo "Run remove-module from a commit that still has the module." >&2
+        exit 1
+    fi
     HAS_TF="no"
     if [[ -n "$MODULE_DIR" ]] && [[ -f "$MODULE_DIR/terraform/main.tf" ]]; then
         HAS_TF="yes"

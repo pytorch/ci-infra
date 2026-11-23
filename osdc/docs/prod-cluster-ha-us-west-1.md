@@ -78,8 +78,6 @@ meta-prod-aws-uw1:
     capacity_reservation_ids:                     # us-west-1 H100 reservations
       - cr-04d3d1d84e127a562
       - cr-09a53051589034fb8
-  pypi_cache:
-    replicas: 10
   modules:
     - karpenter
     - arc
@@ -88,8 +86,6 @@ meta-prod-aws-uw1:
     - arc-runners
     - arc-runners-h100
     - buildkit              # planned; the live meta-prod-aws-uw1 entry does not deploy it
-    - pypi-cache
-    - cache-enforcer
     - zombie-cleanup
     - harbor-cache-recovery
     - monitoring
