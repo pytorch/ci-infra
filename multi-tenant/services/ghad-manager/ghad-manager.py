@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import socket
+import stat
 import json
 
 import docker
@@ -175,6 +176,42 @@ def prune_networks(client: docker.DockerClient, uid: int) -> None:
         logger.warning(f"Error pruning networks for {uid}: {str(e)}")
 
 
+def open_cache_permissions(cache_dir: str) -> None:
+    """Make the directories and regular files under cache_dir mode 0777.
+
+    This runs as root over a cache that jobs write to while it runs, so it never
+    follows a symlink: os.fwalk opens each directory relative to its parent and
+    skips one that changed after it was listed, and each file is opened with
+    O_NOFOLLOW and changed through that descriptor. Root-owned files are left
+    alone; jobs run under rootless Docker and don't create them.
+    """
+    for _, _, files, dir_fd in os.fwalk(cache_dir):
+        try:
+            if stat.S_IMODE(os.fstat(dir_fd).st_mode) != 0o777:
+                os.fchmod(dir_fd, 0o777)
+        except OSError as e:
+            logger.warning(f"Error changing permissions in {cache_dir}: {str(e)}")
+        for name in files:
+            try:
+                fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=dir_fd)
+            except OSError:
+                continue  # removed since it was listed
+            try:
+                st = os.fstat(fd)
+                if (
+                    stat.S_ISREG(st.st_mode)
+                    and st.st_uid != 0
+                    and stat.S_IMODE(st.st_mode) != 0o777
+                ):
+                    # chmod through /proc/self/fd reaches the opened inode
+                    # itself, as glibc's fchmodat(AT_SYMLINK_NOFOLLOW) does.
+                    os.chmod(f"/proc/self/fd/{fd}", 0o777)
+            except OSError as e:
+                logger.warning(f"Error changing permissions of {name}: {str(e)}")
+            finally:
+                os.close(fd)
+
+
 def start_container_if_not_running(
     runner_url: str,
     instance_label: str,
@@ -224,32 +261,7 @@ def start_container_if_not_running(
 
         _cache_dir = "/mnt/hf_cache/"
         # Set cache dir permission before each job, hacky but it works for now
-        subprocess.run(
-            [
-                "find",
-                _cache_dir,
-                "-type",
-                "d",
-                "-exec",
-                "chmod",
-                "0777",
-                "{}",
-                ";",
-            ]
-        )
-        subprocess.run(
-            [
-                "find",
-                _cache_dir,
-                "-type",
-                "f",
-                "-exec",
-                "chmod",
-                "0777",
-                "{}",
-                ";",
-            ]
-        )
+        open_cache_permissions(_cache_dir)
 
         try:
             response = client.containers.run(
