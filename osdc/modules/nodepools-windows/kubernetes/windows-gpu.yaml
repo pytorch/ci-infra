@@ -1,7 +1,10 @@
-# Karpenter Windows GPU NodePool + EC2NodeClass (windows-gpu-test POC).
+# Karpenter Windows GPU NodePool + EC2NodeClass.
 #
-# Provisions a g4dn.xlarge from the pre-baked Windows AMI (NVIDIA WDDM 595.97
-# baked in) on demand, and scales to zero when idle via WhenEmpty consolidation.
+# Provisions a g4dn.xlarge from the pre-baked Windows AMI (NVIDIA WDDM driver
+# baked in) on demand, and scales back to zero when idle via WhenEmpty
+# consolidation. Deployed by deploy.sh, which substitutes __CLUSTER_NAME__,
+# __AMI_ID__, __AMI_FAMILY__, and __ROLE_NAME__ from the cluster config.
+#
 # The directx.microsoft.com/display taint is added by the device plugin at
 # runtime, not here.
 ---
@@ -10,19 +13,19 @@ kind: EC2NodeClass
 metadata:
   name: windows-gpu
 spec:
-  role: windows-gpu-test-node-role
-  # Custom AMI (Windows Server 2025 Full + baked driver). amiFamily must be set
+  role: __ROLE_NAME__
+  # Custom AMI (Windows Server Full + baked driver). amiFamily must be set
   # explicitly when not using an alias; Karpenter then generates the
   # Start-EKSBootstrap.ps1 user data itself.
-  amiFamily: Windows2025
+  amiFamily: __AMI_FAMILY__
   amiSelectorTerms:
-    - id: ami-0ade98449def5cb38
+    - id: __AMI_ID__
   subnetSelectorTerms:
     - tags:
-        karpenter.sh/discovery: windows-gpu-test
+        karpenter.sh/discovery: __CLUSTER_NAME__
   securityGroupSelectorTerms:
     - tags:
-        karpenter.sh/discovery: windows-gpu-test
+        karpenter.sh/discovery: __CLUSTER_NAME__
   # The baked AMI's root snapshot is 200GB; without this Karpenter requests a
   # 50GB root volume and RunInstances fails with InvalidBlockDeviceMapping.
   blockDeviceMappings:

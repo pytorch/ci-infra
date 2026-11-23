@@ -655,11 +655,11 @@ clusters:
       - arc-runners-dev
       - zombie-cleanup
 
-  windows-gpu-test:
-    # Windows POC cluster: IPv4 (Windows containers/CNI don't support IPv6-only).
+  windows-staging-aws-ue1:
+    # Windows staging cluster: IPv4 (Windows containers/CNI don't support IPv6-only).
     region: us-east-1
-    cluster_name: windows-gpu-test
-    state_bucket: lf-osdc-tfstate-win-gpu-test
+    cluster_name: windows-staging-aws-ue1
+    state_bucket: ciforge-tfstate-windows-staging-aws-ue1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
     base:
@@ -698,3 +698,4 @@ clusters:
       ami_id: ami-0ade98449def5cb38  # pre-baked (WDDM 595.97, 200GB root) — skips user-data driver install
     modules:
       - karpenter
+      - nodepools-windows
