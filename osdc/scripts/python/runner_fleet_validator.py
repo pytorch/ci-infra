@@ -59,7 +59,7 @@ def _collect_available_fleets(
 
     Walks each root x module x def file. A fleet name defined by two different
     files (across modules or roots) is reported as a collision error — silent
-    merge would mask configuration bugs. Reserved names (c7i-runner) are
+    merge would mask configuration bugs. Reserved names (the runner-pod pools) are
     excluded from the available set even when defined, because workflow pods
     are forbidden from targeting them.
     """
