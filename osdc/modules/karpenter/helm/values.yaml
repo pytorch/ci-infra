@@ -43,10 +43,6 @@ settings:
   # Feature gates
   featureGates:
     spotToSpotConsolidation: true
-    # NodeOverlay lets the Windows GPU NodePool declare directx.microsoft.com/display
-    # capacity, so Karpenter's scheduler can provision for pods requesting the
-    # device-plugin extended resource (it simulates from instance-type data only).
-    nodeOverlay: true
 
 # Controller configuration
 controller:
