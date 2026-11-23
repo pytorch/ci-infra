@@ -698,3 +698,4 @@ clusters:
       ami_id: ami-0ade98449def5cb38  # pre-baked (WDDM 595.97, 200GB root) — skips user-data driver install
     modules:
       - karpenter
+      - nodepools-windows
