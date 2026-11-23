@@ -186,7 +186,7 @@ Base AWS infrastructure. Always deployed as part of `deploy-base`, not as an opt
 
 ARC controller for GitHub Actions self-hosted runners.
 
-- **kubernetes/**: `arc-systems` + `arc-runners` namespaces, runner ServiceAccount, LimitRange, hooks ConfigMap, priority classes, capacity-monitor RBAC, `hooks-warmer` DaemonSet (downloads patched runner-container-hooks to host NVMe on the `c7i-runner` fleet). Registry mirror config lives in `base/kubernetes/` (all clusters need it, not just ARC).
+- **kubernetes/**: `arc-systems` + `arc-runners` namespaces, runner ServiceAccount, LimitRange, hooks ConfigMap, priority classes, capacity-monitor RBAC, `hooks-warmer` DaemonSet (downloads patched runner-container-hooks to host NVMe on the `c7i-runner` and `arm64-runner` runner-pod pools). Registry mirror config lives in `base/kubernetes/` (all clusters need it, not just ARC).
 - **helm/arc/**: ARC controller Helm values
 - **deploy.sh**: `helm upgrade --install` for the ARC controller chart
 

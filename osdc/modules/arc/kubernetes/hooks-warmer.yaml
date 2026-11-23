@@ -36,16 +36,27 @@ spec:
     spec:
       priorityClassName: system-node-critical
 
-      # Pin to the dedicated c7i-runner pool (where runner pods live).
-      # Workflow pool nodes don't run runner pods, so they don't need hooks.
-      nodeSelector:
-        node-fleet: "c7i-runner"
+      # Pin to the dedicated runner-pod pools, where runner pods live: c7i-runner
+      # for x86 runners and arm64-runner for arm64 runners. Workflow pool nodes
+      # don't run runner pods, so they don't need hooks.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-fleet
+                    operator: In
+                    values: ["c7i-runner", "arm64-runner"]
 
-      # Tolerate node-fleet + instance-type taints carried by c7i-runner nodes.
+      # Tolerate node-fleet + instance-type taints carried by the runner-pod pools.
       tolerations:
         - key: node-fleet
           operator: Equal
           value: "c7i-runner"
+          effect: NoSchedule
+        - key: node-fleet
+          operator: Equal
+          value: "arm64-runner"
           effect: NoSchedule
         - key: instance-type
           operator: Exists
