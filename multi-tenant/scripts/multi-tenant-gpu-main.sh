@@ -2,13 +2,12 @@
 
 RUNNER_USER=$1
 DOCKER_GROUP_ID=$2
-RUNNER_URL=$3
-GH_TOKEN=$4
-INSTANCE_ID=$5
-export RUNNER_UID=$6
-INSTANCE_LABEL=$7
+export RUNNER_UID=$3
+# ghad-manager registers the runner and passes its JIT config in the environment
+JIT_CONFIG=$ACTIONS_RUNNER_INPUT_JITCONFIG
+unset ACTIONS_RUNNER_INPUT_JITCONFIG
 
-if [[ "$#" -ne 7 ]] ; then
+if [[ "$#" -ne 3 || -z "$JIT_CONFIG" ]] ; then
     echo "Invalid usage, not going to work"
     exit 1
 fi
@@ -28,4 +27,5 @@ mkdir -p ~/.docker
 sudo cat /docker/config.json | jq 'del(.currentContext)' > ~/.docker/config.json
 sudo chown -R 1001:1001 ~/.docker
 
-sudo su - $RUNNER_USER -c "/bin/bash -c './config.sh --url $RUNNER_URL --token $GH_TOKEN --name ${INSTANCE_ID}-${RUNNER_UID} --labels $INSTANCE_LABEL --unattended --replace --ephemeral && ./run.sh'"
+# `su -` starts a clean environment, so pass the config as an argument
+sudo su - $RUNNER_USER -c "/bin/bash -c './run.sh --jitconfig $JIT_CONFIG'"

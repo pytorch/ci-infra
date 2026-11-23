@@ -314,12 +314,6 @@
         content: "{{ instance_label }}"
         mode: '0644'
 
-    - name: Create file with repository/org url for client registration
-      ansible.builtin.copy:
-        dest: /etc/gha-runner-config/runner-url
-        content: "https://github.com/pytorch"
-        mode: '0644'
-
     - name: Create file with private key for ghapp authentication registration
       ansible.builtin.copy:
         dest: /etc/gha-runner-config/private-key

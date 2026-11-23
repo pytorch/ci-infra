@@ -1,4 +1,4 @@
-"""Tests for ghad-manager.py. Linux only (O_PATH, /proc/self/fd).
+"""Tests for ghad-manager.py. The cache tests are Linux only (O_PATH, /proc/self/fd).
 
 Run from multi-tenant/ with `just test`; run as root to also cover the
 root-owned-file check.
@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from github import GithubException
 
 _spec = importlib.util.spec_from_file_location(
     "ghad_manager", Path(__file__).with_name("ghad-manager.py")
@@ -104,3 +105,78 @@ def test_swapping_a_dir_for_a_symlink_mid_sweep(tree) -> None:
         stop.set()
         swapper.join()
     assert (mode(outside), mode(secret)) == (0o700, 0o600)
+
+
+class FakeRequester:
+    """Stands in for PyGithub's requester; `responses` maps (verb, url) to a
+    list of results, each a dict to return or an exception to raise."""
+
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def requestJsonAndCheck(self, verb, url, parameters=None, input=None):
+        self.calls.append((verb, url, parameters, input))
+        result = self.responses[(verb, url)].pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return {}, result
+
+
+@pytest.fixture
+def requester(monkeypatch):
+    fake = FakeRequester({})
+
+    class Org:
+        login = "pytorch"
+        _requester = fake
+
+    class Client:
+        def get_organization(self, name):
+            assert name == "pytorch"
+            return Org()
+
+    monkeypatch.setattr(ghad_manager, "get_github_app_client", Client)
+    return fake
+
+
+RUNNERS = "/orgs/pytorch/actions/runners"
+JIT = f"{RUNNERS}/generate-jitconfig"
+BODY = {"name": "host-1001", "runner_group_id": 1, "labels": ["linux.dgx.b200"]}
+
+
+def test_jit_config(requester) -> None:
+    requester.responses = {("POST", JIT): [{"encoded_jit_config": "cfg"}]}
+    assert ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200") == "cfg"
+    assert requester.calls == [("POST", JIT, None, BODY)]
+
+
+def test_jit_config_replaces_a_leftover_runner(requester) -> None:
+    requester.responses = {
+        ("POST", JIT): [
+            GithubException(409, {"message": "Already exists"}),
+            {"encoded_jit_config": "cfg"},
+        ],
+        ("GET", RUNNERS): [
+            {
+                "runners": [
+                    {"id": 5, "name": "host-10010"},
+                    {"id": 6, "name": "host-1001"},
+                ]
+            }
+        ],
+        ("DELETE", f"{RUNNERS}/6"): [{}],
+    }
+    assert ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200") == "cfg"
+    assert [c[:2] for c in requester.calls] == [
+        ("POST", JIT),
+        ("GET", RUNNERS),
+        ("DELETE", f"{RUNNERS}/6"),
+        ("POST", JIT),
+    ]
+
+
+def test_jit_config_raises_other_errors(requester) -> None:
+    requester.responses = {("POST", JIT): [GithubException(403, {"message": "no"})]}
+    with pytest.raises(GithubException):
+        ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200")
