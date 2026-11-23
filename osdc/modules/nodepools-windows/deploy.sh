@@ -21,13 +21,12 @@ source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
-# The Windows AMI must be pre-baked with the NVIDIA WDDM driver. It is produced
-# by modules/eks/scripts/bake-windows-gpu-ami.sh and referenced per-cluster via
-# windows.ami_id. Until the AMI bake is automated in CI, this is set manually.
+# The Windows AMI must be pre-baked with the NVIDIA WDDM driver (produced
+# out-of-band) and referenced per-cluster via windows.ami_id.
 AMI_ID=$(uv run "$CFG" "$CLUSTER" windows.ami_id "")
 if [ -z "$AMI_ID" ]; then
   echo "ERROR: windows.ami_id is not set for cluster '$CLUSTER'." >&2
-  echo "Bake one with modules/eks/scripts/bake-windows-gpu-ami.sh and set it in clusters.yaml." >&2
+  echo "Set windows.ami_id in clusters.yaml to a pre-baked Windows GPU AMI." >&2
   exit 1
 fi
 
