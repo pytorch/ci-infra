@@ -82,12 +82,12 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.cluster_endpoint_public_access_cidrs
   }
 
-  # IPv6-only pod networking. Service CIDR is auto-assigned by EKS to a ULA
-  # in fd00:ec2::/108 — not customizable. Pod IPs come from a /80 IPv6 prefix
-  # per node via VPC CNI prefix delegation. ipFamily is immutable after
-  # cluster creation.
+  # Pod networking IP family. ipv6 (default): Service CIDR is auto-assigned by
+  # EKS to a ULA in fd00:ec2::/108 — not customizable. Pod IPs come from a /80
+  # IPv6 prefix per node via VPC CNI prefix delegation. ipFamily is immutable
+  # after cluster creation, so pick it up front.
   kubernetes_network_config {
-    ip_family = "ipv6"
+    ip_family = var.ip_family
   }
 
   # Encrypt Kubernetes secrets at rest using KMS envelope encryption
@@ -192,13 +192,17 @@ resource "aws_eks_addon" "vpc_cni" {
   # legacy ENABLE_IPv6 / ENABLE_IPv4 env vars are not in the addon ConfigurationValues
   # JSON schema (verified against v1.21.1-eksbuild.3); passing them fails with
   # InvalidParameterException at addon-create time.
-  configuration_values = jsonencode({
+  configuration_values = var.ip_family == "ipv6" ? jsonencode({
     env = {
       ENABLE_V4_EGRESS         = "true"
       ENABLE_PREFIX_DELEGATION = "true"
       WARM_PREFIX_TARGET       = "1"
     }
-  })
+    }) : jsonencode(
+    var.enable_windows_node_group ? {
+      enableWindowsIpam = "true"
+    } : {}
+  )
 
   tags = var.tags
 }
@@ -422,7 +426,7 @@ resource "aws_launch_template" "base" {
     cluster_name          = aws_eks_cluster.this.name
     cluster_endpoint      = aws_eks_cluster.this.endpoint
     cluster_ca_data       = aws_eks_cluster.this.certificate_authority[0].data
-    service_cidr          = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr
+    service_cidr          = var.ip_family == "ipv6" ? aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr : aws_eks_cluster.this.kubernetes_network_config[0].service_ipv4_cidr
     pre_nodeadm_script    = file("${path.root}/../../../base/scripts/bootstrap/eks-base-pre-nodeadm-az-label.sh")
     post_bootstrap_script = file("${path.root}/../../../base/scripts/bootstrap/eks-base-bootstrap.sh")
   }))
@@ -462,7 +466,7 @@ resource "aws_launch_template" "base" {
 
   lifecycle {
     precondition {
-      condition     = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr != ""
+      condition     = var.ip_family != "ipv6" || aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr != ""
       error_message = "EKS cluster service_ipv6_cidr is empty — cluster IPv6 networking not yet initialized. Re-run apply."
     }
   }
@@ -567,4 +571,91 @@ resource "aws_eks_access_policy_association" "cluster_admin" {
   }
 
   depends_on = [aws_eks_access_entry.cluster_admin]
+}
+
+# --- Windows GPU node group (optional, requires ip_family = "ipv4") ---
+
+# Installs the NVIDIA WDDM 595.97 driver in user data.
+resource "aws_launch_template" "windows" {
+  count = var.enable_windows_node_group ? 1 : 0
+
+  name_prefix = "${var.cluster_name}-windows-"
+
+  user_data = base64encode(<<-EOT
+    <powershell>
+    $ErrorActionPreference = 'Stop'
+    curl.exe -L -o C:\driver59597.exe "https://ec2-windows-nvidia-drivers.s3.us-east-1.amazonaws.com/grid-20.0/595.97_grid_win10_win11_server2022_server2025_64bit_dch_international_aws_swl.exe"
+    Start-Process -FilePath C:\driver59597.exe -ArgumentList '-s','-noreboot' -Wait
+    </powershell>
+  EOT
+  )
+
+  block_device_mappings {
+    device_name = "/dev/sda1"
+
+    ebs {
+      volume_size           = var.windows_volume_size
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
+    }
+  }
+
+  # Windows containers reach IMDSv2 from inside the container, which needs a
+  # hop limit of at least 2 (host + container = 2 hops).
+  metadata_options {
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(
+      var.tags,
+      {
+        Name = "${var.cluster_name}-windows-node"
+        Type = "windows-gpu"
+      }
+    )
+  }
+
+  tags = var.tags
+}
+
+resource "aws_eks_node_group" "windows" {
+  count = var.enable_windows_node_group ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.this.name
+  node_group_name = "${var.cluster_name}-windows-gpu"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.subnet_ids
+
+  ami_type       = var.windows_ami_type
+  instance_types = [var.windows_instance_type]
+  capacity_type  = "ON_DEMAND"
+
+  scaling_config {
+    desired_size = var.windows_node_count
+    min_size     = 0
+    max_size     = max(var.windows_node_count, 1)
+  }
+
+  # windows-build matches the TensorWorks directx-device-plugin nodeSelector
+  # (its hardcoded 10.0.20348 must be bumped to 10.0.26100 at deploy time).
+  labels = {
+    "windows-build" = "10.0.26100"
+  }
+
+  launch_template {
+    id      = aws_launch_template.windows[0].id
+    version = aws_launch_template.windows[0].latest_version
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.cluster_name}-windows-gpu"
+      Type = "windows-gpu"
+    }
+  )
 }

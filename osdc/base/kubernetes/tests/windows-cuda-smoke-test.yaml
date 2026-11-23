@@ -1,0 +1,21 @@
+# One-shot CUDA smoke test for Windows GPU nodes (not applied by kustomization).
+# Runs deviceQuery in a process-isolated container after requesting one
+# directx.microsoft.com/display device. Passes only if the container reaches
+# the host GPU. Applied by tests/smoke/test_windows_gpu.py via `just smoke`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: windows-cuda-smoke-test
+spec:
+  template:
+    spec:
+      containers:
+        - name: cuda-devicequery
+          image: "index.docker.io/tensorworks/example-cuda-devicequery:0.0.1"
+          resources:
+            limits:
+              directx.microsoft.com/display: 1
+      nodeSelector:
+        kubernetes.io/os: windows
+      restartPolicy: Never
+  backoffLimit: 0
