@@ -184,3 +184,30 @@ def test_jit_config_raises_other_errors(requester) -> None:
     requester.responses = {("POST", JIT): [GithubException(403, {"message": "no"})]}
     with pytest.raises(GithubException):
         ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200")
+
+
+def test_jit_config_error_skips_the_user(monkeypatch) -> None:
+    """A runner GitHub won't replace yet, e.g. one still marked busy after its
+    container died mid-job, must not stop ghad-manager for every user."""
+    for name in ["stop_all_containers", "prune_images", "prune_networks"]:
+        monkeypatch.setattr(ghad_manager, name, lambda *args: None)
+    monkeypatch.setattr(ghad_manager, "login_to_ecr", lambda *args: None)
+    monkeypatch.setattr(ghad_manager, "login_to_dockerhub", lambda *args: None)
+    monkeypatch.setattr(ghad_manager, "is_container_running", lambda *args: False)
+    monkeypatch.setattr(ghad_manager.subprocess, "run", lambda *args, **kwargs: None)
+
+    def busy_runner(name, label):
+        raise GithubException(422, {"message": "Runner is still running a job"})
+
+    monkeypatch.setattr(ghad_manager, "get_gh_runner_jit_config", busy_runner)
+
+    class Containers:
+        def run(self, **kwargs):
+            raise AssertionError("must not start a container without a JIT config")
+
+    class Client:
+        containers = Containers()
+
+    ghad_manager.start_container_if_not_running(
+        "linux.dgx.b200", 1008, Client(), 999, "c", "henry", "latest"
+    )

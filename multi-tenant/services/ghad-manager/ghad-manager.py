@@ -261,7 +261,13 @@ def start_container_if_not_running(
         )
         logger.info("Getting the runner's JIT config")
         runner_name = f"{socket.gethostname()}-{uid}"
-        jit_config = get_gh_runner_jit_config(runner_name, instance_label)
+        try:
+            jit_config = get_gh_runner_jit_config(runner_name, instance_label)
+        except Exception as e:
+            # e.g. the old runner still shows as running a job, so it can't be
+            # replaced yet. Retry on the next pass instead of stopping every user.
+            logger.warning(f"Error getting the JIT config for {runner_name}: {str(e)}")
+            return
         logger.info("JIT config obtained, starting container.")
         _work_dir = os.path.join("/home", user_name, "_work")
         # NOTE: This contains things like node that is used for running workflows with `container`
