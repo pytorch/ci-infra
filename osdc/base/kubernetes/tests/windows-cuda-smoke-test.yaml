@@ -19,3 +19,4 @@ spec:
         kubernetes.io/os: windows
       restartPolicy: Never
   backoffLimit: 0
+  ttlSecondsAfterFinished: 300

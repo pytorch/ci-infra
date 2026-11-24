@@ -42,10 +42,10 @@ echo "Deploying Windows GPU NodePool for ${CNAME} (AMI ${AMI_ID}, ${AMI_FAMILY})
 
 for f in "$MODULE_DIR"/kubernetes/*.yaml; do
   sed -e "s/__CLUSTER_NAME__/${CNAME}/g" \
-      -e "s/__AMI_ID__/${AMI_ID}/g" \
-      -e "s/__AMI_FAMILY__/${AMI_FAMILY}/g" \
-      -e "s/__ROLE_NAME__/${ROLE_NAME}/g" \
-      "$f" | kubectl_apply_if_changed -f -
+    -e "s/__AMI_ID__/${AMI_ID}/g" \
+    -e "s/__AMI_FAMILY__/${AMI_FAMILY}/g" \
+    -e "s/__ROLE_NAME__/${ROLE_NAME}/g" \
+    "$f" | kubectl_apply_if_changed -f -
 done
 
 echo "Windows GPU NodePool deployed."

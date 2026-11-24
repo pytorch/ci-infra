@@ -1,7 +1,6 @@
 """Smoke tests for Windows GPU support (process-isolated CUDA)."""
 
 import pytest
-
 from helpers import run_kubectl
 
 pytestmark = [pytest.mark.live]
@@ -13,11 +12,7 @@ KUBE_SYSTEM = "kube-system"
 
 
 def _windows_nodes(all_nodes):
-    return [
-        n
-        for n in all_nodes["items"]
-        if n["metadata"]["labels"].get("kubernetes.io/os") == "windows"
-    ]
+    return [n for n in all_nodes["items"] if n["metadata"]["labels"].get("kubernetes.io/os") == "windows"]
 
 
 class TestWindowsGPU:
