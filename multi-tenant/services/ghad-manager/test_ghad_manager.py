@@ -142,7 +142,11 @@ def requester(monkeypatch):
 
 RUNNERS = "/orgs/pytorch/actions/runners"
 JIT = f"{RUNNERS}/generate-jitconfig"
-BODY = {"name": "host-1001", "runner_group_id": 1, "labels": ["linux.dgx.b200"]}
+BODY = {
+    "name": "host-1001",
+    "runner_group_id": 1,
+    "labels": ["self-hosted", "Linux", "X64", "linux.dgx.b200"],
+}
 
 
 def test_jit_config(requester) -> None:

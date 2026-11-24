@@ -24,6 +24,8 @@ DOCKER_REPOSITORY = "308535385114.dkr.ecr.us-east-1.amazonaws.com"
 DOCKER_TAG = "latest"
 # The org runner group the runners register in: Default, where they have always been
 RUNNER_GROUP_ID = 1
+# Labels config.sh adds by default but a JIT config doesn't, so runners keep them
+DEFAULT_RUNNER_LABELS = ["self-hosted", "Linux", "X64"]
 
 
 class UserSocketsPath:
@@ -411,7 +413,11 @@ def get_gh_runner_jit_config(name: str, label: str) -> str:
     org = gh_client.get_organization("pytorch")
     requester = org._requester
     runners_url = f"/orgs/{org.login}/actions/runners"
-    body = {"name": name, "runner_group_id": RUNNER_GROUP_ID, "labels": [label]}
+    body = {
+        "name": name,
+        "runner_group_id": RUNNER_GROUP_ID,
+        "labels": [*DEFAULT_RUNNER_LABELS, label],
+    }
     try:
         _, data = requester.requestJsonAndCheck(
             "POST", f"{runners_url}/generate-jitconfig", input=body
