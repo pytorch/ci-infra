@@ -5,8 +5,9 @@ name: "OSDC: Drain cluster"
 # and waits for in-flight runner pods to finish; taint-nodes applies
 # deploy.osdc.io/refresh-pending:NoSchedule to runner nodes so the scheduler
 # stops placing new pods on them. Default = both enabled (typical pre-maintenance
-# flow). Per-cluster concurrency group serializes against the deploy and plan
-# workflows on the same cluster. Reverse with `osdc-undrain.yml`.
+# flow). drain_timeout_minutes sets how long drain-runners waits before
+# listing stragglers. Per-cluster concurrency group serializes against the
+# deploy and plan workflows on the same cluster. Reverse with `osdc-undrain.yml`.
 on:
   workflow_dispatch:
     inputs:
@@ -28,6 +29,11 @@ on:
         required: false
         type: boolean
         default: true
+      drain_timeout_minutes:
+        description: "Minutes to wait for in-flight runner pods before listing stragglers (1-100)"
+        required: false
+        type: number
+        default: 60
       run_taint_nodes:
         description: "Taint runner nodes with deploy.osdc.io/refresh-pending:NoSchedule to block new pod scheduling"
         required: false
@@ -47,13 +53,17 @@ jobs:
     name: Drain ${{ inputs.cluster }}
     runs-on: ubuntu-latest
     environment: ${{ contains(inputs.cluster, '-staging-') && 'osdc-staging' || 'osdc-production' }}
-    timeout-minutes: 90
+    # Setup + up to 100 min drain wait + 3 min settle + taint. The cap on
+    # drain_timeout_minutes keeps the taint step inside the 2 h AWS session.
+    timeout-minutes: 130
     defaults:
       run:
         working-directory: osdc
     steps:
       - name: Validate inputs
         working-directory: ${{ github.workspace }}
+        env:
+          DRAIN_TIMEOUT_MINUTES: ${{ inputs.drain_timeout_minutes }}
         run: |
           if [ "${{ inputs.cluster }}" = "-- select cluster --" ]; then
             echo "::error::No cluster selected. Pick a cluster from the dropdown before running."
@@ -61,6 +71,10 @@ jobs:
           fi
           if [ "${{ inputs.run_drain_runners }}" != "true" ] && [ "${{ inputs.run_taint_nodes }}" != "true" ]; then
             echo "::error::Both run_drain_runners and run_taint_nodes are disabled — nothing to do."
+            exit 1
+          fi
+          if ! [[ "$DRAIN_TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] || [ "$DRAIN_TIMEOUT_MINUTES" -gt 100 ]; then
+            echo "::error::drain_timeout_minutes must be a whole number from 1 to 100 (got '${DRAIN_TIMEOUT_MINUTES}')."
             exit 1
           fi
 
@@ -78,9 +92,12 @@ jobs:
 
       - name: Drain runners (maxRunners=0 + wait for in-flight pods)
         if: ${{ inputs.run_drain_runners }}
-        run: just drain-runners "${{ inputs.cluster }}"
+        run: |
+          export OSDC_DRAIN_TIMEOUT_SECS=$((DRAIN_TIMEOUT_MINUTES * 60))
+          just drain-runners "${{ inputs.cluster }}"
         env:
           OSDC_TAINT_NODES: "no"
+          DRAIN_TIMEOUT_MINUTES: ${{ inputs.drain_timeout_minutes }}
 
       - name: Sleep 180s for nodes to settle after drain
         if: ${{ !cancelled() && inputs.run_drain_runners && inputs.run_taint_nodes }}
