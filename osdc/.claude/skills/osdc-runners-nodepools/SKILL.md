@@ -75,7 +75,7 @@ For image mirroring details (bootstrap images, ECR, Harbor proxy cache), see the
 
 ## BuildKit Build Service
 
-BuildKit (`moby/buildkit:v0.29.0`) runs as two Deployments in the `buildkit` namespace — one per architecture. Runner job pods invoke `buildctl` — no Kubernetes API access required.
+BuildKit (`moby/buildkit:v0.33.1`) runs as two Deployments in the `buildkit` namespace — one per architecture. Runner job pods invoke `buildctl` — no Kubernetes API access required.
 
 - **Architecture**: Dual-arch fleet with per-arch Deployments and Services
   - `buildkitd-arm64` — Graviton (`m7gd.16xlarge:4` from `defaults.buildkit`), Service: `buildkitd-arm64.buildkit:1234`
