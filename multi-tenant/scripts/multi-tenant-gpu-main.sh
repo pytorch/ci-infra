@@ -7,8 +7,13 @@ export RUNNER_UID=$3
 JIT_CONFIG=$ACTIONS_RUNNER_INPUT_JITCONFIG
 unset ACTIONS_RUNNER_INPUT_JITCONFIG
 
-if [[ "$#" -ne 3 || -z "$JIT_CONFIG" ]] ; then
+if [[ "$#" -ne 3 ]] ; then
     echo "Invalid usage, not going to work"
+    exit 1
+fi
+
+if [[ -z "$JIT_CONFIG" ]] ; then
+    echo "No ACTIONS_RUNNER_INPUT_JITCONFIG in the environment"
     exit 1
 fi
 

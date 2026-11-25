@@ -26,6 +26,9 @@ DOCKER_TAG = "latest"
 RUNNER_GROUP_ID = 1
 # Labels config.sh adds by default but a JIT config doesn't, so runners keep them
 DEFAULT_RUNNER_LABELS = ["self-hosted", "Linux", "X64"]
+# GitHub won't delete a runner it still thinks is running a job (422), or the
+# name was taken again before the retry (409); both clear up on their own
+RETRYABLE_JIT_STATUSES = (409, 422)
 
 
 class UserSocketsPath:
@@ -263,10 +266,15 @@ def start_container_if_not_running(
         runner_name = f"{socket.gethostname()}-{uid}"
         try:
             jit_config = get_gh_runner_jit_config(runner_name, instance_label)
-        except Exception as e:
-            # e.g. the old runner still shows as running a job, so it can't be
+        except GithubException as e:
+            if e.status not in RETRYABLE_JIT_STATUSES:
+                # e.g. a bad app key or a missing permission: crash, so systemd's
+                # restarts show it, as before JIT configs
+                logger.error(f"Error getting the JIT config for {runner_name}: {e}")
+                raise
+            # The old runner still shows as running a job, so it can't be
             # replaced yet. Retry on the next pass instead of stopping every user.
-            logger.warning(f"Error getting the JIT config for {runner_name}: {str(e)}")
+            logger.warning(f"Can't register {runner_name} yet, will retry: {e}")
             return
         logger.info("JIT config obtained, starting container.")
         _work_dir = os.path.join("/home", user_name, "_work")
@@ -422,7 +430,11 @@ def get_gh_runner_jit_config(name: str, label: str) -> str:
     body = {
         "name": name,
         "runner_group_id": RUNNER_GROUP_ID,
-        "labels": [*DEFAULT_RUNNER_LABELS, label],
+        # The instance label can be a comma-separated list, as config.sh --labels took
+        "labels": [
+            *DEFAULT_RUNNER_LABELS,
+            *filter(None, map(str.strip, label.split(","))),
+        ],
     }
     try:
         _, data = requester.requestJsonAndCheck(
