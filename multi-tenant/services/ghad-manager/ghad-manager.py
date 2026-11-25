@@ -1,3 +1,4 @@
+import errno
 import grp
 import logging
 import os
@@ -185,31 +186,43 @@ def open_cache_permissions(cache_dir: str) -> None:
     O_NOFOLLOW and changed through that descriptor. Root-owned files are left
     alone; jobs run under rootless Docker and don't create them.
     """
-    for _, _, files, dir_fd in os.fwalk(cache_dir):
-        try:
-            if stat.S_IMODE(os.fstat(dir_fd).st_mode) != 0o777:
-                os.fchmod(dir_fd, 0o777)
-        except OSError as e:
-            logger.warning(f"Error changing permissions in {cache_dir}: {str(e)}")
-        for name in files:
+
+    def log_walk_error(e: OSError) -> None:
+        if e.errno != errno.ENOENT:  # ENOENT: removed since it was listed
+            logger.warning(f"Error walking {e.filename}: {e}")
+
+    try:
+        for dirpath, _, files, dir_fd in os.fwalk(cache_dir, onerror=log_walk_error):
             try:
-                fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=dir_fd)
-            except OSError:
-                continue  # removed since it was listed
-            try:
-                st = os.fstat(fd)
-                if (
-                    stat.S_ISREG(st.st_mode)
-                    and st.st_uid != 0
-                    and stat.S_IMODE(st.st_mode) != 0o777
-                ):
-                    # chmod through /proc/self/fd reaches the opened inode
-                    # itself, as glibc's fchmodat(AT_SYMLINK_NOFOLLOW) does.
-                    os.chmod(f"/proc/self/fd/{fd}", 0o777)
+                if stat.S_IMODE(os.fstat(dir_fd).st_mode) != 0o777:
+                    os.fchmod(dir_fd, 0o777)
             except OSError as e:
-                logger.warning(f"Error changing permissions of {name}: {str(e)}")
-            finally:
-                os.close(fd)
+                logger.warning(f"Error changing permissions of {dirpath}: {e}")
+            for name in files:
+                path = os.path.join(dirpath, name)
+                try:
+                    fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=dir_fd)
+                except OSError as e:
+                    if e.errno != errno.ENOENT:  # ENOENT: removed since it was listed
+                        logger.warning(f"Error opening {path}: {e}")
+                    continue
+                try:
+                    st = os.fstat(fd)
+                    # The security check: chmod through /proc/self/fd changes
+                    # whatever fd refers to, so only do it for a regular file.
+                    # O_NOFOLLOW opened a symlink as itself, and it stops here.
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    if st.st_uid != 0 and stat.S_IMODE(st.st_mode) != 0o777:
+                        os.chmod(f"/proc/self/fd/{fd}", 0o777)
+                except OSError as e:
+                    logger.warning(f"Error changing permissions of {path}: {e}")
+                finally:
+                    os.close(fd)
+    except OSError as e:
+        # os.fwalk raises for cache_dir itself, e.g. missing or a dead mount. Skip
+        # the sweep, as the find commands before it did, instead of crashing.
+        logger.warning(f"Error walking {cache_dir}: {e}")
 
 
 def start_container_if_not_running(

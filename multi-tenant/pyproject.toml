@@ -9,3 +9,10 @@ dependencies = [
   "paramiko",
   "PyGithub",
 ]
+
+[dependency-groups]
+# For `just test`: ghad-manager imports docker
+dev = [
+  "docker",
+  "pytest",
+]

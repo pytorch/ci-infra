@@ -1,7 +1,7 @@
 """Tests for ghad-manager.py. Linux only (O_PATH, /proc/self/fd).
 
-Run as root to also cover the root-owned-file check:
-    pip install -r requirements.txt pytest && python -m pytest test_ghad_manager.py
+Run from multi-tenant/ with `just test`; run as root to also cover the
+root-owned-file check.
 """
 
 import importlib.util
@@ -69,6 +69,11 @@ def test_skips_root_owned_files(tree) -> None:
     os.chmod(f, 0o600)  # owned by root, as a hard link to a host file would be
     ghad_manager.open_cache_permissions(str(cache))
     assert mode(f) == 0o600
+
+
+def test_missing_cache_dir_is_skipped(tmp_path: Path) -> None:
+    # Before the playbook creates it, or on a dead mount: skip, don't crash
+    ghad_manager.open_cache_permissions(str(tmp_path / "missing"))
 
 
 def test_swapping_a_dir_for_a_symlink_mid_sweep(tree) -> None:
