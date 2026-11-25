@@ -1066,7 +1066,8 @@ drain-runners cluster:
         kubectl get pods -n arc-runners -l app.kubernetes.io/component=runner -o wide 2>/dev/null || true
         echo ""
         echo "Operator decision required:"
-        echo "  (a) Wait — re-run with OSDC_DRAIN_TIMEOUT_SECS=<larger> to give jobs more time to finish."
+        echo "  (a) Wait — re-run with OSDC_DRAIN_TIMEOUT_SECS=<larger> (or the Drain workflow with a larger"
+        echo "      drain_timeout_minutes) to give jobs more time to finish."
         echo "  (b) Force-terminate stragglers: kubectl delete pod -n arc-runners <pod> --grace-period=0 --force"
         echo "      WARNING: this aborts the running GitHub Actions job mid-execution. The job will be"
         echo "      marked failed/timeout on the GitHub side and may auto-retry. The runner registration"

@@ -150,6 +150,8 @@ just resume-runners meta-staging-aws-ue1     # restore maxRunners from def files
 
 `drain-runners` waits up to `OSDC_DRAIN_TIMEOUT_SECS` (default `3600`) for runner pods to finish before declaring stragglers. The default 1h matches typical PyTorch suite duration — raise it for longer test windows.
 
+The `OSDC: Drain cluster` workflow sets it from its `drain_timeout_minutes` input (default 60, max 100). The cap keeps the wait and the taint step inside the job's 2-hour AWS session. If pods are still running when it times out, re-run the workflow: the runner scale sets stay at `maxRunners=0`, so the re-run just waits again.
+
 `taint-nodes` / `untaint-nodes` add or remove the `deploy.osdc.io/refresh-pending=true:NoSchedule` taint on every node labelled `workload-type=github-runner` — useful when you want to mark nodes stale without also draining the AutoscalingRunnerSets.
 
 `recycle-nodes` deletes all Karpenter `NodeClaims`, forcing Karpenter to reprovision on demand. Use after AMI/userData changes when you do not need to preserve in-flight jobs. Staging runs this automatically at the end of `just deploy` (driven by `recycle_karpenter_nodes: true` in `clusters.yaml`).
