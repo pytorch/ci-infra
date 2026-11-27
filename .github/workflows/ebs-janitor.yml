@@ -1,0 +1,31 @@
+name: "EBS janitor"
+
+# Deletes detached EBS root volumes left behind by legacy CI runners in fbossci.
+# See ebs-janitor/README.md.
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+    paths:
+      - "ebs-janitor/**"
+      - ".github/workflows/ebs-janitor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    concurrency:
+      group: ebs-janitor-test-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ebs-janitor
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.12"
+      - run: uv run --no-project --with pytest==8.4.2 pytest -q
