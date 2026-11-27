@@ -21,6 +21,20 @@ volumes per run (default 500), and stops a region after repeated errors.
 ```bash
 cd ebs-janitor
 uv run --no-project --with pytest==8.4.2 pytest -q
-# dry run against the account in your AWS credentials
-uv run --no-project --with boto3 python ebs_janitor.py
+# dry run against fbossci, with the same pinned dependencies as CI
+uv run --no-project --with-requirements requirements.txt python ebs_janitor.py
 ```
+
+`requirements.txt` is the hash-pinned lock for `requirements.in`. After editing
+`requirements.in`, regenerate it:
+
+```bash
+uv pip compile requirements.in --python-version 3.12 --generate-hashes -o requirements.txt
+```
+
+## In CI
+
+`.github/workflows/ebs-janitor.yml` runs a dry run every day at 06:17 UTC with
+the read-only plan role (`osdc-staging` environment). To delete, start the
+workflow by hand from `main` with `execute` checked; it then uses the deploy role
+(`osdc-production` environment). `max_deletes` caps the deletes for that run.

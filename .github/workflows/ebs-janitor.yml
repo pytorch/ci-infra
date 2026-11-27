@@ -46,9 +46,10 @@ jobs:
   janitor:
     if: github.event_name != 'pull_request' && (!inputs.execute || github.ref == 'refs/heads/main')
     needs: test
-    # One janitor run at a time, never cancelled mid-way.
+    # Never cancelled mid-way. Dry runs and execute runs queue separately, so a scheduled
+    # dry run can't replace an execute run that is waiting for its environment.
     concurrency:
-      group: ebs-janitor
+      group: ebs-janitor-${{ inputs.execute && 'execute' || 'dry-run' }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -63,6 +64,8 @@ jobs:
         working-directory: ebs-janitor
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
@@ -79,8 +82,10 @@ jobs:
       - name: Run janitor
         env:
           EXECUTE: ${{ inputs.execute }}
-          MAX_DELETES: ${{ inputs.max_deletes || 500 }}
+          # Empty on schedule, so the CLI default applies; a typed 0 stays 0.
+          MAX_DELETES: ${{ inputs.max_deletes }}
         run: |
-          args=(--max-deletes "$MAX_DELETES")
+          args=()
+          if [[ -n "$MAX_DELETES" ]]; then args+=(--max-deletes "$MAX_DELETES"); fi
           if [[ "$EXECUTE" == "true" ]]; then args+=(--execute); fi
           .venv/bin/python ebs_janitor.py "${args[@]}"
