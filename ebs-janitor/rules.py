@@ -12,7 +12,12 @@ import fnmatch
 from datetime import datetime, timedelta
 
 RUNNER_NAMES = {"gh-ci-action-runner", "meta-pytorch-action-runner"}
-RUNNER_AMI_PATTERNS = ("al2023-ami-2023.*", "Windows 20?? GHA CI*")
+# Every AMI the legacy runners have booted from:
+# - al2023-ami-2023.*: stock Amazon Linux 2023 (owner amazon), used until 2026-11-02.
+# - gha-runner-*: account-owned copies of the Linux AMIs (pytorch-gha-infra #1609, owner
+#   self), made because AWS hides deprecated Amazon AMIs from other accounts.
+# - Windows 20?? GHA CI*: the Windows runner AMI (built in the LF account, older ones here).
+RUNNER_AMI_PATTERNS = ("al2023-ami-2023.*", "gha-runner-*", "Windows 20?? GHA CI*")
 # Leaves a volume alone while its root-volume replacement may still be in progress.
 MIN_AGE = timedelta(days=2)
 

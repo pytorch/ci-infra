@@ -11,6 +11,9 @@ LEGACY_TAGS = {"Environment": "x", "InstanceManagement": "x", "Project": "x"}
 LINUX_X86 = "al2023-ami-2023.10.20260302.1-kernel-6.1-x86_64"
 LINUX_ARM = "al2023-ami-2023.12.20260803.3-kernel-6.1-arm64"
 WINDOWS = "Windows 2019 GHA CI - 20261002003950"
+# Account-owned copies of the Linux AMIs, used since 2026-11-02 (pytorch-gha-infra #1609).
+LINUX_COPY_X86 = "gha-runner-al2023-ami-2023.12.20260803.3-kernel-6.1-x86_64"
+LINUX_COPY_ARM = "gha-runner-al2023-ami-2023.12.20260803.3-kernel-6.1-arm64"
 
 
 @pytest.mark.parametrize(
@@ -21,6 +24,8 @@ WINDOWS = "Windows 2019 GHA CI - 20261002003950"
         ({**LEGACY_TAGS, "Name": "gh-ci-action-runner"}, LINUX_ARM),  # leftover pytorch Linux
         ({}, LINUX_X86),  # untagged, like the backlog from before test-infra#7930
         ({}, WINDOWS),
+        ({**LEGACY_TAGS, "Name": "meta-pytorch-action-runner"}, LINUX_COPY_ARM),
+        ({}, LINUX_COPY_X86),
     ],
 )
 def test_leaked_runner_roots_match(tags, ami):
@@ -33,6 +38,10 @@ def test_leaked_runner_roots_match(tags, ami):
         ({}, NOW - timedelta(days=1), LINUX_X86),  # too new
         ({}, OLD, None),  # source AMI can't be resolved
         ({}, OLD, "my-custom-ami"),  # not a runner AMI
+        # Untagged disks from other AMIs in the account: OSDC nodes, macOS hosts, DLAMI boxes.
+        ({}, OLD, "amazon-eks-node-al2023-x86_64-standard-1.33-v20260520"),
+        ({}, OLD, "amzn-ec2-macos-15.3.1-20250314-110616-arm64"),
+        ({}, OLD, "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04) 20250424"),
         ({"Name": "someones-scratch"}, OLD, LINUX_X86),  # runner AMI, not a runner volume
         ({"gpu-dev-user": "someone@example.com"}, OLD, LINUX_X86),  # tagged, no runner Name
     ],
