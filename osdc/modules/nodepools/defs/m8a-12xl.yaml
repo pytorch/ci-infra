@@ -1,7 +1,7 @@
 # Karpenter NodePool fleet: m8a-12xl
 # AMD EPYC (Turin) — balanced, AVX-512, ~4 GiB/core ratio
 # Sub-nodepool for ideal m8a.12xlarge; fallback UP to larger m8a sizes (descending weight).
-# No m8a.16xlarge: it still fits only one 46-160 or 32-128 pod, so it would cost more for the same pod.
+# No m8a.16xlarge: it still fits only one l-x86aavx512-32-160 pod, so it would cost more for the same pod.
 fleet:
   name: m8a-12xl
   arch: amd64
