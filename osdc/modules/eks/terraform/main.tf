@@ -75,9 +75,17 @@ module "eks" {
   aws_region      = var.aws_region
   cluster_name    = var.cluster_name
   cluster_version = var.eks_version
+  ip_family       = var.ip_family
   vpc_id          = module.vpc.vpc_id
   subnet_ids      = module.vpc.private_subnet_ids
   enable_irsa     = true
+
+  enable_windows_node_group = var.enable_windows_node_group
+  windows_node_count        = var.windows_node_count
+  windows_instance_type     = var.windows_instance_type
+  windows_ami_type          = var.windows_ami_type
+  windows_volume_size       = var.windows_volume_size
+  windows_ami_id            = var.windows_ami_id
 
   cluster_endpoint_private_access = true
   cluster_endpoint_public_access  = true

@@ -178,6 +178,8 @@ class TestTfvars:
         assert '-var="eks_version=1.35"' in out
         # coredns.replicas not set anywhere — falls back to hardcoded default 6
         assert '-var="coredns_replicas=6"' in out
+        # ip_family not set anywhere — falls back to hardcoded default ipv6
+        assert '-var="ip_family=ipv6"' in out
 
     def test_coredns_replicas_from_defaults(self, capsys):
         cluster_cfg = {
@@ -251,6 +253,79 @@ class TestTfvars:
         cluster_config.tfvars("c", cluster_cfg, defaults)
         out = capsys.readouterr().out.strip()
         assert '-var="eks_version=1.30"' in out
+
+    def test_ip_family_from_defaults(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+        }
+        defaults = {"ip_family": "ipv6"}
+        cluster_config.tfvars("c", cluster_cfg, defaults)
+        out = capsys.readouterr().out.strip()
+        assert '-var="ip_family=ipv6"' in out
+
+    def test_ip_family_cluster_override_ipv4(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "base": {"ip_family": "ipv4"},
+        }
+        defaults = {"ip_family": "ipv6"}
+        cluster_config.tfvars("c", cluster_cfg, defaults)
+        out = capsys.readouterr().out.strip()
+        assert '-var="ip_family=ipv4"' in out
+
+    def test_windows_node_group_enabled(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "windows": {
+                "enabled": True,
+                "node_count": 1,
+                "instance_type": "g4dn.xlarge",
+                "ami_type": "WINDOWS_FULL_2025_x86_64",
+                "volume_size": 200,
+            },
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="enable_windows_node_group=true"' in out
+        assert '-var="windows_node_count=1"' in out
+        assert '-var="windows_instance_type=g4dn.xlarge"' in out
+        assert '-var="windows_ami_type=WINDOWS_FULL_2025_x86_64"' in out
+        assert '-var="windows_volume_size=200"' in out
+
+    def test_windows_ami_id_emitted_when_set(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "windows": {
+                "enabled": True,
+                "ami_id": "ami-07147e3800db75bf2",
+            },
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="windows_ami_id=ami-07147e3800db75bf2"' in out
+
+    def test_windows_ami_id_absent_when_unset(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "windows": {
+                "enabled": True,
+                "node_count": 1,
+            },
+        }
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert "windows_ami_id" not in out
+
+    def test_windows_node_group_absent_by_default(self, capsys):
+        cluster_cfg = {"cluster_name": "c", "region": "r"}
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert "windows" not in out
 
     def test_cost_knobs_absent_by_default(self, capsys):
         """Clusters that do not set the cost knobs emit no -var for them (terraform defaults apply)."""

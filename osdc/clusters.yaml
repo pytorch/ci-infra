@@ -38,6 +38,7 @@ defaults:
   #   https://aws.amazon.com/security/security-bulletins/2026-027-aws/
   base_node_ami_version: "v20260903"
   eks_version: "1.35"
+  ip_family: ipv6
   single_nat_gateway: false
 
   # --- CoreDNS sizing ---
@@ -626,3 +627,48 @@ clusters:
       - nodepools-dev
       - arc-runners-dev
       - zombie-cleanup
+
+  lf-windows-dev-aws-ue1:
+    # Windows POC cluster: IPv4 (Windows containers/CNI don't support IPv6-only).
+    region: us-east-1
+    cluster_name: lf-windows-dev-aws-ue1
+    state_bucket: lf-osdc-tfstate-windows-dev-ue1
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+    base:
+      base_node_count: 1
+      base_node_instance_type: t3a.large
+      base_node_max_unavailable_percentage: 100
+      base_node_subnet_count: 1
+      single_nat_gateway: true
+      nat_secondary_eip_count: 0
+      cluster_log_types: []
+      vpc_cidr: "10.33.0.0/16"
+      ip_family: ipv4
+    coredns:
+      replicas: 2
+    harbor:
+      core_replicas: 1
+      registry_replicas: 1
+      nginx_replicas: 1
+      pdb_max_unavailable: "100%"
+      resource_requests:
+        nginx:
+          cpu: "100m"
+          memory: "128Mi"
+        database:
+          cpu: "250m"
+          memory: "512Mi"
+    windows:
+      enabled: true
+      # Managed node group parked at 0: Karpenter (see modules below) provisions
+      # Windows GPU nodes on demand from the pre-baked AMI and scales back to 0
+      # when idle. The launch template + ami_id stay as a dormant fallback path.
+      node_count: 0
+      instance_type: g4dn.xlarge
+      ami_type: WINDOWS_FULL_2022_x86_64
+      volume_size: 200
+      ami_id: ami-01485b0d0736fef90  # pre-baked (WDDM 595.97, 200GB root) — skips user-data driver install
+    modules:
+      - karpenter
+      - nodepools-windows

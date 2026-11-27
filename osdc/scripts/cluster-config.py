@@ -67,6 +67,7 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         "base_node_max_unavailable_percentage": base.get("base_node_max_unavailable_percentage", 33),
         "base_node_ami_version": base.get("base_node_ami_version", defaults.get("base_node_ami_version", "v*")),
         "eks_version": base.get("eks_version", defaults.get("eks_version", "1.35")),
+        "ip_family": base.get("ip_family", defaults.get("ip_family", "ipv6")),
         "coredns_replicas": coredns_replicas,
     }
     # Optional fields — only emit if explicitly set
@@ -84,6 +85,16 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     if "cluster_log_types" in base:
         # An empty list is meaningful: it disables control-plane logging.
         pairs["cluster_log_types"] = ",".join(base.get("cluster_log_types") or [])
+    # Windows GPU node group — only emitted when the cluster opts in.
+    windows = cluster_cfg.get("windows") or {}
+    if windows.get("enabled"):
+        pairs["enable_windows_node_group"] = "true"
+        pairs["windows_node_count"] = windows.get("node_count", 1)
+        pairs["windows_instance_type"] = windows.get("instance_type", "g4dn.xlarge")
+        pairs["windows_ami_type"] = windows.get("ami_type", "WINDOWS_FULL_2025_x86_64")
+        pairs["windows_volume_size"] = windows.get("volume_size", 200)
+        if windows.get("ami_id"):
+            pairs["windows_ami_id"] = windows["ami_id"]
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 

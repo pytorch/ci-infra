@@ -54,6 +54,14 @@ KARPENTER_LOG_LEVEL=$(uv run "$CFG" "$CLUSTER" karpenter.log_level info)
 KARPENTER_PDB_ENABLED=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_enabled true)
 KARPENTER_PDB_MIN=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_min_available 1)
 
+# nodeOverlay is an alpha gate, only needed by the Windows GPU NodePool
+# (nodepools-windows) which declares directx.microsoft.com/display capacity.
+# Keep it off for every other cluster.
+NODEOVERLAY_SET=()
+if uv run "$CFG" "$CLUSTER" has-module nodepools-windows; then
+  NODEOVERLAY_SET=(--set settings.featureGates.nodeOverlay=true)
+fi
+
 KARPENTER_VERSION="1.12.0"
 
 # Log in to ECR Public before pulling the charts. Anonymous pulls from shared
@@ -113,6 +121,7 @@ helm_upgrade_if_changed karpenter karpenter \
   --set logLevel="${KARPENTER_LOG_LEVEL}" \
   --set podDisruptionBudget.enabled="${KARPENTER_PDB_ENABLED}" \
   --set podDisruptionBudget.minAvailable="${KARPENTER_PDB_MIN}" \
+  "${NODEOVERLAY_SET[@]}" \
   --timeout 10m \
   --wait \
   oci://public.ecr.aws/karpenter/karpenter \
