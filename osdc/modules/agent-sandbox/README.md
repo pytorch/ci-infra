@@ -248,6 +248,11 @@ controller first (`kubernetes/controller/`: a pinned release manifest plus a pat
 keeping it on base nodes) and waits for its CRDs. To upgrade it, bump the release in
 `kubernetes/controller/kustomization.yaml`.
 
+The task pod is also described as a `SandboxTemplate` (`kubernetes/base/sandbox-template.yaml`)
+with a warm pool at 0 replicas. Its pod runs `sandboxd` from the task image rather than
+the task, behind a bearer token whose digest is in the template and whose value is the
+`sandboxd-token` Secret, minted by `deploy.sh` on first deploy. Nothing claims from it yet.
+
 ## Use it (from a workflow job on an OSDC runner)
 
 Prefer the action below. By hand, from a job with `permissions: id-token: write` whose
