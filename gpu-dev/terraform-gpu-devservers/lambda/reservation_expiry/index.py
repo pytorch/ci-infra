@@ -13,6 +13,7 @@ from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Attr
+from botocore.exceptions import ClientError
 from kubernetes import client, stream
 
 from shared import setup_kubernetes_client
@@ -871,6 +872,14 @@ def handler(event, context):
                             logger.info(f"Cleared disk '{disk_name}' in_use flag for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} (pod already deleted)")
                         except Exception as disk_error:
                             logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
+
+                    # The cancel path leaves the detached volume behind; delete it once backed up
+                    volume_id = reservation.get("ebs_volume_id")
+                    if volume_id:
+                        try:
+                            delete_detached_volume_if_backed_up(volume_id, expired_timestamp)
+                        except Exception as volume_error:
+                            logger.warning(f"Failed to clean up volume {volume_id} for {reservation_id[:8]}: {volume_error}")
                     continue
 
                 logger.info(
@@ -1102,6 +1111,34 @@ def mark_disk_not_in_use(user_id: str, disk_name: str) -> None:
     except Exception as e:
         logger.error(f"Error marking disk as not in use: {e}")
         raise
+
+
+def delete_detached_volume_if_backed_up(volume_id: str, ended_ts: int) -> bool:
+    """Delete an ended reservation's detached volume once a completed snapshot of it,
+    taken after the reservation ended, exists. The cancel path snapshots and detaches
+    the volume but never deletes it. Returns True if the volume was deleted."""
+    try:
+        volume = ec2_client.describe_volumes(VolumeIds=[volume_id])["Volumes"][0]
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "InvalidVolume.NotFound":
+            return False
+        raise
+    if volume["State"] != "available":
+        return False
+
+    snapshots = ec2_client.describe_snapshots(
+        OwnerIds=["self"],
+        Filters=[
+            {"Name": "volume-id", "Values": [volume_id]},
+            {"Name": "status", "Values": ["completed"]},
+        ],
+    )["Snapshots"]
+    if not any(s["StartTime"].timestamp() >= ended_ts for s in snapshots):
+        return False
+
+    ec2_client.delete_volume(VolumeId=volume_id)
+    logger.info(f"Deleted detached volume {volume_id} (backed up by a completed snapshot)")
+    return True
 
 
 def find_disk_by_reservation(user_id: str, reservation_id: str) -> str | None:
