@@ -240,8 +240,13 @@ one image does not re-roll the other. Requires a local docker daemon.
 
 ```
 just deploy-module meta-staging-aws-ue1 nodepools-agent-sandbox   # gVisor fleet
-just deploy-module meta-staging-aws-ue1 agent-sandbox             # IRSA + proxy + dispatcher
+just deploy-module meta-staging-aws-ue1 agent-sandbox             # controller + IRSA + proxy + dispatcher
 ```
+
+`deploy.sh` applies the upstream [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
+controller first (`kubernetes/controller/`: a pinned release manifest plus a patch
+keeping it on base nodes) and waits for its CRDs. To upgrade it, bump the release in
+`kubernetes/controller/kustomization.yaml`.
 
 ## Use it (from a workflow job on an OSDC runner)
 
