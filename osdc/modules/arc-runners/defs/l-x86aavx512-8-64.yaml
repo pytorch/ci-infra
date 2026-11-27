@@ -1,0 +1,16 @@
+# ARC runner definition: l-x86aavx512-8-64
+# Instance type: r8a.16xlarge (pool: r8a-16xl)
+# Runs in parallel with l-x86iamx-8-64. It does not replace that AMX runner.
+# Not named l-x86iavx512-8-64: that label is the Genoa r7a.16xlarge runner.
+# Seven of these 8 vCPU / 64 GiB pods fit on one 64 vCPU / 512 GiB node.
+runner:
+  name: l-x86aavx512-8-64
+  instance_type: r8a.16xlarge
+  node_fleet: r8a-16xl
+  disk_size: 150
+  vcpu: 8
+  memory: 64Gi
+  gpu: 0
+  proactive_capacity: 0
+  hud_failure_base_capacity: 90
+  max_burst_capacity: 2000

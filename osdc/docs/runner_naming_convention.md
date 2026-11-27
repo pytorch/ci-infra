@@ -133,6 +133,14 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 | linux.12xlarge.amd | m6a.12xlarge | *— no equivalent* |
 | linux.24xlarge.amd | m6i.32xlarge | mt-l-x86aavx512-125-463 |
 
+Additional AMD Turin runners (no direct old-label mapping; provisioned for OSDC CI workloads). They run alongside the Intel AMX runners and do not replace them:
+
+| **New Label** | **Instance** | **vCPU / memory** | **Notes** |
+| --- | --- | --- | --- |
+| mt-l-x86aavx512-8-64 | r8a.16xlarge | 8 / 64 GiB | Alongside mt-l-x86iamx-8-64 |
+| mt-l-x86aavx512-32-160 | m8a.12xlarge | 32 / 160 GiB | Alongside mt-l-x86iamx-32-128. The `inductor-perf-test-nightly-x86-zen` workflow uses it instead of mt-l-x86aavx512-125-463, which stays deployed |
+| mt-l-bx86aavx512-92-150 | c8a.24xlarge | 92 / 150 GiB | Alongside mt-l-bx86iamx-92-167 |
+
 ### x86 GPU — T4 (g4dn family)
 
 
