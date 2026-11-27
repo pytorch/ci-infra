@@ -1,0 +1,44 @@
+name: "Multi-tenant: Test"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "multi-tenant/**"
+      - ".github/workflows/multi-tenant-test.yml"
+  pull_request:
+    paths:
+      - "multi-tenant/**"
+      - ".github/workflows/multi-tenant-test.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: multi-tenant-test-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: multi-tenant
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          version: "2026.5.11"
+          install: true
+          working_directory: multi-tenant
+
+      # The root-owned-file test skips here: it needs root
+      - name: Run tests
+        run: just test

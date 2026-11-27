@@ -1,3 +1,4 @@
+import errno
 import grp
 import logging
 import os
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import time
 import socket
+import stat
 import json
 
 import docker
@@ -175,6 +177,54 @@ def prune_networks(client: docker.DockerClient, uid: int) -> None:
         logger.warning(f"Error pruning networks for {uid}: {str(e)}")
 
 
+def open_cache_permissions(cache_dir: str) -> None:
+    """Make the directories and regular files under cache_dir mode 0777.
+
+    This runs as root over a cache that jobs write to while it runs, so it never
+    follows a symlink: os.fwalk opens each directory relative to its parent and
+    skips one that changed after it was listed, and each file is opened with
+    O_NOFOLLOW and changed through that descriptor. Root-owned files are left
+    alone; jobs run under rootless Docker and don't create them.
+    """
+
+    def log_walk_error(e: OSError) -> None:
+        if e.errno != errno.ENOENT:  # ENOENT: removed since it was listed
+            logger.warning(f"Error walking {e.filename}: {e}")
+
+    try:
+        for dirpath, _, files, dir_fd in os.fwalk(cache_dir, onerror=log_walk_error):
+            try:
+                if stat.S_IMODE(os.fstat(dir_fd).st_mode) != 0o777:
+                    os.fchmod(dir_fd, 0o777)
+            except OSError as e:
+                logger.warning(f"Error changing permissions of {dirpath}: {e}")
+            for name in files:
+                path = os.path.join(dirpath, name)
+                try:
+                    fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=dir_fd)
+                except OSError as e:
+                    if e.errno != errno.ENOENT:  # ENOENT: removed since it was listed
+                        logger.warning(f"Error opening {path}: {e}")
+                    continue
+                try:
+                    st = os.fstat(fd)
+                    # The security check: chmod through /proc/self/fd changes
+                    # whatever fd refers to, so only do it for a regular file.
+                    # O_NOFOLLOW opened a symlink as itself, and it stops here.
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    if st.st_uid != 0 and stat.S_IMODE(st.st_mode) != 0o777:
+                        os.chmod(f"/proc/self/fd/{fd}", 0o777)
+                except OSError as e:
+                    logger.warning(f"Error changing permissions of {path}: {e}")
+                finally:
+                    os.close(fd)
+    except OSError as e:
+        # os.fwalk raises for cache_dir itself, e.g. missing or a dead mount. Skip
+        # the sweep, as the find commands before it did, instead of crashing.
+        logger.warning(f"Error walking {cache_dir}: {e}")
+
+
 def start_container_if_not_running(
     runner_url: str,
     instance_label: str,
@@ -224,32 +274,7 @@ def start_container_if_not_running(
 
         _cache_dir = "/mnt/hf_cache/"
         # Set cache dir permission before each job, hacky but it works for now
-        subprocess.run(
-            [
-                "find",
-                _cache_dir,
-                "-type",
-                "d",
-                "-exec",
-                "chmod",
-                "0777",
-                "{}",
-                ";",
-            ]
-        )
-        subprocess.run(
-            [
-                "find",
-                _cache_dir,
-                "-type",
-                "f",
-                "-exec",
-                "chmod",
-                "0777",
-                "{}",
-                ";",
-            ]
-        )
+        open_cache_permissions(_cache_dir)
 
         try:
             response = client.containers.run(

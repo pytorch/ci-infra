@@ -16,6 +16,7 @@
 #
 # Usage:
 #   just setup                    # sync the Python env (uv sync)
+#   just test                     # run the ghad-manager tests
 #   just image-tag                # pin the runner image tag from ECR
 #   just setup-host               # provision all B200 hosts
 #   just setup-host dgxb200-03    # provision a single host / group
@@ -45,6 +46,10 @@ default:
 # Sync the Python environment (ansible, boto3, ...) into .venv
 setup:
     uv sync
+
+# Run the ghad-manager tests (the cache sweep tests need Linux)
+test: setup
+    uv run pytest services/ghad-manager
 
 # Refresh temp/multi-tenant-gpu-tag with the newest numeric image tag from ECR
 image-tag:
