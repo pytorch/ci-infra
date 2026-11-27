@@ -7,6 +7,7 @@ Dry run unless --execute.
 from __future__ import annotations
 
 import argparse
+import collections
 import functools
 import sys
 from datetime import UTC, datetime
@@ -23,8 +24,9 @@ AMI_OWNERS = ["self", "amazon", "391835788720"]
 MAX_ERRORS = 5
 
 
-def find_leaked(volumes: list[dict], ami_lookup, now: datetime) -> tuple[list[dict], dict[str, str]]:
-    """The DescribeVolumes entries that are leaked runner root disks, and their AMI names.
+def find_leaked(volumes: list[dict], ami_lookup, now: datetime) -> tuple[list[dict], list[dict], dict[str, str]]:
+    """Split the DescribeVolumes entries that pass the local checks into leaked runner root
+    disks and the ones skipped for their source AMI, and return the AMI names looked up.
 
     AMI names are looked up only for volumes that pass the local checks.
     """
@@ -32,7 +34,17 @@ def find_leaked(volumes: list[dict], ami_lookup, now: datetime) -> tuple[list[di
         v for v in volumes if is_runner_volume({t["Key"]: t["Value"] for t in v.get("Tags", [])}, v["CreateTime"], now)
     ]
     ami_names = ami_lookup({v.get("SnapshotId", "") for v in candidates})
-    return [v for v in candidates if is_runner_ami(ami_names.get(v.get("SnapshotId", "")))], ami_names
+    leaked, skipped = [], []
+    for v in candidates:
+        (leaked if is_runner_ami(ami_names.get(v.get("SnapshotId", ""))) else skipped).append(v)
+    return leaked, skipped, ami_names
+
+
+def skipped_by_ami(skipped: list[dict], ami_names: dict[str, str]) -> list[tuple[str, int]]:
+    """Skipped volumes counted by source AMI, most first. A runner AMI missing from
+    RUNNER_AMI_PATTERNS, or one AWS no longer shows this account, turns up here."""
+    counts = collections.Counter(ami_names.get(v.get("SnapshotId", ""), "(source AMI not found)") for v in skipped)
+    return counts.most_common()
 
 
 def delete_volumes(region: str, volumes: list[dict], delete, budget: list[int]) -> bool:
@@ -95,8 +107,10 @@ def main() -> int:
         ec2 = boto3.client("ec2", region_name=region, config=Config(retries={"mode": "adaptive", "max_attempts": 10}))
         pages = ec2.get_paginator("describe_volumes").paginate(Filters=[{"Name": "status", "Values": ["available"]}])
         volumes = [v for page in pages for v in page["Volumes"]]
-        leaked, ami_names = find_leaked(volumes, functools.partial(_ami_names, ec2), now)
+        leaked, skipped, ami_names = find_leaked(volumes, functools.partial(_ami_names, ec2), now)
         print(f"{region}: {len(leaked)} leaked runner root volumes, {sum(v['Size'] for v in leaked):,} GiB")
+        for ami, n in skipped_by_ami(skipped, ami_names):
+            print(f"{region}: skipped {n} untagged or runner-named volumes from {ami}")
         if not args.execute:
             for v in leaked:
                 print(f"{region} {v['VolumeId']} {v['Size']}GiB {ami_names[v['SnapshotId']]} -> would delete")

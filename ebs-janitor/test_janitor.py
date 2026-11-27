@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from ebs_janitor import delete_volumes, find_leaked
+from ebs_janitor import delete_volumes, find_leaked, skipped_by_ami
 
 NOW = datetime(2026, 11, 3, tzinfo=UTC)
 OLD = NOW - timedelta(days=30)
@@ -24,9 +24,18 @@ def test_find_leaked_reads_tags_and_source_ami():
         looked_up.extend(snapshot_ids)
         return AMI_NAMES
 
-    leaked, _ = find_leaked(volumes, lookup, NOW)
+    leaked, skipped, _ = find_leaked(volumes, lookup, NOW)
     assert [v["VolumeId"] for v in leaked] == ["vol-untagged", "vol-runner"]
+    assert [v["VolumeId"] for v in skipped] == ["vol-unknown-ami"]
     assert "snap-other" not in looked_up  # rejected by the local checks before any AMI lookup
+
+
+def test_skipped_volumes_are_counted_by_source_ami():
+    skipped = [vol("a", snap="snap-new"), vol("b", snap="snap-new"), vol("c", snap="snap-gone")]
+    assert skipped_by_ami(skipped, {"snap-new": "some-new-runner-ami"}) == [
+        ("some-new-runner-ami", 2),
+        ("(source AMI not found)", 1),
+    ]
 
 
 def test_per_run_cap_is_shared_across_regions():
