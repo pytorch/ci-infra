@@ -12,7 +12,7 @@ import stat
 import json
 
 import docker
-from github import Auth, Github
+from github import Auth, Github, GithubException
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 REQUIRED_CONTAINER_NAME = "ghad-main-shared-instance-container"
 DOCKER_REPOSITORY = "308535385114.dkr.ecr.us-east-1.amazonaws.com"
 DOCKER_TAG = "latest"
+# The org runner group the runners register in: Default, where they have always been
+RUNNER_GROUP_ID = 1
+# Labels config.sh adds by default but a JIT config doesn't, so runners keep them
+DEFAULT_RUNNER_LABELS = ["self-hosted", "Linux", "X64"]
+# GitHub won't delete a runner it still thinks is running a job (422), or the
+# name was taken again before the retry (409); both clear up on their own
+RETRYABLE_JIT_STATUSES = (409, 422)
 
 
 class UserSocketsPath:
@@ -226,7 +233,6 @@ def open_cache_permissions(cache_dir: str) -> None:
 
 
 def start_container_if_not_running(
-    runner_url: str,
     instance_label: str,
     uid: int,
     client: docker.DockerClient,
@@ -256,9 +262,21 @@ def start_container_if_not_running(
         logger.info(
             f"Container {container_name} for user {uid} is not running, attempting to start it."
         )
-        logger.info("Getting GH token")
-        gh_token = get_gh_runner_token()
-        logger.info("GH token obtained, starting container.")
+        logger.info("Getting the runner's JIT config")
+        runner_name = f"{socket.gethostname()}-{uid}"
+        try:
+            jit_config = get_gh_runner_jit_config(runner_name, instance_label)
+        except GithubException as e:
+            if e.status not in RETRYABLE_JIT_STATUSES:
+                # e.g. a bad app key or a missing permission: crash, so systemd's
+                # restarts show it, as before JIT configs
+                logger.error(f"Error getting the JIT config for {runner_name}: {e}")
+                raise
+            # The old runner still shows as running a job, so it can't be
+            # replaced yet. Retry on the next pass instead of stopping every user.
+            logger.warning(f"Can't register {runner_name} yet, will retry: {e}")
+            return
+        logger.info("JIT config obtained, starting container.")
         _work_dir = os.path.join("/home", user_name, "_work")
         # NOTE: This contains things like node that is used for running workflows with `container`
         externals_dir = os.path.join("/home", user_name, "externals")
@@ -280,7 +298,9 @@ def start_container_if_not_running(
             response = client.containers.run(
                 image=f"{DOCKER_REPOSITORY}/multi-tenant-gpu:{docker_tag}",
                 name=container_name,
-                command=f'/bin/bash /multi-tenant-gpu-main.sh "{user_name}" "{docker_group_id}" "{runner_url}" "{gh_token}" "{socket.gethostname()}" "{uid}" "{instance_label}"',
+                command=f'/bin/bash /multi-tenant-gpu-main.sh "{user_name}" "{docker_group_id}" "{uid}"',
+                # As on ARC. The config is used up when the runner starts.
+                environment={"ACTIONS_RUNNER_INPUT_JITCONFIG": jit_config},
                 volumes={
                     f"/run/user/{uid}/docker.sock": {
                         "bind": "/var/run/docker.sock",
@@ -396,14 +416,46 @@ def get_github_app_client() -> Github:
     return Github(auth=auth)
 
 
-def get_gh_runner_token() -> str:
+def get_gh_runner_jit_config(name: str, label: str) -> str:
+    """Register one ephemeral runner and return its JIT config.
+
+    A JIT config is good for this one runner only, with the name, labels and
+    runner group set here, unlike a registration token, which registers any
+    number of runners for an hour.
+    """
     gh_client = get_github_app_client()
     org = gh_client.get_organization("pytorch")
-    _, data = org._requester.requestJsonAndCheck(
-        "POST",
-        f"/orgs/{org.login}/actions/runners/registration-token",
-    )
-    return data["token"]
+    requester = org._requester
+    runners_url = f"/orgs/{org.login}/actions/runners"
+    body = {
+        "name": name,
+        "runner_group_id": RUNNER_GROUP_ID,
+        # The instance label can be a comma-separated list, as config.sh --labels took
+        "labels": [
+            *DEFAULT_RUNNER_LABELS,
+            *filter(None, map(str.strip, label.split(","))),
+        ],
+    }
+    try:
+        _, data = requester.requestJsonAndCheck(
+            "POST", f"{runners_url}/generate-jitconfig", input=body
+        )
+    except GithubException as e:
+        if e.status != 409:
+            raise
+        # The last container with this name stopped before taking a job, so its
+        # runner is still registered. Replace it, as `config.sh --replace` did.
+        logger.info(f"Runner {name} already exists, replacing it")
+        _, existing = requester.requestJsonAndCheck(
+            "GET", runners_url, parameters={"name": name}
+        )
+        for runner in existing["runners"]:
+            if runner["name"] == name:
+                requester.requestJsonAndCheck("DELETE", f"{runners_url}/{runner['id']}")
+        _, data = requester.requestJsonAndCheck(
+            "POST", f"{runners_url}/generate-jitconfig", input=body
+        )
+    return data["encoded_jit_config"]
 
 
 def read_from_file(file_path: str) -> str:
@@ -417,10 +469,6 @@ def read_from_file(file_path: str) -> str:
 
 def get_instance_label_from_file() -> str:
     return read_from_file("/etc/gha-runner-config/instance-label")
-
-
-def get_runner_url_from_file() -> str:
-    return read_from_file("/etc/gha-runner-config/runner-url")
 
 
 def get_private_key() -> str:
@@ -475,7 +523,6 @@ def monitor_containers() -> None:
     ]
 
     instance_label = get_instance_label_from_file()
-    runner_url = get_runner_url_from_file()
 
     try:
         docker_tag = get_docker_tag_from_file()
@@ -489,7 +536,6 @@ def monitor_containers() -> None:
         for uid_sockets in valid_uid_sockets_list:
             logger.debug(f"Checking container for user {uid_sockets.user_name}")
             start_container_if_not_running(
-                runner_url,
                 instance_label,
                 uid_sockets.uid,
                 uid_sockets.docker_client,

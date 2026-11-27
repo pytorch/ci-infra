@@ -1,4 +1,4 @@
-"""Tests for ghad-manager.py. Linux only (O_PATH, /proc/self/fd).
+"""Tests for ghad-manager.py. The cache tests are Linux only (O_PATH, /proc/self/fd).
 
 Run from multi-tenant/ with `just test`; run as root to also cover the
 root-owned-file check.
@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from github import GithubException
 
 _spec = importlib.util.spec_from_file_location(
     "ghad_manager", Path(__file__).with_name("ghad-manager.py")
@@ -104,3 +105,137 @@ def test_swapping_a_dir_for_a_symlink_mid_sweep(tree) -> None:
         stop.set()
         swapper.join()
     assert (mode(outside), mode(secret)) == (0o700, 0o600)
+
+
+class FakeRequester:
+    """Stands in for PyGithub's requester; `responses` maps (verb, url) to a
+    list of results, each a dict to return or an exception to raise."""
+
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def requestJsonAndCheck(self, verb, url, parameters=None, input=None):
+        self.calls.append((verb, url, parameters, input))
+        result = self.responses[(verb, url)].pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return {}, result
+
+
+@pytest.fixture
+def requester(monkeypatch):
+    fake = FakeRequester({})
+
+    class Org:
+        login = "pytorch"
+        _requester = fake
+
+    class Client:
+        def get_organization(self, name):
+            assert name == "pytorch"
+            return Org()
+
+    monkeypatch.setattr(ghad_manager, "get_github_app_client", Client)
+    return fake
+
+
+RUNNERS = "/orgs/pytorch/actions/runners"
+JIT = f"{RUNNERS}/generate-jitconfig"
+BODY = {
+    "name": "host-1001",
+    "runner_group_id": 1,
+    "labels": ["self-hosted", "Linux", "X64", "linux.dgx.b200"],
+}
+
+
+def test_jit_config(requester) -> None:
+    requester.responses = {("POST", JIT): [{"encoded_jit_config": "cfg"}]}
+    assert ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200") == "cfg"
+    assert requester.calls == [("POST", JIT, None, BODY)]
+
+
+def test_jit_config_replaces_a_leftover_runner(requester) -> None:
+    requester.responses = {
+        ("POST", JIT): [
+            GithubException(409, {"message": "Already exists"}),
+            {"encoded_jit_config": "cfg"},
+        ],
+        ("GET", RUNNERS): [
+            {
+                "runners": [
+                    {"id": 5, "name": "host-10010"},
+                    {"id": 6, "name": "host-1001"},
+                ]
+            }
+        ],
+        ("DELETE", f"{RUNNERS}/6"): [{}],
+    }
+    assert ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200") == "cfg"
+    assert [c[:2] for c in requester.calls] == [
+        ("POST", JIT),
+        ("GET", RUNNERS),
+        ("DELETE", f"{RUNNERS}/6"),
+        ("POST", JIT),
+    ]
+
+
+def test_jit_config_raises_other_errors(requester) -> None:
+    requester.responses = {("POST", JIT): [GithubException(403, {"message": "no"})]}
+    with pytest.raises(GithubException):
+        ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200")
+
+
+def start_with_jit_error(monkeypatch, status: int) -> list:
+    """Run start_container_if_not_running with get_gh_runner_jit_config failing
+    with `status`; return what it went on to do after asking for the config."""
+    for name in ["stop_all_containers", "prune_images", "prune_networks"]:
+        monkeypatch.setattr(ghad_manager, name, lambda *args: None)
+    monkeypatch.setattr(ghad_manager, "login_to_ecr", lambda *args: None)
+    monkeypatch.setattr(ghad_manager, "login_to_dockerhub", lambda *args: None)
+    monkeypatch.setattr(ghad_manager, "is_container_running", lambda *args: False)
+    monkeypatch.setattr(ghad_manager.subprocess, "run", lambda *args, **kwargs: None)
+
+    def fail(name, label):
+        raise GithubException(status, {"message": "no"})
+
+    monkeypatch.setattr(ghad_manager, "get_gh_runner_jit_config", fail)
+    # Recorded through the sweep and the start: a container.run failure is
+    # caught and logged, so the start alone can't show it got that far
+    started = []
+    monkeypatch.setattr(
+        ghad_manager, "open_cache_permissions", lambda d: started.append("sweep")
+    )
+
+    class Containers:
+        def run(self, **kwargs):
+            started.append("run")
+
+    class Client:
+        containers = Containers()
+
+    ghad_manager.start_container_if_not_running(
+        "linux.dgx.b200", 1008, Client(), 999, "c", "henry", "latest"
+    )
+    return started
+
+
+@pytest.mark.parametrize("status", [409, 422])
+def test_jit_config_busy_runner_skips_the_user(monkeypatch, status) -> None:
+    """A runner GitHub won't replace yet, e.g. one still marked busy after its
+    container died mid-job, must not stop ghad-manager for every user."""
+    assert start_with_jit_error(monkeypatch, status) == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_jit_config_other_errors_crash(monkeypatch, status) -> None:
+    """Anything else, e.g. a bad app key, crashes so systemd's restarts show it."""
+    with pytest.raises(GithubException):
+        start_with_jit_error(monkeypatch, status)
+
+
+def test_jit_config_splits_comma_separated_labels(requester) -> None:
+    requester.responses = {("POST", JIT): [{"encoded_jit_config": "cfg"}]}
+    ghad_manager.get_gh_runner_jit_config("host-1001", "linux.dgx.b200, extra")
+    labels = requester.calls[0][3]["labels"]
+    assert labels == ["self-hosted", "Linux", "X64", "linux.dgx.b200", "extra"]
