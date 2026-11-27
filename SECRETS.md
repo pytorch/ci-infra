@@ -49,7 +49,7 @@ Related docs:
 | **Added by** | @jeanschmidt, @huydhn |
 | **Requested by** | @jeanschmidt, @huydhn |
 | **PoC** | @jeanschmidt, @huydhn · Meta |
-| **Used by** | `_osdc-plan.yml`, `ebs-janitor.yml` — read-only OIDC IAM role in the Meta AWS account, used for `tofu plan` on pull requests so PRs cannot mutate state, and for the EBS janitor's scheduled and manual dry runs |
+| **Used by** | `_osdc-plan.yml`, `ebs-janitor.yml` — read-only OIDC IAM role in the Meta AWS account, used for `tofu plan` on pull requests so PRs cannot mutate state, and for the EBS janitor's manual dry runs |
 
 ### `META_AWS_DEPLOY_ROLE`
 

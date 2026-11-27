@@ -46,16 +46,16 @@ jobs:
   janitor:
     if: github.event_name != 'pull_request' && (!inputs.execute || github.ref == 'refs/heads/main')
     needs: test
-    # Never cancelled mid-way. Dry runs and execute runs queue separately, so a scheduled
-    # dry run can't replace an execute run that is waiting for its environment.
+    # Never cancelled mid-way. Dry runs and execute runs queue separately, so a dry run
+    # can't replace an execute run that is waiting for its environment.
     concurrency:
-      group: ebs-janitor-${{ inputs.execute && 'execute' || 'dry-run' }}
+      group: ebs-janitor-${{ (github.event_name == 'schedule' || inputs.execute) && 'execute' || 'dry-run' }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # Scheduled runs are dry runs (read-only plan role) until their output has been
-    # reviewed. Same environments and roles as the OSDC plan/deploy workflows.
-    environment: ${{ inputs.execute && 'osdc-production' || 'osdc-staging' }}
+    # Scheduled runs and execute dispatches delete (deploy role); other dispatches are dry
+    # runs (read-only plan role). Same environments and roles as the OSDC plan/deploy workflows.
+    environment: ${{ (github.event_name == 'schedule' || inputs.execute) && 'osdc-production' || 'osdc-staging' }}
     permissions:
       contents: read
       id-token: write
@@ -75,13 +75,13 @@ jobs:
         with:
           aws-region: us-east-1
           # The plan role allows 1 hour, the deploy role 2 (the job's timeout).
-          role-duration-seconds: ${{ inputs.execute && 7200 || 3600 }}
+          role-duration-seconds: ${{ (github.event_name == 'schedule' || inputs.execute) && 7200 || 3600 }}
           role-to-assume: >-
             ${{ format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID,
-            inputs.execute && secrets.META_AWS_DEPLOY_ROLE || secrets.META_AWS_DEPLOY_PLAN_ROLE) }}
+            (github.event_name == 'schedule' || inputs.execute) && secrets.META_AWS_DEPLOY_ROLE || secrets.META_AWS_DEPLOY_PLAN_ROLE) }}
       - name: Run janitor
         env:
-          EXECUTE: ${{ inputs.execute }}
+          EXECUTE: ${{ (github.event_name == 'schedule' || inputs.execute) }}
           # Empty on schedule, so the CLI default applies; a typed 0 stays 0.
           MAX_DELETES: ${{ inputs.max_deletes }}
         run: |

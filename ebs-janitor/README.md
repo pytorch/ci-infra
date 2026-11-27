@@ -34,7 +34,8 @@ uv pip compile requirements.in --python-version 3.12 --generate-hashes -o requir
 
 ## In CI
 
-`.github/workflows/ebs-janitor.yml` runs a dry run every day at 06:17 UTC with
-the read-only plan role (`osdc-staging` environment). To delete, start the
-workflow by hand from `main` with `execute` checked; it then uses the deploy role
-(`osdc-production` environment). `max_deletes` caps the deletes for that run.
+`.github/workflows/ebs-janitor.yml` runs every day at 06:17 UTC and deletes with
+the deploy role (`osdc-production` environment), up to the CLI's default
+`--max-deletes`. A run started by hand from `main` deletes only with `execute`
+checked, up to `max_deletes`; otherwise it is a dry run with the read-only plan
+role (`osdc-staging` environment).
