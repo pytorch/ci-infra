@@ -1,0 +1,9 @@
+# actionlint only knows GitHub-hosted runner labels by default, so any self-hosted
+# label has to be declared here or `actionlint` in lint-pr.yml fails the PR.
+#
+# ci-infra has historically used only ubuntu-latest. These are org fleets in use by
+# sibling repos: `linux.*` are LF EC2 runners (see pytorch/test-infra
+# .github/scale-config.yml), which are full VMs with Docker and 150-800 GB disk.
+self-hosted-runner:
+  labels:
+    - linux.2xlarge
