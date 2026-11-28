@@ -403,7 +403,7 @@ fi
 # tests green on the one cluster that had it.
 #
 #   default-deny-ingress   — the IRSA design's deny-all, replaced by `default-deny`.
-#   sandbox-agent (Deploy) — the warm serial worker, replaced by one Job per request.
+#   sandbox-agent (Deploy) — the warm serial worker, replaced by one pod per request.
 #                            The Service of the same name stays: it now points at the
 #                            dispatcher, so callers keep their address.
 #   sandbox-agent-egress   — the warm worker's egress, replaced by sandbox-task-egress.
@@ -411,17 +411,23 @@ fi
 #                            the rest of its objects. Listed rather than assumed absent:
 #                            if any cluster ever applied the old name, `apply` leaves it
 #                            running and two CronJobs race for the same ConfigMap.
+#   agent-sandbox-task-jobs (policy + binding) — the per-request Job design's admission
+#                            policy, replaced by agent-sandbox-task-pods and -claims. The
+#                            Pod binding is renamed in place by the apply above, so this
+#                            runs after it.
 kubectl delete networkpolicy default-deny-ingress -n "$NAMESPACE" --ignore-not-found
 kubectl delete networkpolicy sandbox-agent-egress -n "$NAMESPACE" --ignore-not-found
 kubectl delete deployment sandbox-agent -n "$NAMESPACE" --ignore-not-found
 kubectl delete cronjob jwks-refresh -n "$NAMESPACE" --ignore-not-found
+kubectl delete validatingadmissionpolicybinding agent-sandbox-task-jobs --ignore-not-found
+kubectl delete validatingadmissionpolicy agent-sandbox-task-jobs --ignore-not-found
 
 # --- Revoke the sandbox's own AWS identity (idempotent) ---
 # A cluster deployed before the proxies existed has an IRSA role annotated on the
 # sandbox-agent SA. `kubectl apply` won't remove an annotation it no longer sets, so
 # every task pod created with that SA would get an injected web-identity token and the
 # whole point of the proxy would be silently lost. No restart to force: task pods are
-# created per request and pick up the SA as it stands when the Job is admitted.
+# created per request and pick up the SA as it stands when the pod is admitted.
 if kubectl get sa sandbox-agent -n "$NAMESPACE" \
   -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null | grep -q .; then
   echo "[agent-sandbox] Removing the stale IRSA role from the sandbox-agent SA..."

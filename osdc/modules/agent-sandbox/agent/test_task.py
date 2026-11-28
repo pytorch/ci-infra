@@ -1,8 +1,7 @@
 """Tests for the one-shot task entrypoint (task.py).
 
-The dispatcher passes the spec as env vars and reads the result back from the pod's
-log, so the contract this file pins is exactly that: env in, one line of JSON out, and
-an exit status that separates "the task has an answer" from "the Job was built wrong".
+The dispatcher passes the spec as env vars and reads the result back from stdout, so the
+contract this file pins is exactly that: env in, one line of JSON out, and an exit status that separates "the task has an answer" from "the task was started wrong".
 """
 
 import json

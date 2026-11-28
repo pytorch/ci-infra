@@ -59,7 +59,6 @@ N task pods, 3 fit per fleet node, and a pending pod adds one. The ceiling is
   expiry at most an hour after its creation (`admissionpolicy.yaml`), so the pod spec is
   the template's, not the dispatcher's. The agent-sandbox controller holds the pod-create RBAC and runs on base
   nodes. Task pods run as `sandbox-agent`, which has no RBAC and no mounted token.
-  (The Job RBAC is still granted until the Job path is removed.)
 - **Invocation:** `sandbox-agent` Service (`:8080`), reachable from `arc-runners`
   via `sandbox-agent-ingress` NetworkPolicy — BuildKit parity.
 
@@ -205,7 +204,7 @@ refresher. That is load-bearing rather than tidy: seeding it in the manifest mea
 `kubectl apply` put the seed back over live keys, so each deploy blanked them. `deploy.sh`
 runs a refresh immediately after applying, so the window with no keys is minutes rather
 than up to six hours, and the dispatcher fails closed throughout it. Minutes, not seconds,
-and not a bound anyone has measured: the Job has to be scheduled and pull an image, the
+and not a bound anyone has measured: the refresh Job has to be scheduled and pull an image, the
 kubelet then notices the ConfigMap changed on its own sync period, and the dispatcher
 re-reads the mount only every `JWKS_RELOAD_INTERVAL_S`. If that refresh fails on a
 cluster with no keys yet, the deploy fails (after its other steps) rather than report
@@ -544,9 +543,9 @@ token for the dispatcher; the task pod holds no credential at all.
   task in flight; the caller has to retry.
 - **Output is trusted as-is.** Nothing validates or gates what a task returns before a
   caller acts on it.
-- **A task can overwrite the response fields the endpoints own.** `kube.last_json_object()`
+- **A task can overwrite the response fields the endpoints own.** `tasks._last_json_object()`
   returns the last `{`-prefixed line the task printed that parses as JSON (within
-  `MAX_LOG_BYTES`), and both payloads spread it *last* — `{"task_id": task_id,
+  `MAX_RESULT_BYTES`), and both payloads spread it *last* — `{"task_id": task_id,
   **result}` in `http_api.do_POST`, `{"state": "done", "task_id": task_id,
   **task["result"]}` in `tasks.status`. A task printing
   `{"task_id": "…", "state": "running"}` therefore replaces what the dispatcher minted:

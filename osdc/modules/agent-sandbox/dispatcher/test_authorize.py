@@ -209,7 +209,7 @@ class TestPullRequestSelector:
         assert authorize_fn(claims(), request(pr=42), MANIFESTS).pr == 42
 
     def test_no_pull_request_is_zero_not_none(self):
-        """Zero rather than None so the Job template has one thing to stringify."""
+        """Zero rather than None so the task env has one thing to stringify."""
         assert authorize_fn(claims(), request(), MANIFESTS).pr == 0
 
     def test_a_boolean_is_refused_rather_than_read_as_pull_request_one(self):

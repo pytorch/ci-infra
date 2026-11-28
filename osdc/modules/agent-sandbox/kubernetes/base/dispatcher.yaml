@@ -1,16 +1,16 @@
-# The dispatcher: what callers address, and the only thing here that can create pods.
+# The dispatcher: what callers address, and the only thing here that can request task pods.
 #
-# One Job per /run, so tasks run in parallel and each gets a fresh pod. Parallelism
+# One sandbox pod per /run, so tasks run in parallel and each gets a fresh pod. Parallelism
 # comes from Karpenter — a pending task pod adds an ai-sandbox node — rather than from
 # replica count plus a connection-aware load balancer.
 #
 # This is the TRUSTED side. It runs on base nodes (no runtimeClassName, CriticalAddonsOnly
-# toleration like sigv4-proxy), not on the sandbox fleet: it holds RBAC to create Jobs,
+# toleration like sigv4-proxy), not on the sandbox fleet: it holds RBAC to create claims,
 # so it must not share nodes with the untrusted work it launches. It never clones and
 # never prompts a model — those only ever happen inside a task pod.
 #
-# __DISPATCHER_IMAGE__ / __AGENT_IMAGE__ / __AWS_REGION__ / __BEDROCK_DEFAULT_MODEL_ID__
-# are substituted by deploy.sh.
+# __DISPATCHER_IMAGE__ is substituted by deploy.sh. The task pod's image, region and model
+# are in sandbox-template.yaml.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +35,7 @@ spec:
       serviceAccountName: sandbox-dispatcher
       affinity:
         # State the security property directly rather than leaning on the absence of a
-        # runtimeClassName: this pod can create Jobs, so it must never sit on a node
+        # runtimeClassName: this pod can request task pods, so it must never sit on a node
         # running sandboxes, where a gVisor escape would land on its projected token.
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -75,21 +75,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            # The task image this dispatcher launches. Same content-hash tag deploy.sh
-            # just built and pushed.
-            - name: AGENT_IMAGE
-              value: __AGENT_IMAGE__
-            - name: AWS_REGION
-              value: "__AWS_REGION__"
-            - name: BEDROCK_DEFAULT_MODEL_ID
-              value: "__BEDROCK_DEFAULT_MODEL_ID__"
             # Where the git credential proxy listens. Passed on to a task pod only when
             # its repo is in kube.PRIVATE_REPOS — a public clone goes straight to
             # github.com, so the proxy being down cannot break it.
             - name: GIT_PROXY
               value: "git-proxy.ai-sandbox.svc.cluster.local:8080"
-            - name: SIGV4_PROXY
-              value: "sigv4-proxy.ai-sandbox.svc.cluster.local:8080"
             - name: SANDBOXD_TOKEN_FILE
               value: /var/run/secrets/sandboxd/token
             - name: MAX_CONCURRENT_TASKS
