@@ -665,8 +665,8 @@ class TestRunTask:
         result = sandbox.run_task({"repo": "org/repo", "model": "m", "base": "a" * 40})
         assert "not our ref" in result["errors"]["diff"]
 
-    def test_the_whole_result_fits_the_log_transport(self, monkeypatch):
-        """The dispatcher reads at most 1 MiB of the pod log; a longer result is lost.
+    def test_the_whole_result_fits_the_stdout_cap(self, monkeypatch):
+        """The dispatcher takes at most 1 MiB of stdout; a longer result is lost.
         Both name lists are populated, and a huge git error rides along."""
         monkeypatch.setattr(sandbox, "clone_repo", lambda *a, **kw: 1)
         monkeypatch.setattr(sandbox, "top_level_entries", lambda dest: ["t" * 250 + str(i) for i in range(3400)])

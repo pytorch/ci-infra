@@ -55,7 +55,7 @@ MAX_DIFF_BYTES = 200 * 1024
 MAX_PROMPT_FILE_BYTES = 32 * 1024
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
-# The result travels in the pod log, of which the dispatcher reads 1 MiB. Every
+# The result travels on stdout, of which the dispatcher takes 1 MiB. Every
 # unbounded field gets a share: each name list 256 KiB of JSON (see bounded_names), each
 # error message 8 KiB. The report is bounded by max_tokens.
 MAX_RESULT_FILE_BYTES = 256 * 1024
@@ -232,7 +232,7 @@ def diff_against(repo: str, dest: str, base: str) -> tuple[list[str], int, str, 
 
 def bounded_names(files: list[str], budget: int = MAX_RESULT_FILE_BYTES) -> list[str]:
     """As many leading names as fit in `budget` bytes of result JSON. The dispatcher reads
-    at most 1 MiB of the pod log, and a result cut short is no result at all."""
+    at most 1 MiB of stdout, and a result cut short is no result at all."""
     kept, used = [], 2
     for name in files:
         used += len(json.dumps(name)) + 2
